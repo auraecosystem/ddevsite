@@ -26,7 +26,7 @@ import (
 )
 
 // GetActiveProjects returns an array of DDEV projects
-// that are currently live in docker.
+// that are currently running in docker (excludes paused/stopped projects).
 func GetActiveProjects() []*DdevApp {
 	apps := make([]*DdevApp, 0)
 	labels := map[string]string{
@@ -38,9 +38,13 @@ func GetActiveProjects() []*DdevApp {
 
 	if err == nil {
 		for _, siteContainer := range containers {
+			// Skip containers that are not running (e.g., paused projects)
+			if siteContainer.State != "running" {
+				continue
+			}
 			approot, ok := siteContainer.Labels["com.ddev.approot"]
 			if !ok {
-				break
+				continue
 			}
 
 			app, err := NewApp(approot, true)
@@ -121,7 +125,7 @@ func Cleanup(app *DdevApp) error {
 	}
 	// First, try stopping the listed containers if they are running.
 	for i := range containers {
-		containerName := containers[i].Names[0][1:len(containers[i].Names[0])]
+		containerName := dockerutil.ContainerName(&containers[i])
 		removeOpts := client.ContainerRemoveOptions{
 			RemoveVolumes: true,
 			Force:         true,
@@ -138,8 +142,7 @@ func Cleanup(app *DdevApp) error {
 		_ = dockerutil.RemoveVolume(volName)
 	}
 
-	err = StopRouterIfNoContainers()
-	return err
+	return nil
 }
 
 // CheckForConf checks for a config.yaml at the cwd or parent dirs.
@@ -157,24 +160,6 @@ func CheckForConf(confPath string) (string, error) {
 	}
 
 	return "", fmt.Errorf("no %s file was found in this directory or any parent", filepath.Join(".ddev", "config.yaml"))
-}
-
-// ddevContainersRunning determines if any ddev-controlled containers are currently running.
-func ddevContainersRunning() (bool, error) {
-	labels := map[string]string{
-		"com.ddev.platform": "ddev",
-	}
-	containers, err := dockerutil.FindContainersByLabels(labels)
-	if err != nil {
-		return false, err
-	}
-
-	for _, container := range containers {
-		if _, ok := container.Labels["com.ddev.platform"]; ok {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 // getTemplateFuncMap will return a map of useful template functions.
@@ -544,8 +529,10 @@ func (app *DdevApp) HasCustomCert() bool {
 // CanUseHTTPOnly returns true if the project can be accessed via http only
 func (app *DdevApp) CanUseHTTPOnly() bool {
 	switch {
-	// Codespaces has its own router with TLS termination
+	// Codespaces/Devcontainer has its own router with TLS termination
 	case nodeps.IsCodespaces():
+		return false
+	case nodeps.IsDevcontainer():
 		return false
 	// If we have no router, then no https otherwise
 	case IsRouterDisabled(app):

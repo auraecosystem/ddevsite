@@ -284,3 +284,123 @@ func TestRemoveFilesMatchingGlob(t *testing.T) {
 		t.Errorf("expected no error when no files match, got: %v", err)
 	}
 }
+
+// TestCopyFilesMatchingGlob tests that CopyFilesMatchingGlob works
+func TestCopyFilesMatchingGlob(t *testing.T) {
+	srcDir := t.TempDir()
+	destDir := t.TempDir()
+
+	// Create test files in source directory
+	files := []string{"config1.yaml", "config2.yaml", "readme.txt", "notes.md"}
+	for _, name := range files {
+		err := os.WriteFile(filepath.Join(srcDir, name), []byte("content of "+name), 0644)
+		require.NoError(t, err)
+	}
+
+	// Create a subdirectory named "subdir.yaml" to ensure directories are skipped
+	err := os.Mkdir(filepath.Join(srcDir, "subdir.yaml"), 0755)
+	require.NoError(t, err)
+
+	// Copy only *.yaml files
+	copiedFiles, err := fileutil.CopyFilesMatchingGlob(srcDir, destDir, "*.yaml")
+	require.NoError(t, err)
+	require.Len(t, copiedFiles, 2)
+	require.Contains(t, copiedFiles, "config1.yaml")
+	require.Contains(t, copiedFiles, "config2.yaml")
+
+	// Verify the copied files exist and have correct content
+	for _, name := range []string{"config1.yaml", "config2.yaml"} {
+		destPath := filepath.Join(destDir, name)
+		require.True(t, fileutil.FileExists(destPath), "expected %s to exist in dest", name)
+		content, err := os.ReadFile(destPath)
+		require.NoError(t, err)
+		require.Equal(t, "content of "+name, string(content))
+	}
+
+	// Verify non-matching files were not copied
+	for _, name := range []string{"readme.txt", "notes.md", "subdir.yaml"} {
+		destPath := filepath.Join(destDir, name)
+		require.False(t, fileutil.FileExists(destPath), "expected %s to not exist in dest", name)
+	}
+
+	// Test with no matches - should return empty slice with no error
+	emptyDest := t.TempDir()
+	copiedFiles, err = fileutil.CopyFilesMatchingGlob(srcDir, emptyDest, "*.nomatch")
+	require.NoError(t, err)
+	require.Len(t, copiedFiles, 0)
+}
+
+// TestCheckSignatureOrNoFile tests the CheckSignatureOrNoFile function
+// including the correct handling of empty files per commit 986812445
+func TestCheckSignatureOrNoFile(t *testing.T) {
+	assert := asrt.New(t)
+	tmpDir := testcommon.CreateTmpDir(t.Name())
+	defer os.RemoveAll(tmpDir)
+
+	signature := nodeps.DdevFileSignature
+
+	// Test 1: Non-existent file should return nil (can overwrite)
+	nonExistentFile := filepath.Join(tmpDir, "nonexistent.txt")
+	err := fileutil.CheckSignatureOrNoFile(nonExistentFile, signature)
+	assert.NoError(err, "non-existent file should be safe to overwrite")
+
+	// Test 2: File with signature should return nil (can overwrite)
+	fileWithSig := filepath.Join(tmpDir, "with_signature.txt")
+	err = os.WriteFile(fileWithSig, []byte(signature+"\nsome content"), 0644)
+	assert.NoError(err)
+	err = fileutil.CheckSignatureOrNoFile(fileWithSig, signature)
+	assert.NoError(err, "file with signature should be safe to overwrite")
+
+	// Test 3: Empty file should return nil (can overwrite)
+	emptyFile := filepath.Join(tmpDir, "empty.txt")
+	err = os.WriteFile(emptyFile, []byte(""), 0644)
+	assert.NoError(err)
+	err = fileutil.CheckSignatureOrNoFile(emptyFile, signature)
+	assert.NoError(err, "empty file should be safe to overwrite")
+
+	// Test 4: File without signature and with content should return error (cannot overwrite)
+	fileWithoutSig := filepath.Join(tmpDir, "without_signature.txt")
+	err = os.WriteFile(fileWithoutSig, []byte("user content without signature"), 0644)
+	assert.NoError(err)
+	err = fileutil.CheckSignatureOrNoFile(fileWithoutSig, signature)
+	assert.Error(err, "file without signature should not be safe to overwrite")
+	if err != nil {
+		assert.Contains(err.Error(), "signature was not found")
+	}
+
+	// Test 5: Directory with all files having signature should return nil
+	dirWithSig := filepath.Join(tmpDir, "dir_with_sig")
+	err = os.Mkdir(dirWithSig, 0755)
+	assert.NoError(err)
+	file1 := filepath.Join(dirWithSig, "file1.txt")
+	err = os.WriteFile(file1, []byte(signature+"\ncontent1"), 0644)
+	assert.NoError(err)
+	file2 := filepath.Join(dirWithSig, "file2.txt")
+	err = os.WriteFile(file2, []byte(signature+"\ncontent2"), 0644)
+	assert.NoError(err)
+	err = fileutil.CheckSignatureOrNoFile(dirWithSig, signature)
+	assert.NoError(err, "directory with all files having signature should be safe to overwrite")
+
+	// Test 6: Directory with one file without signature should return error
+	dirMixed := filepath.Join(tmpDir, "dir_mixed")
+	err = os.Mkdir(dirMixed, 0755)
+	assert.NoError(err)
+	fileGood := filepath.Join(dirMixed, "good.txt")
+	err = os.WriteFile(fileGood, []byte(signature+"\ncontent"), 0644)
+	assert.NoError(err)
+	fileBad := filepath.Join(dirMixed, "bad.txt")
+	err = os.WriteFile(fileBad, []byte("user content"), 0644)
+	assert.NoError(err)
+	err = fileutil.CheckSignatureOrNoFile(dirMixed, signature)
+	assert.Error(err, "directory with file without signature should not be safe to overwrite")
+
+	// Test 7: Directory with empty file should be safe to overwrite
+	dirWithEmpty := filepath.Join(tmpDir, "dir_with_empty")
+	err = os.Mkdir(dirWithEmpty, 0755)
+	assert.NoError(err)
+	emptyInDir := filepath.Join(dirWithEmpty, "empty.txt")
+	err = os.WriteFile(emptyInDir, []byte(""), 0644)
+	assert.NoError(err)
+	err = fileutil.CheckSignatureOrNoFile(dirWithEmpty, signature)
+	assert.NoError(err, "directory with empty file should be safe to overwrite")
+}

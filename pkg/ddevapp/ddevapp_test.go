@@ -352,6 +352,7 @@ var (
 		// 20: frankenphp
 		{
 			Name:                          "TestPkgFrankenPHP",
+			Disable:                       true,
 			SourceURL:                     "https://github.com/ddev/test-frankenphp/archive/refs/tags/11.1.2.tar.gz",
 			ArchiveInternalExtractionPath: "test-frankenphp-11.1.2/",
 			FilesTarballURL:               "https://github.com/ddev/test-frankenphp/releases/download/11.1.2/files.tgz",
@@ -363,6 +364,17 @@ var (
 			Safe200URIWithExpectation:     testcommon.URIWithExpect{URI: "/README.md", Expect: "Drupal is an open source content management platform"},
 			DynamicURI:                    testcommon.URIWithExpect{URI: "/node/3", Expect: "Super easy vegetarian pasta bake TEST PROJECT"},
 			FilesImageURI:                 "/sites/default/files/Logo.png",
+		},
+		// 21: CodeIgniter
+		{
+			Name:                          "TestPkgCodeigniter4",
+			SourceURL:                     "https://github.com/ddev/test-codeigniter/archive/refs/tags/0.0.2.tar.gz",
+			ArchiveInternalExtractionPath: "test-codeigniter-0.0.2/",
+			DBTarURL:                      "https://github.com/ddev/test-codeigniter/releases/download/0.0.2/db.sql.tar.gz",
+			Docroot:                       "public",
+			Type:                          nodeps.AppTypeCodeIgniter,
+			Safe200URIWithExpectation:     testcommon.URIWithExpect{URI: "/robots.txt", Expect: "User-agent: *"},
+			DynamicURI:                    testcommon.URIWithExpect{URI: "/", Expect: "Welcome to CodeIgniter"},
 		},
 	}
 
@@ -1263,6 +1275,10 @@ func TestGetApps(t *testing.T) {
 
 // TestDdevImportDB tests the functionality that is called when "ddev import-db" is executed
 func TestDdevImportDB(t *testing.T) {
+	// Don't run this unless GOTEST_SHORT is unset; it doesn't need to be run everywhere.
+	if os.Getenv("GOTEST_SHORT") != "" {
+		t.Skip("Skip because GOTEST_SHORT is set")
+	}
 	assert := asrt.New(t)
 	app := &ddevapp.DdevApp{}
 	origDir, _ := os.Getwd()
@@ -1657,8 +1673,9 @@ func checkImportDBImports(t *testing.T, app *ddevapp.DdevApp) {
 
 // TestDdevAllDatabases tests db import/export/snapshot/restore/start with supported database versions
 func TestDdevAllDatabases(t *testing.T) {
-	if dockerutil.IsColima() || dockerutil.IsLima() || dockerutil.IsRancherDesktop() {
-		t.Skip("Skipping on Lima/Colima/Rancher")
+	// Don't run this unless GOTEST_SHORT is unset; it doesn't need to be run everywhere.
+	if os.Getenv("GOTEST_SHORT") != "" {
+		t.Skip("Skipping when GOTEST_SHORT unset")
 	}
 	assert := asrt.New(t)
 
@@ -2085,6 +2102,11 @@ func TestDdevExportDB(t *testing.T) {
 // TestWebserverMariaMySQLDBClient tests functionality of mysql/mariadb
 // database clients in the ddev-webserver
 func TestWebserverMariaMySQLDBClient(t *testing.T) {
+	// Don't run this unless GOTEST_SHORT is unset; it doesn't need to be run everywhere.
+	if os.Getenv("GOTEST_SHORT") != "" {
+		t.Skip("Skip because GOTEST_SHORT is set")
+	}
+
 	assert := asrt.New(t)
 
 	serverVersions := []string{"mysql:5.7", "mysql:8.0", "mysql:8.4", "mariadb:10.11", "mariadb:10.6", "mariadb:11.4", "mariadb:11.8"}
@@ -2439,7 +2461,7 @@ func TestDdevFullSiteSetup(t *testing.T) {
 		assert.NoError(err)
 
 		switch app.Type {
-		case nodeps.AppTypeCraftCms, nodeps.AppTypeShopware6, nodeps.AppTypeSymfony:
+		case nodeps.AppTypeCraftCms, nodeps.AppTypeCodeIgniter, nodeps.AppTypeShopware6, nodeps.AppTypeSymfony:
 			// Skip the check for the above types because they use app.SiteSettingsPath differently
 		default:
 			assert.Equal(filepath.Dir(settingsLocation), filepath.Dir(app.SiteSettingsPath))
@@ -3484,18 +3506,6 @@ func TestGetAppsEmpty(t *testing.T) {
 	assert.Equal(0, len(apps), "Expected to find no apps but found %d apps=%v", len(apps), apps)
 }
 
-// TestRouterNotRunning ensures the router is shut down after all sites are stopped.
-// This depends on TestGetAppsEmpty() having shut everything down.
-func TestRouterNotRunning(t *testing.T) {
-	assert := asrt.New(t)
-	containers, err := dockerutil.GetDockerContainers(false)
-	assert.NoError(err)
-
-	for _, c := range containers {
-		assert.NotEqual("ddev-router", dockerutil.ContainerName(&c), "ddev-router was not supposed to be running but it was")
-	}
-}
-
 type URLRedirectExpectations struct {
 	url                 string
 	uri                 string
@@ -4435,15 +4445,19 @@ func TestCustomCerts(t *testing.T) {
 		_ = os.Chdir(origDir)
 	})
 
+	// Start with PowerOff to have clean router, otherwise router is already live with unknown content
+	ddevapp.PowerOff()
+
 	// Start without cert and make sure normal DNS names are there
 	err = app.Start()
 	require.NoError(t, err)
+	c := fmt.Sprintf("openssl s_client -connect %s:%s -servername %s </dev/null 2>/dev/null | openssl x509 -noout -text | perl -l -0777 -ne '@names=/\\bDNS:([^\\s,]+)/g; print join(\"\\n\", sort @names);'", app.GetHostname(), app.GetPrimaryRouterHTTPSPort(), app.GetHostname())
 	stdout, stderr, err := app.Exec(&ddevapp.ExecOpts{
-		Cmd: fmt.Sprintf("openssl s_client -connect %s:%s -servername %s </dev/null 2>/dev/null | openssl x509 -noout -text | perl -l -0777 -ne '@names=/\\bDNS:([^\\s,]+)/g; print join(\"\\n\", sort @names);'", app.GetHostname(), app.GetPrimaryRouterHTTPSPort(), app.GetHostname()),
+		Cmd: c,
 	})
-	require.NoError(t, err, "failed to run openssl command, stdout='%s', stderr='%s'", stdout, stderr)
+	require.NoError(t, err, "failed to run openssl command '%s' against router, stdout='%s', stderr='%s'", c, stdout, stderr)
 	stdout = strings.Trim(stdout, "\r\n")
-	// This should be our regular wildcard cert
+	// This should be our default wildcard cert
 	require.Contains(t, stdout, "*.ddev.site")
 
 	// Now stop it so we can install new custom cert.

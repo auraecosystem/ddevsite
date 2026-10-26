@@ -9,7 +9,7 @@ const ConfigInstructions = `
 # If the name is omitted, the project will take the name of the enclosing directory,
 # which is useful if you want to have a copy of the project side by side with this one.
 
-# type: <projecttype>  # backdrop, cakephp, craftcms, drupal, drupal6, drupal7, drupal8, drupal9, drupal10, drupal11, generic, laravel, magento, magento2, php, shopware6, silverstripe, symfony, typo3, wordpress
+# type: <projecttype>  # backdrop, cakephp, codeigniter, craftcms, drupal, drupal6, drupal7, drupal8, drupal9, drupal10, drupal11, generic, laravel, magento, magento2, php, shopware6, silverstripe, symfony, typo3, wordpress
 # See https://docs.ddev.com/en/stable/users/quickstart/ for more
 # information on the different project types
 
@@ -187,12 +187,15 @@ const ConfigInstructions = `
 # project_tld: ddev.site
 # The top-level domain used for project URLs
 # The default "ddev.site" allows DNS lookup via a wildcard
-# If you prefer you can change this to "ddev.local" to preserve
-# pre-v1.9 behavior.
 
-# ngrok_args: --basic-auth username:pass1234
-# Provide extra flags to the "ngrok http" command, see
-# https://ngrok.com/docs/agent/config/v3/#agent-configuration or run "ngrok http -h"
+# share_default_provider: ngrok
+# The default share provider to use for "ddev share"
+# Defaults to global configuration, usually "ngrok"
+# Can be "ngrok" or "cloudflared" or the name of a custom provider from .ddev/share-providers/
+
+# share_provider_args: --basic-auth username:pass1234
+# Provide extra flags to the share provider script
+# See https://docs.ddev.com/en/stable/users/configuration/config/#share_provider_args
 
 # disable_settings_management: false
 # If true, DDEV will not create CMS-specific settings files like

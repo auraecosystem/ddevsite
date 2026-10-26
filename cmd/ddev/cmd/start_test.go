@@ -16,6 +16,7 @@ import (
 	"github.com/ddev/ddev/pkg/fileutil"
 	"github.com/ddev/ddev/pkg/globalconfig"
 	"github.com/ddev/ddev/pkg/testcommon"
+	"github.com/ddev/ddev/pkg/util"
 	asrt "github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -105,13 +106,13 @@ func TestCmdStartOptionalProfiles(t *testing.T) {
 	require.NoError(t, err, "failed to start %s, output='%s'", site.Name, out)
 
 	// Make sure that "optional" busybox1 service has Traefik entrypoint even when it's not started
-	out, err = exec.RunCommand(DdevBin, []string{"exec", "curl", "-sf", fmt.Sprintf("%s:%s/api/http/routers/%s-busybox1-80-http@file", ddevapp.RouterComposeProjectName, globalconfig.DdevGlobalConfig.TraefikMonitorPort, site.Name)})
+	out, err = exec.RunCommand(DdevBin, []string{"exec", "curl", "-sf", "-w", util.CurlDiagnosticSuffix + "%{http_code}", fmt.Sprintf("%s:%s/api/http/routers/%s-busybox1-80-http@file", ddevapp.RouterComposeProjectName, globalconfig.DdevGlobalConfig.TraefikMonitorPort, site.Name)})
 	require.NoError(t, err, "failed to check for http router for %s, output='%s'", site.Name, out)
-	validateEntrypointForTraefikRouter(t, out, "http-18125", "http")
+	validateEntrypointForTraefikRouter(t, util.ExtractCurlBody(out), "http-18125", "http")
 
-	out, err = exec.RunCommand(DdevBin, []string{"exec", "curl", "-sf", fmt.Sprintf("%s:%s/api/http/routers/%s-busybox1-80-https@file", ddevapp.RouterComposeProjectName, globalconfig.DdevGlobalConfig.TraefikMonitorPort, site.Name)})
+	out, err = exec.RunCommand(DdevBin, []string{"exec", "curl", "-sf", "-w", util.CurlDiagnosticSuffix + "%{http_code}", fmt.Sprintf("%s:%s/api/http/routers/%s-busybox1-80-https@file", ddevapp.RouterComposeProjectName, globalconfig.DdevGlobalConfig.TraefikMonitorPort, site.Name)})
 	require.NoError(t, err, "failed to check for https router for %s, output='%s'", site.Name, out)
-	validateEntrypointForTraefikRouter(t, out, "http-18126", "https")
+	validateEntrypointForTraefikRouter(t, util.ExtractCurlBody(out), "http-18126", "https")
 
 	// Make sure the busybox service didn't get started
 	container, err := ddevapp.GetContainer(app, "busybox")
@@ -129,13 +130,13 @@ func TestCmdStartOptionalProfiles(t *testing.T) {
 	}
 
 	// Make sure that "optional" busybox1 service has Traefik entrypoint when it's started
-	out, err = exec.RunCommand(DdevBin, []string{"exec", "curl", "-sf", fmt.Sprintf("%s:%s/api/http/routers/%s-busybox1-80-http@file", ddevapp.RouterComposeProjectName, globalconfig.DdevGlobalConfig.TraefikMonitorPort, site.Name)})
+	out, err = exec.RunCommand(DdevBin, []string{"exec", "curl", "-sf", "-w", util.CurlDiagnosticSuffix + "%{http_code}", fmt.Sprintf("%s:%s/api/http/routers/%s-busybox1-80-http@file", ddevapp.RouterComposeProjectName, globalconfig.DdevGlobalConfig.TraefikMonitorPort, site.Name)})
 	require.NoError(t, err, "failed to check for http router for %s, output='%s'", site.Name, out)
-	validateEntrypointForTraefikRouter(t, out, "http-18125", "http")
+	validateEntrypointForTraefikRouter(t, util.ExtractCurlBody(out), "http-18125", "http")
 
-	out, err = exec.RunCommand(DdevBin, []string{"exec", "curl", "-sf", fmt.Sprintf("%s:%s/api/http/routers/%s-busybox1-80-https@file", ddevapp.RouterComposeProjectName, globalconfig.DdevGlobalConfig.TraefikMonitorPort, site.Name)})
+	out, err = exec.RunCommand(DdevBin, []string{"exec", "curl", "-sf", "-w", util.CurlDiagnosticSuffix + "%{http_code}", fmt.Sprintf("%s:%s/api/http/routers/%s-busybox1-80-https@file", ddevapp.RouterComposeProjectName, globalconfig.DdevGlobalConfig.TraefikMonitorPort, site.Name)})
 	require.NoError(t, err, "failed to check for https router for %s, output='%s'", site.Name, out)
-	validateEntrypointForTraefikRouter(t, out, "http-18126", "https")
+	validateEntrypointForTraefikRouter(t, util.ExtractCurlBody(out), "http-18126", "https")
 }
 
 // validateEntrypointForTraefikRouter validates a JSON response from ddev-router:10999/api/http/routers/routerName
@@ -317,4 +318,129 @@ func TestCmdStartShowsSponsorshipData(t *testing.T) {
 	assert.Equal("https://ddev.com/s/sponsorship-data.json", globalconfig.DdevGlobalConfig.RemoteConfig.SponsorshipDataURL)
 
 	t.Logf("Sponsorship configuration verified in global config")
+}
+
+// TestCmdStartRestartNoCache tests that --no-cache flag bypasses Docker build cache
+func TestCmdStartRestartNoCache(t *testing.T) {
+	// Create a temporary directory and switch to it
+	origDir, _ := os.Getwd()
+	tmpdir := testcommon.CreateTmpDir(t.Name())
+
+	err := os.Chdir(tmpdir)
+	require.NoError(t, err)
+	_, err = exec.RunHostCommand(DdevBin, "config", "--auto")
+	require.NoError(t, err)
+
+	app, err := ddevapp.GetActiveApp("")
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		_ = os.Chdir(origDir)
+		_ = app.Stop(true, false)
+		_ = os.RemoveAll(tmpdir)
+	})
+
+	// Add Dockerfiles that write random numbers to files
+	err = fileutil.AppendStringToFile(app.GetConfigPath("web-build/Dockerfile"), `
+RUN shuf -i 0-99999 -n1 > /random-web.txt
+`)
+	require.NoError(t, err)
+
+	err = fileutil.AppendStringToFile(app.GetConfigPath("db-build/Dockerfile"), `
+RUN shuf -i 0-99999 -n1 > /random-db.txt
+`)
+	require.NoError(t, err)
+
+	// Populate examples (normally done in root's init())
+	err = ddevapp.PopulateExamplesCommandsHomeadditions("")
+	require.NoError(t, err)
+
+	// Initial start
+	err = app.Start()
+	require.NoError(t, err)
+
+	origRandomWeb, _, err := app.Exec(&ddevapp.ExecOpts{
+		Cmd: "cat /random-web.txt",
+	})
+	require.NoError(t, err)
+
+	origRandomDB, _, err := app.Exec(&ddevapp.ExecOpts{
+		Cmd:     "cat /random-db.txt",
+		Service: "db",
+	})
+	require.NoError(t, err)
+
+	// Test 1: Regular restart should use cache for both web and db
+	_, err = exec.RunHostCommand(DdevBin, "restart", app.Name)
+	require.NoError(t, err)
+
+	cachedRandomWeb, _, err := app.Exec(&ddevapp.ExecOpts{
+		Cmd: "cat /random-web.txt",
+	})
+	require.NoError(t, err)
+	require.Equal(t, origRandomWeb, cachedRandomWeb, "Regular restart should use cache for web")
+
+	cachedRandomDB, _, err := app.Exec(&ddevapp.ExecOpts{
+		Cmd:     "cat /random-db.txt",
+		Service: "db",
+	})
+	require.NoError(t, err)
+	require.Equal(t, origRandomDB, cachedRandomDB, "Regular restart should use cache for db")
+
+	// Test 2: restart --no-cache should bypass cache for both web and db
+	_, err = exec.RunHostCommand(DdevBin, "restart", "--no-cache", app.Name)
+	require.NoError(t, err)
+
+	noCacheRandomWeb, _, err := app.Exec(&ddevapp.ExecOpts{
+		Cmd: "cat /random-web.txt",
+	})
+	require.NoError(t, err)
+	require.NotEqual(t, origRandomWeb, noCacheRandomWeb, "restart --no-cache should bypass cache for web")
+
+	noCacheRandomDB, _, err := app.Exec(&ddevapp.ExecOpts{
+		Cmd:     "cat /random-db.txt",
+		Service: "db",
+	})
+	require.NoError(t, err)
+	require.NotEqual(t, origRandomDB, noCacheRandomDB, "restart --no-cache should bypass cache for db")
+
+	// Test 3: Regular start after stop should use cache for both web and db
+	err = app.Stop(false, false)
+	require.NoError(t, err)
+
+	_, err = exec.RunHostCommand(DdevBin, "start", app.Name)
+	require.NoError(t, err)
+
+	startCachedRandomWeb, _, err := app.Exec(&ddevapp.ExecOpts{
+		Cmd: "cat /random-web.txt",
+	})
+	require.NoError(t, err)
+	require.Equal(t, noCacheRandomWeb, startCachedRandomWeb, "Regular start should use cache for web")
+
+	startCachedRandomDB, _, err := app.Exec(&ddevapp.ExecOpts{
+		Cmd:     "cat /random-db.txt",
+		Service: "db",
+	})
+	require.NoError(t, err)
+	require.Equal(t, noCacheRandomDB, startCachedRandomDB, "Regular start should use cache for db")
+
+	// Test 4: start --no-cache should bypass cache for both web and db
+	err = app.Stop(false, false)
+	require.NoError(t, err)
+
+	_, err = exec.RunHostCommand(DdevBin, "start", "--no-cache", app.Name)
+	require.NoError(t, err)
+
+	startNoCacheRandomWeb, _, err := app.Exec(&ddevapp.ExecOpts{
+		Cmd: "cat /random-web.txt",
+	})
+	require.NoError(t, err)
+	require.NotEqual(t, noCacheRandomWeb, startNoCacheRandomWeb, "start --no-cache should bypass cache for web")
+
+	startNoCacheRandomDB, _, err := app.Exec(&ddevapp.ExecOpts{
+		Cmd:     "cat /random-db.txt",
+		Service: "db",
+	})
+	require.NoError(t, err)
+	require.NotEqual(t, noCacheRandomDB, startNoCacheRandomDB, "start --no-cache should bypass cache for db")
 }

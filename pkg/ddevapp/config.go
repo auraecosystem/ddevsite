@@ -23,7 +23,7 @@ import (
 	"github.com/ddev/ddev/pkg/output"
 	"github.com/ddev/ddev/pkg/util"
 	copy2 "github.com/otiai10/copy"
-	"go.yaml.in/yaml/v3"
+	"go.yaml.in/yaml/v4"
 )
 
 // Regexp pattern to determine if a hostname is valid per RFC 1123.
@@ -91,9 +91,9 @@ func NewApp(appRoot string, includeOverrides bool) (*DdevApp, error) {
 	// Provide a default app name based on directory name
 	app.Name = NormalizeProjectName(filepath.Base(app.AppRoot))
 
-	// Gather containers to omit, adding ddev-router for codespaces
+	// Gather containers to omit, adding ddev-router for codespaces/devcontainer
 	app.OmitContainersGlobal = globalconfig.DdevGlobalConfig.OmitContainersGlobal
-	if nodeps.IsCodespaces() {
+	if nodeps.IsDevcontainer() {
 		app.OmitContainersGlobal = append(app.OmitContainersGlobal, "ddev-router")
 	}
 
@@ -377,6 +377,9 @@ func (app *DdevApp) ReadConfig(includeOverrides bool) ([]string, error) {
 			}
 		}
 	}
+
+	// Sort WebExtraExposedPorts so the entry matching configured router ports comes first
+	SortWebExtraExposedPorts(app)
 
 	return append([]string{app.ConfigPath}, configOverrides...), nil
 }
@@ -703,32 +706,38 @@ func (app *DdevApp) CheckCustomConfig() {
 				customConfig = true
 			}
 		}
-	}
-	traefikConfigPath := filepath.Join(ddevDir, "traefik/config")
-	if _, err := os.Stat(traefikConfigPath); err == nil {
-		traefikFiles, err := filepath.Glob(filepath.Join(traefikConfigPath, "*.yaml"))
-		util.CheckErr(err)
-		customTraefikFiles := filterCustomConfigFiles(traefikFiles)
-		if len(customTraefikFiles) > 0 {
-			printableFiles, _ := util.ArrayToReadableOutput(customTraefikFiles)
-			util.Warning("Using custom Traefik configuration (use `docker logs ddev-router` for troubleshooting): %v", printableFiles)
-			customConfig = true
-		}
-		// Warn if there are unexpected files in .ddev/traefik/config
-		if len(traefikFiles) > 0 {
-			var unexpected []string
-			for _, f := range traefikFiles {
+		// Check for custom-global-config directory (middleware, routers, etc.)
+		customGlobalConfigDir := filepath.Join(traefikGlobalConfigPath, "custom-global-config")
+		if fileutil.IsDirectory(customGlobalConfigDir) {
+			customGlobalFiles, err := fileutil.ListFilesInDir(customGlobalConfigDir)
+			// Remove README.md and local-auth.yaml.example from the list
+			customGlobalFiles = slices.DeleteFunc(customGlobalFiles, func(f string) bool {
 				base := filepath.Base(f)
-				expected := app.Name + ".yaml"
-				if base != expected {
-					unexpected = append(unexpected, f)
-				}
-			}
-			unexpectedTraefikConfigFiles := filterCustomConfigFiles(unexpected)
-			if len(unexpectedTraefikConfigFiles) > 0 {
-				util.Warning("Unexpected files found in .ddev/traefik/config (expected only %s): %v", app.Name+".yaml", unexpectedTraefikConfigFiles)
+				return base == "README.md" || base == "local-auth.yaml.example"
+			})
+
+			if err == nil && len(customGlobalFiles) > 0 {
+				printableFiles, _ := util.ArrayToReadableOutput(customGlobalFiles)
+				util.Warning("Using custom global Traefik dynamic configuration from %s: %v", customGlobalConfigDir, printableFiles)
 				customConfig = true
 			}
+		}
+	}
+
+	// Warn if traefik config overridden
+	mainProjectTraefikFile := app.GetConfigPath("traefik/config/" + app.Name + ".yaml")
+	if isCustomConfigFile(mainProjectTraefikFile) {
+		util.Warning("Using custom Traefik configuration (use `docker logs ddev-router` for troubleshooting): %v", mainProjectTraefikFile)
+		customConfig = true
+	}
+	traefikProjectConfigPath := app.GetConfigPath("traefik/config")
+	if _, err := os.Stat(traefikProjectConfigPath); err == nil {
+		traefikFiles, err := filepath.Glob(filepath.Join(traefikProjectConfigPath, "*.yaml"))
+		util.CheckErr(err)
+		ignoredTraefikFiles := filterCustomConfigFiles(traefikFiles)
+		// Warn if there are unused files in project .ddev/traefik/config
+		if len(ignoredTraefikFiles) > 0 {
+			util.Warning("Ignored project traefik config files found in .ddev/traefik/config (only %s will be used): %v", app.Name+".yaml", ignoredTraefikFiles)
 		}
 	}
 
@@ -978,6 +987,7 @@ type composeYAMLVars struct {
 	UploadDirsMap             []string
 	GitDirMount               bool
 	IsCodespaces              bool
+	IsDevcontainer            bool
 	DefaultContainerTimeout   string
 	WebExtraContainerPorts    []int
 	WebExtraHTTPPorts         string
@@ -1070,6 +1080,7 @@ func (app *DdevApp) RenderComposeYAML() (string, error) {
 		UploadDirsMap:      app.getUploadDirsHostContainerMapping(),
 		GitDirMount:        false,
 		IsCodespaces:       nodeps.IsCodespaces(),
+		IsDevcontainer:     nodeps.IsDevcontainer(),
 		// Default max time we wait for containers to be healthy
 		DefaultContainerTimeout: app.DefaultContainerTimeout,
 		XHGuiHTTPPort:           app.GetXHGuiHTTPPort(),
@@ -1188,18 +1199,18 @@ stopasgroup=true
 	}
 	// For MySQL 5.5+ we'll install the matching mysql client (and mysqldump) in the ddev-webserver
 	if app.Database.Type == nodeps.MySQL {
-		extraWebContent = extraWebContent + "\nRUN mysql-client-install.sh || true\n"
+		extraWebContent = extraWebContent + "\nRUN log-stderr.sh mysql-client-install.sh || true\n"
 	}
 	if app.Database.Type == nodeps.MariaDB {
 		// Some MariaDB versions may have their own client in the ddev-webserver
 		// Search for CHANGE_MARIADB_CLIENT to update related code
 		if slices.Contains([]string{nodeps.MariaDB1011, nodeps.MariaDB114}, app.Database.Version) {
-			extraWebContent = extraWebContent + "\nRUN mariadb-client-install.sh || true\n"
+			extraWebContent = extraWebContent + "\nRUN log-stderr.sh mariadb-client-install.sh || true\n"
 		}
 	}
 	// MariaDB uses mariadb-* command names, but legacy mysql* commands are commonly used
 	// Install compatibility wrappers for MariaDB, remove them when not needed
-	extraWebContent = extraWebContent + "\nRUN mariadb-compat-install.sh || true\n"
+	extraWebContent = extraWebContent + "\nRUN log-stderr.sh mariadb-compat-install.sh || true\n"
 
 	err = WriteBuildDockerfile(app, app.GetConfigPath(".webimageBuild/Dockerfile"), app.GetConfigPath("web-build"), app.WebImageExtraPackages, app.ComposerVersion, extraWebContent)
 	if err != nil {
@@ -1258,6 +1269,11 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
     -o Dpkg::Options::="--force-confold" --no-install-recommends --no-install-suggests \
     apt-transport-https bzip2 ca-certificates less procps pv vim-tiny zstd
 update-alternatives --install /usr/bin/vim vim /usr/bin/vim.tiny 10
+
+# Install tzdata-legacy to avoid issues with deprecated timezones
+if apt-cache show tzdata-legacy >/dev/null 2>&1; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Options::="--force-confold" tzdata-legacy
+fi
 
 # Change directories owned by postgres (and everything inside them)
 find / -type d \( -user postgres -o -group postgres \) -exec chown -Rh %[2]s:%[3]s {} + 2>/dev/null || true
@@ -1426,9 +1442,9 @@ RUN (timeout %d apt-get update || true) && DEBIAN_FRONTEND=noninteractive apt-ge
 		// Remove leading and trailing spaces
 		composerSelfUpdateArg = strings.TrimSpace(composerVersion)
 
-		// Composer v2 is default
+		// If no version is specified, use "stable"
 		if composerSelfUpdateArg == "" {
-			composerSelfUpdateArg = "2"
+			composerSelfUpdateArg = "stable"
 		}
 
 		// Major and minor versions have to be provided as option so add '--' prefix.
@@ -1527,8 +1543,9 @@ EOF
 	if strings.Contains(fullpath, "webimageBuild") {
 		contents = contents + `
 ### DDEV-injected folders permission fix
-RUN chmod 777 /run/php /var/log
-RUN mkdir -p /tmp/xhprof && chmod -R ugo+w /etc/php /var/lib/php /tmp/xhprof
+RUN chmod 777 /run/php /var/log && \
+    chmod -f ugo+rwx /usr/local/bin /usr/local/bin/* && \
+    mkdir -p /tmp/xhprof && chmod -R ugo+w /etc/php /var/lib/php /tmp/xhprof
 `
 		// Files from containers/ddev-webserver/ddev-webserver-base-files/var/www/html
 		// are added to host on `ddev start` when using Podman with Mutagen enabled
@@ -1773,7 +1790,7 @@ func PrepDdevDirectory(app *DdevApp) error {
 
 	// Some of the listed items are wildcards or directories, and if they are, there's an error
 	// opening them and they innately get added to the .gitignore.
-	err = CreateGitIgnore(dir, "**/*.example", ".dbimageBuild", ".ddev-docker-*.yaml", ".*downloads", ".homeadditions", ".importdb*", ".sshimageBuild", ".webimageBuild", "apache/apache-site.conf", "commands/.gitattributes", "config.local.y*ml", "config.*.local.y*ml", "db_snapshots", "mutagen/mutagen.yml", "mutagen/.start-synced", "nginx_full/nginx-site.conf", "postgres/postgresql.conf", "providers/acquia.yaml", "providers/lagoon.yaml", "providers/pantheon.yaml", "providers/platform.yaml", "providers/upsun.yaml", "sequelpro.spf", fmt.Sprintf("traefik/config/%s.yaml", app.Name), fmt.Sprintf("traefik/certs/%s.crt", app.Name), fmt.Sprintf("traefik/certs/%s.key", app.Name), "xhprof/xhprof_prepend.php", "**/README.*")
+	err = CreateGitIgnore(dir, "**/*.example", ".dbimageBuild", ".ddev-docker-*.yaml", ".*downloads", ".homeadditions", ".importdb*", ".sshimageBuild", ".webimageBuild", "apache/apache-site.conf", "commands/.gitattributes", "config.local.y*ml", "config.*.local.y*ml", "db_snapshots", "mutagen/mutagen.yml", "mutagen/.start-synced", "nginx_full/nginx-site.conf", "postgres/postgresql.conf", "providers/acquia.yaml", "providers/lagoon.yaml", "providers/pantheon.yaml", "providers/platform.yaml", "providers/upsun.yaml", "sequelpro.spf", "share-providers/cloudflared.sh", "share-providers/ngrok.sh", fmt.Sprintf("traefik/config/%s.yaml", app.Name), fmt.Sprintf("traefik/certs/%s.crt", app.Name), fmt.Sprintf("traefik/certs/%s.key", app.Name), "xhprof/xhprof_prepend.php", "**/README.*")
 	if err != nil {
 		return fmt.Errorf("failed to create gitignore in %s: %v", dir, err)
 	}

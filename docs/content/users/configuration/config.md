@@ -92,7 +92,20 @@ Composer version for the web container and the [`ddev composer`](../usage/comman
 
 | Type | Default | Usage
 | -- | -- | --
-| :octicons-file-directory-16: project | `2` | Can be `2`, `1`, or empty (`""`) for latest major version at container build time.<br><br>Can also be a minor version like `2.2` for the latest release of that branch, an explicit version like `1.0.22`, or a keyword like `stable`, `preview` or `snapshot`. See Composer documentation.
+| :octicons-file-directory-16: project | `2` | Can be `2`, `1`, or empty (`""`) for latest major version at container build time.<br><br>Can also be the LTS version `2.2` (there's no other `2.x` LTS), an explicit version like `2.9.3`, or a keyword like `stable`, `preview` or `snapshot`. See [Composer documentation](https://getcomposer.org/doc/03-cli.md#self-update-selfupdate).
+
+!!!warning "Composer version is cached at container build time"
+    DDEV installs Composer at container build time and caches it. If you use a non-specific version like `2`, `2.2`, `""` (empty), or `stable`, DDEV installs the latest available version in that range at build time.
+
+    The next update of Composer will be done automatically when DDEV is upgraded. If you want to update Composer in the web container before then, [restart](../usage/commands.md#restart) with `--no-cache` or [rebuild](../usage/commands.md#utility-rebuild):
+
+    ```bash
+    ddev restart --no-cache
+    # or
+    ddev utility rebuild
+    ```
+
+    See [Composer Self-Update Changes Do Not Persist](../usage/developer-tools.md#composer-self-update-changes-do-not-persist) for details.
 
 !!!tip "Using `vendor/bin/composer`"
     See the example in [Composer from `vendor/bin/composer`](../usage/developer-tools.md#composer-from-vendorbincomposer).
@@ -353,16 +366,6 @@ The URL-friendly name DDEV should use to reference the project.
 | -- | -- | --
 | :octicons-file-directory-16: project | enclosing directory name | Must be unique; no two projects can have the same name. It’s best if this matches the directory name. If this option is omitted, the project will take the name of the enclosing directory. This value may also be set via `ddev config --project-name=<name>`. (The `ddev config` flag is `project-name`, not `name`, see [`ddev config` docs](../usage/commands.md#config).)"
 
-## `ngrok_args`
-
-Extra flags for [configuring ngrok](https://ngrok.com/docs/agent/config) when [sharing projects](../topics/sharing.md) with the [`ddev share`](../usage/commands.md#share) command.
-
-| Type | Default | Usage
-| -- | -- | --
-| :octicons-file-directory-16: project | `` | &zwnj;
-
-Example: `--basic-auth username:pass1234 --domain foo.ngrok-free.app`.
-
 ## `no_bind_mounts`
 
 Whether to not use Docker bind mounts.
@@ -530,6 +533,32 @@ Port for DDEV router’s HTTPS traffic.
 
 See the [Troubleshooting](../usage/troubleshooting.md#web-server-ports-already-occupied) page for more on addressing port conflicts.
 
+## `share_default_provider`
+
+The default share provider to use with the [`ddev share`](../usage/commands.md#share) command.
+
+| Type | Default | Usage
+| -- | -- | --
+| :octicons-globe-16: global<br>:octicons-file-directory-16: project | `ngrok` | Built-in providers: `ngrok`, `cloudflared`. Custom providers can be added to `.ddev/share-providers/`. Project config overrides global config.
+
+Set globally with `ddev config global --share-default-provider=cloudflared` or per-project with `ddev config --share-default-provider=cloudflared`. Can also be overridden with the `--provider` flag when running `ddev share`.
+
+## `share_provider_args`
+
+Extra flags for configuring provider when [sharing projects](../topics/sharing.md) with the [`ddev share`](../usage/commands.md#share) command.
+
+| Type | Default | Usage
+| -- | -- | --
+| :octicons-file-directory-16: project | `` | &zwnj;
+
+Example:
+
+* [ngrok](../topics/sharing.md#setting-up-a-stable-ngrok-domain): `--basic-auth username:pass1234 --domain foo.ngrok-free.app`.
+* [cloudflared](../topics/sharing.md#setting-up-a-stable-cloudflared-domain): `--tunnel my-tunnel --hostname mysite.example.com`.
+
+!!!note "Replaces `ngrok_args`"
+    This option replaces the deprecated `ngrok_args`. The old name still works for backward compatibility.
+
 ## `simple_formatting`
 
 Whether to disable most [`ddev list`](../usage/commands.md#list) and [`ddev describe`](../usage/commands.md#describe) table formatting and implicitly set `NO_COLOR=1`.
@@ -574,7 +603,7 @@ The DDEV-specific project type.
 
 | Type | Default | Usage
 | -- | -- | --
-| :octicons-file-directory-16: project | `php` | Can be `backdrop`, `cakephp`, `craftcms`, `drupal`, `drupal6`, `drupal7`, `drupal8`, `drupal9`, `drupal10`, `drupal11`, `generic`, `laravel`, `magento`, `magento2`, `php`, `shopware6`, `silverstripe`, `symfony`, `typo3`, or `wordpress`.
+| :octicons-file-directory-16: project | `php` | Can be `backdrop`, `cakephp`, `codeigniter`, `craftcms`, `drupal`, `drupal6`, `drupal7`, `drupal8`, `drupal9`, `drupal10`, `drupal11`, `generic`, `laravel`, `magento`, `magento2`, `php`, `shopware6`, `silverstripe`, `symfony`, `typo3`, or `wordpress`.
 
 The `php` type doesn’t attempt [CMS configuration](../../users/quickstart.md) or settings file management and can work with any project.
 
@@ -703,6 +732,9 @@ This is the same as `ddev config --webserver-type=apache-fpm`.
 Then run [`ddev restart`](../usage/commands.md#restart) to have the change take effect.
 
 The `generic` type is special: It tells DDEV not to run any web server daemons, and the user can configure their own with the [`web_extra_daemons`](#web_extra_daemons) option.
+
+!!!tip
+    For generic web server configuration examples, see the [quickstart guide](../quickstart.md#generic).
 
 ## `working_dir`
 

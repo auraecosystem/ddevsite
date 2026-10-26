@@ -131,7 +131,10 @@ If your project requires multiple versions of PHP, and one of them is EOL, you c
 
 ## Changing Web Server Type
 
-DDEV supports nginx with php-fpm by default (`nginx-fpm`), and Apache with php-fpm (`apache-fpm`). You can change this with the [`webserver_type`](../configuration/config.md#webserver_type) config option, or using the [`ddev config`](../usage/commands.md#config) command with the `--webserver-type` flag.
+DDEV supports nginx with php-fpm by default (`nginx-fpm`), Apache with php-fpm (`apache-fpm`), and `generic` for [custom web servers](../quickstart.md#generic). You can change this with the [`webserver_type`](../configuration/config.md#webserver_type) config option, or using the [`ddev config`](../usage/commands.md#config) command with the `--webserver-type` flag.
+
+!!!tip "Using FrankenPHP web server"
+    The `webserver_type: generic` setting allows you to use FrankenPHP as your web server. See the [ddev-frankenphp](https://github.com/ddev/ddev-frankenphp) add-on for details.
 
 ## Adding Services to a Project
 
@@ -219,7 +222,7 @@ web_extra_daemons:
 - `web_extra_daemons` is a shortcut for adding a configuration to `supervisord`, which organizes daemons inside the web container. If the default settings are inadequate for your use, you can write a [complete config file for your daemon](#explicit-supervisord-configuration-for-additional-daemons).
 - Your daemon is expected to run in the foreground, not to daemonize itself, `supervisord` will take care of that.
 - To debug and/or get your daemon running to begin with, experiment with running it manually inside `ddev ssh`. Then when it works perfectly implement auto-start with `web_extra_daemons`.
-- You can manually restart all daemons with `ddev exec supervisorctl restart webextradaemons:*` or `ddev exec supervisorctl restart webextradaemons:<yourdaemon>`. (`supervisorctl stop` and `supervisorctl start` are available as you would expect.)
+- You can manually restart all daemons with `ddev exec supervisorctl restart 'webextradaemons:*'` or `ddev exec supervisorctl restart webextradaemons:<yourdaemon>`. (`supervisorctl stop` and `supervisorctl start` are available as you would expect.)
 
 ## Exposing Extra Ports via `ddev-router`
 

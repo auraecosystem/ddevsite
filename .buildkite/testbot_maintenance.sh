@@ -4,7 +4,7 @@ set -eu -o pipefail
 
 os=$(go env GOOS)
 
-rm -rf ~/.ddev/Test* ~/.ddev/global_config.yaml ~/.ddev/project_list.yaml ~/.ddev/homeadditions ~/.ddev/commands ~/.ddev/bin/docker-compose* ~/tmp/ddevtest
+rm -rf ~/.ddev/Test* ~/.ddev/global_config.yaml ~/.ddev/project_list.yaml ~/.ddev/homeadditions ~/.ddev/commands ~/.ddev/bin/docker-compose* ~/.ddev/traefik ~/tmp/ddevtest
 
 # Latest git won't let you do much in a non-safe directory
 git config --global --add safe.directory '*' || true
@@ -15,8 +15,14 @@ if ! command -v ngrok >/dev/null; then
     darwin)
         brew install homebrew/cask/ngrok
         ;;
-    windows)
-        (yes | choco install -y ngrok) || true
+    esac
+fi
+
+# Install cloudflared if it's not there.
+if ! command -v cloudflared >/dev/null; then
+    case $os in
+    darwin)
+        brew install cloudflared
         ;;
     esac
 fi
@@ -55,7 +61,7 @@ echo "--- cleaning up docker and Test directories"
 echo "Warning: deleting all docker containers and deleting ~/.ddev/Test*"
 ddev poweroff || true
 if [ "$(docker ps -aq | wc -l )" -gt 0 ] ; then
-	docker rm -f $(docker ps -aq) >/dev/null 2>&1
+	docker rm -f $(docker ps -aq) >/dev/null 2>&1 || true
 fi
 
 docker system prune --volumes --force

@@ -20,31 +20,31 @@ var AmplitudeAPIKey = ""
 var WebImg = "ddev/ddev-webserver"
 
 // WebTag defines the default web image tag
-var WebTag = "20251208_stasadev_php85" // Note that this can be overridden by make
+var WebTag = "20260120_stasadev_stderr_logs" // Note that this can be overridden by make
 
 // DBImg defines the default db image used for applications.
 var DBImg = "ddev/ddev-dbserver"
 
 // BaseDBTag is the main tag, DBTag is constructed from it
-var BaseDBTag = "20251112_deviantintegral_snapshot_zstd"
+var BaseDBTag = "20251222_stasadev_tzdata_legacy"
 
 // TraefikRouterImage is image for router
 var TraefikRouterImage = "ddev/ddev-traefik-router"
 
 // TraefikRouterTag is traefik router tag
-var TraefikRouterTag = "v1.24.10"
+var TraefikRouterTag = "20251219_rfay_skip_paused_projects"
 
 // SSHAuthImage is image for agent
 var SSHAuthImage = "ddev/ddev-ssh-agent"
 
 // SSHAuthTag is ssh-agent auth tag
-var SSHAuthTag = "20251210_ssh_agent_trixie"
+var SSHAuthTag = "20251222_stasadev_tzdata_legacy"
 
 // XhguiImage is image for xhgui
 var XhguiImage = "ddev/ddev-xhgui"
 
 // XhguiTag is xhgui tag
-var XhguiTag = "v1.24.10"
+var XhguiTag = "20251222_stasadev_tzdata_legacy"
 
 // UtilitiesImage is used in bash scripts
 var UtilitiesImage = "ddev/ddev-utilities:latest"
@@ -61,7 +61,7 @@ const RequiredMutagenVersion = "0.18.1"
 // RequiredDockerComposeVersionDefault defines the required version of docker-compose
 // Keep this in sync with github.com/compose-spec/compose-go/v2 in go.mod,
 // matching the version used in https://github.com/docker/compose/blob/main/go.mod for the same tag
-const RequiredDockerComposeVersionDefault = "v2.40.3"
+const RequiredDockerComposeVersionDefault = "v5.0.2"
 
 // ---
 // Fallback version derivation for developer builds not using the Makefile

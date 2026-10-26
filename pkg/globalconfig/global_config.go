@@ -16,7 +16,7 @@ import (
 	"github.com/ddev/ddev/pkg/nodeps"
 	"github.com/ddev/ddev/pkg/output"
 	"github.com/ddev/ddev/pkg/versionconstants"
-	"go.yaml.in/yaml/v3"
+	"go.yaml.in/yaml/v4"
 )
 
 // DdevGlobalConfigName is the name of the global config file.
@@ -65,6 +65,7 @@ type GlobalConfig struct {
 	RouterMailpitHTTPSPort           string                      `yaml:"mailpit_https_port,omitempty"`
 	RouterXHGuiHTTPPort              string                      `yaml:"xhgui_http_port,omitempty"`
 	RouterXHGuiHTTPSPort             string                      `yaml:"xhgui_https_port,omitempty"`
+	ShareDefaultProvider             string                      `yaml:"share_default_provider,omitempty"`
 	SimpleFormatting                 bool                        `yaml:"simple_formatting"`
 	TableStyle                       string                      `yaml:"table_style"`
 	TraefikMonitorPort               string                      `yaml:"traefik_monitor_port,omitempty"`
@@ -89,6 +90,8 @@ func New() GlobalConfig {
 		RouterHTTPSPort:              nodeps.DdevDefaultRouterHTTPSPort,
 		RouterMailpitHTTPPort:        nodeps.DdevDefaultMailpitHTTPPort,
 		RouterMailpitHTTPSPort:       nodeps.DdevDefaultMailpitHTTPSPort,
+		RouterXHGuiHTTPPort:          nodeps.DdevDefaultXHGuiHTTPPort,
+		RouterXHGuiHTTPSPort:         nodeps.DdevDefaultXHGuiHTTPSPort,
 		LastStartedVersion:           "v0.0",
 		NoBindMounts:                 nodeps.NoBindMountsDefault,
 		Router:                       types.RouterTypeTraefik,
@@ -338,8 +341,9 @@ func WriteGlobalConfig(config GlobalConfig) error {
 		cfgCopy.PerformanceMode = cfgCopy.GetPerformanceMode()
 	}
 
+	// Overwrite XHProfMode with effective value if empty.
 	if cfgCopy.XHProfMode == configTypes.XHProfModeEmpty {
-		cfgCopy.XHProfMode = nodeps.XHProfModeDefault
+		cfgCopy.XHProfMode = cfgCopy.GetXHProfMode()
 	}
 
 	// Clear remote config URLs if they match defaults so they don't appear in config file
@@ -852,6 +856,10 @@ func GetGlobalProjectList() map[string]*ProjectInfo {
 
 // GetCAROOT is a wrapper on global config
 func GetCAROOT() string {
+	_, err := exec.LookPath("mkcert")
+	if err != nil {
+		return ""
+	}
 	return DdevGlobalConfig.MkcertCARoot
 }
 

@@ -16,7 +16,7 @@ teardown() {
   run mkdir ${PROJNAME} && cd ${PROJNAME}
   assert_success
   # Download the latest version of Joomla
-  run curl -o joomla.zip -L $(curl -sL https://api.github.com/repos/joomla/joomla-cms/releases/latest | docker run -i --rm ddev/ddev-utilities jq -r '.assets | map(select(.name | test("^Joomla.*Stable-Full_Package\\.zip$")))[0].browser_download_url')
+  run _github_release_download "joomla/joomla-cms" "^Joomla.*Stable-Full_Package\\.zip$" "joomla.zip"
   assert_success
   # unzip joomla.zip && rm -f joomla.zip
   run unzip joomla.zip && rm -f joomla.zip
@@ -35,14 +35,14 @@ teardown() {
   assert_output "FULLURL https://${PROJNAME}.ddev.site/administrator/"
   assert_success
   # validate running project
-  run curl -sf https://${PROJNAME}.ddev.site
-  assert_success
+  run curl -sfv https://${PROJNAME}.ddev.site
   assert_output --partial "<meta name=\"generator\" content=\"Joomla! - Open Source Content Management\">"
   assert_output --partial "alt=\"My Joomla Site\""
-  run curl -sfI https://${PROJNAME}.ddev.site/administrator/
   assert_success
+  run curl -sfIv https://${PROJNAME}.ddev.site/administrator/
   assert_output --partial "HTTP/2 200"
-  run curl -sf https://${PROJNAME}.ddev.site/administrator/
+  run curl -sfv https://${PROJNAME}.ddev.site/administrator/
   assert_success
   assert_output --partial "<meta name=\"generator\" content=\"Joomla! - Open Source Content Management\">"
+  assert_success
 }

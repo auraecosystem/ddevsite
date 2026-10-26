@@ -125,6 +125,8 @@ type DdevApp struct {
 	UseDNSWhenPossible        bool                  `yaml:"use_dns_when_possible"`
 	MkcertEnabled             bool                  `yaml:"-"`
 	NgrokArgs                 string                `yaml:"ngrok_args,omitempty"`
+	ShareDefaultProvider      string                `yaml:"share_default_provider,omitempty"`
+	ShareProviderArgs         string                `yaml:"share_provider_args,omitempty"`
 	Timezone                  string                `yaml:"timezone,omitempty"`
 	ComposerRoot              string                `yaml:"composer_root,omitempty"`
 	ComposerVersion           string                `yaml:"composer_version"`
@@ -143,6 +145,7 @@ type DdevApp struct {
 	HostXHGuiPort             string                `yaml:"host_xhgui_port,omitempty"`
 	XHProfMode                types.XHProfMode      `yaml:"xhprof_mode,omitempty"`
 	ComposeYaml               *composeTypes.Project `yaml:"-"`
+	NoCache                   bool                  `yaml:"-"`
 }
 
 // SkipHooks Global variable that's set from --skip-hooks global flag.
@@ -310,6 +313,9 @@ func (app *DdevApp) Describe(short bool) (map[string]interface{}, error) {
 	}
 	services := appDesc["services"].(map[string]map[string]interface{})
 	for _, k := range containers {
+		if len(k.Names) == 0 {
+			continue
+		}
 		serviceName := strings.TrimPrefix(k.Names[0], "/")
 		shortName := strings.Replace(serviceName, fmt.Sprintf("ddev-%s-", app.Name), "", 1)
 
@@ -1274,9 +1280,16 @@ func (app *DdevApp) ImportFiles(uploadDir, importPath, extractPath string) error
 	if err := app.dispatchImportFilesAction(uploadDir, importPath, extractPath); err != nil {
 		return err
 	}
+	// Some projects (backdrop or some drupal) need config that gets loaded from files dir.
+	// These require mutagen sync before it will be available in container.
+	// This is especially true with no-bind-mounts
+	err := app.MutagenSyncFlush()
+	if err != nil {
+		return err
+	}
 
 	//nolint: revive
-	if err := app.ProcessHooks("post-import-files"); err != nil {
+	if err = app.ProcessHooks("post-import-files"); err != nil {
 		return err
 	}
 
@@ -1417,6 +1430,12 @@ func (app *DdevApp) Start() error {
 		return fmt.Errorf("mutagen is not compatible with use-hardened-images")
 	}
 
+	if dockerutil.IsDockerRootless() && !globalconfig.DdevGlobalConfig.NoBindMounts {
+		// See https://github.com/moby/moby/issues/45919
+		// See https://github.com/moby/moby/issues/2259
+		return fmt.Errorf("bind mounts can't be used with Docker Rootless.\nRun `ddev config global --no-bind-mounts` and try again")
+	}
+
 	if err := globalconfig.CheckForMultipleGlobalDdevDirs(); err != nil {
 		util.WarningOnce("Warning: %v", err)
 	}
@@ -1474,9 +1493,15 @@ Fix with 'ddev config global --required-docker-compose-version="" --use-docker-c
 
 	warnMissingDocroot(app)
 
-	var additionalImages []string
-	if !nodeps.ArrayContainsString(app.GetOmittedContainers(), "db") {
-		additionalImages = append(additionalImages, app.GetDBImage())
+	// WriteConfig .ddev-docker-compose-*.yaml
+	err = app.WriteDockerComposeYAML()
+	if err != nil {
+		return err
+	}
+	// This needs to be done after WriteDockerComposeYAML() to get the right images
+	additionalImages, err := app.FindAllImages()
+	if err != nil {
+		return err
 	}
 
 	err = PullBaseContainerImages(additionalImages, false)
@@ -1531,20 +1556,35 @@ Fix with 'ddev config global --required-docker-compose-version="" --use-docker-c
 		if !dockerutil.VolumeExists(GetMutagenVolumeName(app)) {
 			signature, _ := GetDefaultMutagenVolumeSignature(app)
 			util.Debug("Creating new docker volume '%s' with signature '%v'", GetMutagenVolumeName(app), signature)
-			_, err = dockerutil.CreateVolume(GetMutagenVolumeName(app), "local", nil, map[string]string{mutagenSignatureLabelName: signature})
+			_, err = dockerutil.CreateVolume(GetMutagenVolumeName(app), "local", nil, map[string]string{
+				mutagenSignatureLabelName:    signature,
+				"com.docker.compose.project": app.GetComposeProjectName(),
+			})
 			if err != nil {
 				return fmt.Errorf("unable to create new Mutagen Docker volume %s: %v", GetMutagenVolumeName(app), err)
 			}
 		}
 	}
 
-	volumesNeeded := []string{"ddev-global-cache", "ddev-" + app.Name + "-snapshots"}
+	volumesNeeded := []string{"ddev-global-cache"}
 	if globalconfig.DdevGlobalConfig.NoBindMounts {
 		volumesNeeded = append(volumesNeeded, app.Name+"-ddev-config")
 	}
+	if !slices.Contains(app.GetOmittedContainers(), "db") {
+		volumesNeeded = append(volumesNeeded, "ddev-"+app.Name+"-snapshots")
+		if app.Database.Type == nodeps.Postgres {
+			volumesNeeded = append(volumesNeeded, app.GetPostgresVolumeName())
+		} else {
+			volumesNeeded = append(volumesNeeded, app.GetMariaDBVolumeName())
+		}
+	}
 	for _, v := range volumesNeeded {
 		util.Debug("creating docker volume %s", v)
-		_, err = dockerutil.CreateVolume(v, "local", nil, nil)
+		labels := map[string]string{}
+		if strings.HasPrefix(v, app.Name) || strings.HasPrefix(v, "ddev-"+app.Name) {
+			labels["com.docker.compose.project"] = app.GetComposeProjectName()
+		}
+		_, err = dockerutil.CreateVolume(v, "local", nil, labels)
 		if err != nil {
 			return fmt.Errorf("unable to create Docker volume %s: %v", v, err)
 		}
@@ -1682,12 +1722,6 @@ Fix with 'ddev config global --required-docker-compose-version="" --use-docker-c
 		return err
 	}
 
-	// This needs to be done after WriteDockerComposeYAML() to get the right images
-	err = app.PullContainerImages(false)
-	if err != nil {
-		util.Warning("Unable to pull Docker images: %v", err)
-	}
-
 	err = app.AddHostsEntriesIfNeeded()
 	if err != nil {
 		return err
@@ -1722,10 +1756,14 @@ Fix with 'ddev config global --required-docker-compose-version="" --use-docker-c
 	}
 	buildDurationStart := util.ElapsedDuration(time.Now())
 	progress := "plain"
-	util.Debug("Executing docker-compose -f %s build --progress=%s", app.DockerComposeFullRenderedYAMLPath(), progress)
+	action := []string{"--progress=" + progress, "build"}
+	if app.NoCache {
+		action = append(action, "--no-cache")
+	}
+	util.Debug("Executing docker-compose -f %s %s", app.DockerComposeFullRenderedYAMLPath(), strings.Join(action, " "))
 	out, stderr, err := dockerutil.ComposeCmd(&dockerutil.ComposeCmdOpts{
 		ComposeFiles: []string{app.DockerComposeFullRenderedYAMLPath()},
-		Action:       []string{"--progress=" + progress, "build"},
+		Action:       action,
 		Progress:     true,
 		Timeout:      time.Hour * 1,
 	})
@@ -1739,7 +1777,7 @@ Fix with 'ddev config global --required-docker-compose-version="" --use-docker-c
 	_, logStderrOutput, err := dockerutil.RunSimpleContainer(ddevImages.GetWebImage()+"-"+app.Name+"-built", "log-stderr-"+app.Name+"-"+util.RandString(6), []string{"sh", "-c", "log-stderr.sh --show 2>/dev/null || true"}, []string{}, []string{}, nil, uid, true, false, map[string]string{"com.ddev.site-name": ""}, nil, nil)
 	// If the web image is dirty, try to rebuild it immediately
 	if err == nil && strings.TrimSpace(logStderrOutput) != "" && globalconfig.IsInternetActive() {
-		util.Debug("Executing docker-compose -f %s build web --progress=%s --no-cache", app.DockerComposeFullRenderedYAMLPath(), progress)
+		util.Debug("Executing docker-compose -f %s --progress=%s build web --no-cache", app.DockerComposeFullRenderedYAMLPath(), progress)
 		out, stderr, err = dockerutil.ComposeCmd(&dockerutil.ComposeCmdOpts{
 			ComposeFiles: []string{app.DockerComposeFullRenderedYAMLPath()},
 			Action:       []string{"--progress=" + progress, "build", "web", "--no-cache"},
@@ -1797,24 +1835,11 @@ Fix with 'ddev config global --required-docker-compose-version="" --use-docker-c
 			}
 		}
 
-		// If TLS supported and using Traefik, create cert/key and push into ddev-global-cache/traefik
+		// If TLS supported and using Traefik, create cert/key in project's .ddev/traefik
+		// The actual push to ddev-global-cache happens in PushGlobalTraefikConfig
 		err = configureTraefikForApp(app)
 		if err != nil {
 			return err
-		}
-
-		// Push custom certs
-		targetSubdir := path.Join("traefik", "certs")
-
-		certPath := app.GetConfigPath("custom_certs")
-		uid, _, _ := dockerutil.GetContainerUser()
-		if fileutil.FileExists(certPath) && globalconfig.DdevGlobalConfig.MkcertCARoot != "" {
-			err = dockerutil.CopyIntoVolume(certPath, "ddev-global-cache", targetSubdir, uid, "", false)
-			if err != nil {
-				util.Warning("Failed to copy custom certs into Docker volume ddev-global-cache/custom_certs: %v", err)
-			} else {
-				util.Debug("Installed custom cert from %s", certPath)
-			}
 		}
 	}
 
@@ -1858,9 +1883,9 @@ Fix with 'ddev config global --required-docker-compose-version="" --use-docker-c
 
 		dur := util.FormatDuration(mutagenDuration())
 		if mStatus == "ok" {
-			util.Success("Mutagen sync flush completed in %s.\nFor details on sync status 'ddev mutagen st %s -l'", dur, MutagenSyncName(app.Name))
+			util.Success("Mutagen sync flush completed in %s.\nFor details on sync status 'ddev mutagen st %s -l'", dur, app.Name)
 		} else {
-			util.Error("Mutagen sync completed with problems in %s.\nFor details on sync status 'ddev mutagen st %s -l'", dur, MutagenSyncName(app.Name))
+			util.Error("Mutagen sync completed with problems in %s.\nRun 'ddev utility mutagen-diagnose' for detailed diagnostics and fixes", dur)
 		}
 		err = fileutil.TemplateStringToFile(`#ddev-generated`, nil, app.GetConfigPath("mutagen/.start-synced"))
 		if err != nil {
@@ -1912,8 +1937,9 @@ Fix with 'ddev config global --required-docker-compose-version="" --use-docker-c
 	if !nodeps.ArrayContainsString(app.GetOmittedContainers(), "db") {
 		dependers = append(dependers, "db")
 	}
-	output.UserOut.Printf("Waiting for containers to become ready: %v", dependers)
+	wait := output.StartWait(fmt.Sprintf("Waiting for containers to become ready: %v", dependers))
 	waitErr := app.Wait(dependers)
+	wait.Complete(waitErr)
 
 	if !slices.Contains(app.OmitContainers, "db") && app.Database.Type == nodeps.MySQL && (app.Database.Version == nodeps.MySQL80 || app.Database.Version == nodeps.MySQL84) && slices.Contains([]string{nodeps.PHP73, nodeps.PHP72, nodeps.PHP71, nodeps.PHP70, nodeps.PHP56}, app.PHPVersion) {
 		alterString := `ALTER USER 'db'@'%' IDENTIFIED WITH mysql_native_password BY 'db';
@@ -1980,7 +2006,6 @@ Fix with 'ddev config global --required-docker-compose-version="" --use-docker-c
 	}
 
 	if !IsRouterDisabled(app) {
-		output.UserOut.Printf("Starting %s if necessary...", nodeps.RouterContainer)
 		err = StartDdevRouter()
 		if err != nil {
 			return err
@@ -1997,11 +2022,17 @@ Fix with 'ddev config global --required-docker-compose-version="" --use-docker-c
 	}
 	containerNames := dockerutil.GetContainerNames(containersAwaited, []string{GetContainerName(app, "web"), GetContainerName(app, "db")}, "ddev-"+app.Name+"-")
 	if len(containerNames) > 0 {
-		output.UserOut.Printf("Waiting %ds for additional project containers %v to become ready...", app.GetMaxContainerWaitTime(), containerNames)
-	}
-	err = app.WaitByLabels(waitLabels)
-	if err != nil {
-		return err
+		wait := output.StartWait(fmt.Sprintf("Waiting for additional project containers %v to become ready", containerNames))
+		err = app.WaitByLabels(waitLabels)
+		wait.Complete(err)
+		if err != nil {
+			return err
+		}
+	} else {
+		err = app.WaitByLabels(waitLabels)
+		if err != nil {
+			return err
+		}
 	}
 
 	if _, err = app.CreateSettingsFile(); err != nil {
@@ -2094,8 +2125,9 @@ func (app *DdevApp) StartOptionalProfiles(profiles []string) error {
 	}
 
 	// Using `profiles` here assumes that profile and container name are the same
-	output.UserOut.Printf("Waiting for containers to become ready: %v", profiles)
+	wait := output.StartWait(fmt.Sprintf("Waiting for containers to become ready: %v", profiles))
 	err = app.Wait(profiles)
+	wait.Complete(err)
 	if err != nil {
 		return err
 	}
@@ -2112,15 +2144,6 @@ func (app *DdevApp) Restart() error {
 	}
 	err = app.Start()
 	return err
-}
-
-// PullContainerImages configured Docker images with full output, since docker-compose up doesn't have nice output
-func (app *DdevApp) PullContainerImages(pullAlways bool) error {
-	images, err := app.FindAllImages()
-	if err != nil {
-		return err
-	}
-	return dockerutil.PullImages(images, pullAlways)
 }
 
 // PullBaseContainerImages pulls only the fundamentally needed images so they can be available early.
@@ -2687,16 +2710,16 @@ func (app *DdevApp) DockerEnv() map[string]string {
 		util.WarningOnce("Warning: containers will run as root. This could be a security risk on Linux.")
 	}
 
-	// For Codespaces
+	// For Codespaces/Devcontainer
 	// * provide default host-side port bindings, assuming only one project running,
 	//   but if more than one project, can override with normal config.yaml settings.
 	// Codespaces stumbles if not on a "standard" port like port 80
-	if nodeps.IsCodespaces() {
+	if nodeps.IsDevcontainer() {
 		if app.HostWebserverPort == "" {
 			app.HostWebserverPort = "80"
 		}
 	}
-	if nodeps.IsCodespaces() {
+	if nodeps.IsDevcontainer() {
 		if app.HostWebserverPort == "" {
 			app.HostWebserverPort = "8080"
 		}
@@ -2823,6 +2846,7 @@ func (app *DdevApp) DockerEnv() map[string]string {
 		"DDEV_GOARCH":                    runtime.GOARCH,
 		"IS_DDEV_PROJECT":                "true",
 		"IS_CODESPACES":                  strconv.FormatBool(nodeps.IsCodespaces()),
+		"IS_DEVCONTAINER":                strconv.FormatBool(nodeps.IsDevcontainer()),
 		"IS_WSL2":                        isWSL2,
 	}
 
@@ -2878,12 +2902,38 @@ func (app *DdevApp) Pause() error {
 	}); err != nil {
 		return err
 	}
+
+	// Wait for containers to fully transition to exited state
+	// This prevents race conditions where SiteStatus() might return "unhealthy"
+	// instead of "paused" when checked immediately after Pause() returns
+	// Poll for up to 5 seconds with 100ms intervals
+	maxAttempts := 50
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		containers, err := dockerutil.GetAppContainers(app.Name)
+		if err != nil {
+			// If we can't get containers, assume they're stopped
+			break
+		}
+
+		allExited := true
+		for _, c := range containers {
+			if c.State != container.StateExited {
+				allExited = false
+				break
+			}
+		}
+		if allExited {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
 	err = app.ProcessHooks("post-pause")
 	if err != nil {
 		return err
 	}
 
-	return StopRouterIfNoContainers()
+	return nil
 }
 
 // WaitForServices waits for all the services in docker-compose to come up
@@ -2896,7 +2946,7 @@ func (app *DdevApp) WaitForServices() error {
 	} else {
 		util.Failed("unable to get required startup services to wait for")
 	}
-	output.UserOut.Printf("Waiting for these services to become ready: %v", requiredContainers)
+	wait := output.StartWait(fmt.Sprintf("Waiting for these services to become ready: %v", requiredContainers))
 
 	labels := map[string]string{
 		"com.ddev.site-name":        app.GetName(),
@@ -2904,8 +2954,9 @@ func (app *DdevApp) WaitForServices() error {
 	}
 	waitTime := app.GetMaxContainerWaitTime()
 	_, err := dockerutil.ContainerWait(waitTime, labels)
+	elapsed := wait.Complete(err)
 	if err != nil {
-		return fmt.Errorf("timed out waiting for containers (%v) to start: err=%v", requiredContainers, err)
+		return fmt.Errorf("timed out waiting for containers (%v) to start after %.1fs: err=%v", requiredContainers, elapsed.Seconds(), err)
 	}
 	return nil
 }
@@ -3077,7 +3128,7 @@ func (app *DdevApp) Snapshot(snapshotName string) (string, error) {
 func getBackupCommand(app *DdevApp, targetFile string) string {
 	compressionCommand := app.GetDBCompressionCommand()
 
-	c := fmt.Sprintf(`mariabackup --backup --stream=mbstream --user=root --password=root --socket=/var/tmp/mysql.sock 2>/tmp/snapshot_%s.log | %s > "%s"`, path.Base(targetFile), compressionCommand, targetFile)
+	c := fmt.Sprintf(`mariabackup --backup --stream=mbstream --user=root --password=root --socket=/var/tmp/mysql.sock 2>/tmp/snapshot_%[1]s.log | %[2]s > "%[3]s"`, path.Base(targetFile), compressionCommand, targetFile)
 
 	oldMariaVersions := []string{"5.5", "10.0"}
 
@@ -3086,7 +3137,7 @@ func getBackupCommand(app *DdevApp, targetFile string) string {
 	case app.Database.Type == nodeps.MariaDB && nodeps.ArrayContainsString(oldMariaVersions, app.Database.Version):
 		fallthrough
 	case app.Database.Type == nodeps.MySQL:
-		c = fmt.Sprintf(`xtrabackup --backup --stream=xbstream --user=root --password=root --socket=/var/tmp/mysql.sock 2>/tmp/snapshot_%s.log | %s > "%s"`, path.Base(targetFile), compressionCommand, targetFile)
+		c = fmt.Sprintf(`xtrabackup --backup --stream=xbstream --user=root --password=root --socket=/var/tmp/mysql.sock 2>/tmp/snapshot_%[1]s.log | %[2]s > "%[3]s"`, path.Base(targetFile), compressionCommand, targetFile)
 	case app.Database.Type == nodeps.Postgres:
 		postgresDataPath := app.GetPostgresDataPath()
 		postgresDataDir := app.GetPostgresDataDir()
@@ -3097,7 +3148,7 @@ func getBackupCommand(app *DdevApp, targetFile string) string {
 			// Create the full directory structure (e.g., 18/docker/) that matches the container layout
 			versionDir := filepath.Base(filepath.Dir(postgresDataPath)) // Extract "18" from "/var/lib/postgresql/18/docker"
 			// Use zstd compression via tar -I to ensure availability regardless of tar's built-in --zstd support
-			c = fmt.Sprintf("cd %s && rm -rf /var/tmp/pgbackup && pg_basebackup -c fast -D /var/tmp/pgbackup 2>/tmp/snapshot_%s.log && mkdir -p /var/tmp/pgstructure/%s/docker && cp -a /var/tmp/pgbackup/* /var/tmp/pgstructure/%s/docker/ && tar -I '%s' -cf %s -C /var/tmp/pgstructure/ .", postgresDataPath, path.Base(targetFile), versionDir, versionDir, compressionCommand, targetFile)
+			c = fmt.Sprintf("cd %[1]s && rm -rf /var/tmp/pgbackup && pg_basebackup -c fast -D /var/tmp/pgbackup 2>/tmp/snapshot_%[2]s.log && mkdir -p /var/tmp/pgstructure/%[3]s/docker && cp -a /var/tmp/pgbackup/* /var/tmp/pgstructure/%[3]s/docker/ && tar -I '%[4]s' -cf %[5]s -C /var/tmp/pgstructure/ .", postgresDataPath, path.Base(targetFile), versionDir, compressionCommand, targetFile)
 		} else {
 			// PostgreSQL 9 needs "-X fetch" to ensure WAL files are included in backup
 			walMethod := ""
@@ -3105,9 +3156,13 @@ func getBackupCommand(app *DdevApp, targetFile string) string {
 				walMethod = "-X fetch"
 			}
 			// PostgreSQL ≤17: original behavior
-			c = fmt.Sprintf("cd %s && rm -rf /var/tmp/pgbackup && pg_basebackup %s -c fast -D /var/tmp/pgbackup 2>/tmp/snapshot_%s.log && tar -I '%s' -cf %s -C /var/tmp/pgbackup/ .", postgresDataPath, walMethod, path.Base(targetFile), compressionCommand, targetFile)
+			c = fmt.Sprintf("cd %[1]s && rm -rf /var/tmp/pgbackup && pg_basebackup %[2]s -c fast -D /var/tmp/pgbackup 2>/tmp/snapshot_%[3]s.log && tar -I '%[4]s' -cf %[5]s -C /var/tmp/pgbackup/ .", postgresDataPath, walMethod, path.Base(targetFile), compressionCommand, targetFile)
 		}
 	}
+
+	// Remove any existing file or directory at the target path to avoid "Is a directory" errors
+	cleanupCmd := fmt.Sprintf(`rm -rf "%s"`, targetFile)
+	c = fmt.Sprintf("%s && %s", cleanupCmd, c)
 	return c
 }
 

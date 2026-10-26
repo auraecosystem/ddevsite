@@ -27,6 +27,15 @@ var (
 	hostDockerInternalOnce sync.Once
 )
 
+// ResetHostDockerInternal clears the cached HostDockerInternal and resets the
+// sync.Once so GetHostDockerInternal() will recompute on its next call.
+// Call this after mutating global configuration (for example in tests or when
+// reloading ~/.ddev/global_config.yaml).
+func ResetHostDockerInternal() {
+	hostDockerInternal = nil
+	hostDockerInternalOnce = sync.Once{}
+}
+
 // GetHostDockerInternal determines the correct host.docker.internal configuration for containers.
 // Returns HostDockerInternal containing IP, extra_hosts value, and debug message.
 //
@@ -60,6 +69,9 @@ func GetHostDockerInternal() *HostDockerInternal {
 
 		case nodeps.IsCodespaces():
 			message = "IsCodespaces uses 'host-gateway' in extra_hosts"
+
+		case nodeps.IsDevcontainer():
+			message = "IsDevcontainer uses 'host-gateway' in extra_hosts"
 
 		case nodeps.IsWSL2() && IsDockerDesktop():
 			// If IDE is on Windows, return; we don't have to do anything.

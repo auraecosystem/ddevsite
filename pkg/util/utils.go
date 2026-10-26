@@ -239,16 +239,28 @@ func FindBashPath() string {
 	if !nodeps.IsWindows() {
 		return "bash"
 	}
-	windowsBashPath, err := osexec.LookPath(`C:\Program Files\Git\bin\bash.exe`)
-	if err != nil {
-		// This one could come back with the WSL Bash, in which case we may have some trouble.
-		windowsBashPath, err = osexec.LookPath("bash.exe")
-		if err != nil {
-			Warning("Not loading custom commands; Bash is not in PATH")
-			return ""
+
+	// Check for user-local Git Bash installation first (installed for current user only)
+	// This takes precedence over system-wide installations
+	if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
+		userLocalBashPath := filepath.Join(localAppData, `Programs\Git\bin\bash.exe`)
+		if _, err := os.Stat(userLocalBashPath); err == nil {
+			return userLocalBashPath
 		}
 	}
-	return windowsBashPath
+
+	// Check for system-wide Git Bash installation using PROGRAMFILES environment variable
+	// This works even if Program Files is on a different drive
+	if programFiles := os.Getenv("PROGRAMFILES"); programFiles != "" {
+		systemWideBashPath := filepath.Join(programFiles, `Git\bin\bash.exe`)
+		if _, err := os.Stat(systemWideBashPath); err == nil {
+			return systemWideBashPath
+		}
+	}
+
+	// Not found - don't search PATH as it may return WSL bash which won't work
+	WarningOnce("Git Bash is not installed in standard locations, so some features like custom commands may not work correctly")
+	return ""
 }
 
 // ElapsedTime is an easy way to report how long something took.
@@ -508,4 +520,52 @@ func GetHomeDir() string {
 		}
 	}
 	return home
+}
+
+// CurlDiagnosticSuffix is the marker used by ExtractCurlBody to separate
+// the response body from diagnostic information appended by curl's -w option.
+const CurlDiagnosticSuffix = "\n_CURL_HTTP_CODE_:"
+
+// ExtractCurlBody extracts the response body from curl output that includes
+// diagnostic information appended via the -w (write-out) option.
+//
+// This is useful when you need to:
+// 1. Parse JSON responses from curl while also capturing HTTP status codes for debugging
+// 2. See the HTTP status code in test failure messages without breaking JSON parsing
+//
+// Usage:
+//
+//	// Run curl with -w to append HTTP code after body (on a new line)
+//	out, err := exec.RunCommand("ddev", []string{"exec", "curl", "-sf",
+//	    "-w", "\n_CURL_HTTP_CODE_:%{http_code}",
+//	    "http://example.com/api/endpoint"})
+//	// Full output is preserved for error messages: "{"key":"value"}\n_CURL_HTTP_CODE_:200"
+//	require.NoError(t, err, "curl failed, output=%s", out)
+//	// Extract just the JSON body for parsing
+//	body := util.ExtractCurlBody(out)
+//	var result map[string]interface{}
+//	json.Unmarshal([]byte(body), &result)
+func ExtractCurlBody(curlOutput string) string {
+	if idx := strings.Index(curlOutput, CurlDiagnosticSuffix); idx != -1 {
+		return curlOutput[:idx]
+	}
+	return curlOutput
+}
+
+// FormatBytes converts bytes to a human-readable string
+// Returns format like: "2.3GB", "156.7MB", "1.5KB", "0B"
+func FormatBytes(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%dB", bytes)
+	}
+
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+
+	units := []string{"KB", "MB", "GB", "TB", "PB"}
+	return fmt.Sprintf("%.1f%s", float64(bytes)/float64(div), units[exp])
 }

@@ -284,10 +284,11 @@ Once you’ve [installed a Docker provider](docker-installation.md), you’re re
                 "version": "latest"
             },
             "ghcr.io/ddev/ddev/install-ddev:latest": {}
-        },
-        "postCreateCommand": "echo 'it should all be set up'"
+        }
     }
     ```
+
+    The `install-ddev` feature automatically configures the environment and sets up DDEV for use in Codespaces.
 
     Launch your repository in Codespaces:
 
@@ -391,6 +392,8 @@ Once you’ve [installed a Docker provider](docker-installation.md), you’re re
         "postCreateCommand": "bash .devcontainer/setup_project.sh"
     }
     ```
+
+    The `install-ddev` feature provides its own `postCreateCommand` to verify DDEV installation. User-provided commands run after the feature's commands.
 
     ```bash
     #!/usr/bin/env bash

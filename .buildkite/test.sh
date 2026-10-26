@@ -31,9 +31,8 @@ if [ "${os:-}" = "darwin" ]; then
     command -v orb 2>/dev/null && echo "Stopping orbstack" && (nohup orb stop &)
     sleep 3 # Since we backgrounded orb stop, make sure it completes
     if [ -f /Applications/Docker.app ]; then echo "Stopping Docker Desktop" && (killall com.docker.backend || true); fi
-    command -v colima 2>/dev/null && echo "Stopping colima" && (colima stop || true)
-    command -v colima 2>/dev/null && echo "Stopping colima_vz" && (colima stop vz || true)
-    command -v limactl 2>/dev/null && echo "Stopping lima" && (limactl stop lima-vz || true)
+    command -v colima 2>/dev/null && echo "Stopping colima_vz" && (colima stop -f vz || true)
+    command -v limactl 2>/dev/null && echo "Stopping lima" && (limactl stop -f lima-vz || true)
     if [ -f ~/.rd/bin/rdctl ]; then echo "Stopping Rancher Desktop" && (~/.rd/bin/rdctl shutdown || true); fi
     docker context use default
     # Leave orbstack running as the most likely to be reliable, otherwise Docker Desktop
@@ -61,21 +60,103 @@ if [ "${os:-}" = "darwin" ]; then
 
   # Now start the docker provider we want
   case ${DOCKER_TYPE:=none} in
-    "colima")
-      colima start
-      # Colima seems to end up working better with less failures if we restart after starting
-      colima restart
-      docker context use colima
-      ;;
     "colima_vz")
-      colima start vz
-      colima restart vz
-      docker context use colima-vz
+      export COLIMA_INSTANCE=vz
+      colima start ${COLIMA_INSTANCE}
+
+      cleanup_needed=false
+
+      # Try to delete any containers first. Ignore rm errors, but if anything remains, enter the cleanup path.
+      if ! colima ssh -p "${COLIMA_INSTANCE}" -- bash -lc '
+        ids=$(docker ps -aq || true)
+        if [ -n "$ids" ]; then
+          docker rm -f $ids >/dev/null 2>&1 || true
+        fi
+
+        remaining=$(docker ps -aq || true)
+        if [ -z "$remaining" ]; then
+          echo "No containers remain; skipping docker-state cleanup"
+          exit 0
+        fi
+
+        echo "CLEANUP REQUIRED: Containers still remain after docker rm -f" >&2
+        docker ps -a >&2 || true
+        exit 1
+      '; then
+        cleanup_needed=true
+      fi
+
+      # If removing container state has any problems, show them (do not suppress errors).
+      if [ "$cleanup_needed" = true ]; then
+        echo "Performing deep cleanup: removing container state and restarting colima"
+        colima ssh -p "${COLIMA_INSTANCE}" -- sudo bash -lc 'rm -rf /var/lib/docker/containers/*'
+        colima restart ${COLIMA_INSTANCE}
+
+        # Verify cleanup was successful
+        remaining_after_cleanup=$(colima ssh -p "${COLIMA_INSTANCE}" -- bash -lc 'docker ps -aq' || true)
+        if [ -n "$remaining_after_cleanup" ]; then
+          echo "ERROR: Cleanup failed, containers still remain after deep cleanup:" >&2
+          colima ssh -p "${COLIMA_INSTANCE}" -- bash -lc 'docker ps -a' >&2 || true
+          exit 1
+        fi
+        echo "Deep cleanup succeeded: all containers removed"
+      fi
+      docker context use colima-${COLIMA_INSTANCE}
+
       ;;
 
     "lima")
-      limactl start lima-vz
-      docker context use lima-lima-vz
+      export LIMA_INSTANCE=lima-vz
+      export HOMEDIR=/home/testbot.linux
+      limactl start ${LIMA_INSTANCE}
+
+      cleanup_needed=false
+
+      # Try to delete any containers first. Ignore rm errors, but if anything remains, enter the cleanup path.
+      if ! limactl shell ${LIMA_INSTANCE} bash -lc '
+        ids=$(docker ps -aq || true)
+        if [ -n "$ids" ]; then
+          docker rm -f $ids >/dev/null 2>&1 || true
+        fi
+
+        remaining=$(docker ps -aq || true)
+        if [ -z "$remaining" ]; then
+          echo "No containers remain; skipping docker-state cleanup"
+          exit 0
+        fi
+
+        echo "CLEANUP REQUIRED: Containers still remain after docker rm -f" >&2
+        docker ps -a >&2 || true
+        exit 1
+      '; then
+        cleanup_needed=true
+      fi
+
+      # If removing container state has any problems, show them (do not suppress errors).
+      if [ "$cleanup_needed" = true ]; then
+        echo "Performing deep cleanup: removing container state and restarting docker"
+        limactl shell lima-vz bash -lc "rm -rf ${HOMEDIR}/.local/share/docker/containers/*"
+        limactl shell ${LIMA_INSTANCE} systemctl --user restart docker
+
+        # Wait for docker to come back up inside lima
+        for i in {1..30}; do
+          if limactl shell ${LIMA_INSTANCE} bash -lc 'docker ps >/dev/null 2>&1'; then
+            break
+          fi
+          echo "Waiting for docker to restart in lima: $i"
+          sleep 1
+        done
+
+        # Verify cleanup was successful
+        remaining_after_cleanup=$(limactl shell ${LIMA_INSTANCE} bash -lc 'docker ps -aq' || true)
+        if [ -n "$remaining_after_cleanup" ]; then
+          echo "ERROR: Cleanup failed, containers still remain after deep cleanup:" >&2
+          limactl shell ${LIMA_INSTANCE} bash -lc 'docker ps -a' >&2 || true
+          exit 1
+        fi
+        echo "Deep cleanup succeeded: all containers removed"
+      fi
+      docker context use lima-${LIMA_INSTANCE}
       ;;
 
     "docker-desktop")
@@ -107,6 +188,51 @@ if [ "${os:-}" = "darwin" ]; then
   esac
 fi
 
+# Handle docker-ce cleanup for WSL and other native Docker CE instances
+if [ "${DOCKER_TYPE:-}" = "docker-ce" ] || [ "${DOCKER_TYPE:-}" = "wsl2dockerinside" ]; then
+  cleanup_needed=false
+
+  # Try to delete any containers first. Ignore rm errors, but if anything remains, enter the cleanup path.
+  ids=$(docker ps -aq || true)
+  if [ -n "$ids" ]; then
+    docker rm -f "$ids" >/dev/null 2>&1 || true
+  fi
+
+  remaining=$(docker ps -aq || true)
+  if [ -n "$remaining" ]; then
+    echo "CLEANUP REQUIRED: Containers still remain after docker rm -f" >&2
+    docker ps -a >&2 || true
+    cleanup_needed=true
+  else
+    echo "No containers remain; skipping docker-state cleanup"
+  fi
+
+  # If removing container state has any problems, show them (do not suppress errors).
+  if [ "$cleanup_needed" = true ]; then
+    echo "Performing deep cleanup: removing container state and restarting docker"
+    sudo bash -c "rm -rf /var/lib/docker/containers/*"
+    sudo systemctl restart docker
+    
+    # Wait for docker to come back up
+    for i in {1..30}; do
+      if docker ps >/dev/null 2>&1 ; then
+        break
+      fi
+      echo "Waiting for docker to restart: $i"
+      sleep 1
+    done
+    
+    # Verify cleanup was successful
+    remaining_after_cleanup=$(docker ps -aq || true)
+    if [ -n "$remaining_after_cleanup" ]; then
+      echo "ERROR: Cleanup failed, containers still remain after deep cleanup:" >&2
+      docker ps -a >&2 || true
+      exit 1
+    fi
+    echo "Deep cleanup succeeded: all containers removed"
+  fi
+fi
+
 # Find a suitable timeout command for reliability and readability
 if command -v gtimeout >/dev/null 2>&1; then
   TIMEOUT="gtimeout"
@@ -134,6 +260,9 @@ echo "buildkite building ${BUILDKITE_JOB_ID:-} at $(date) on $(hostname) as USER
 
 echo
 case ${DOCKER_TYPE:-none} in
+  "docker-ce")
+    echo "Running docker-ce (Docker CE)"
+    ;;
   "docker-desktop")
     echo "docker-desktop for mac version=$(scripts/docker-desktop-version.sh)"
     ;;
@@ -143,7 +272,9 @@ case ${DOCKER_TYPE:-none} in
   "colima_vz")
     echo "colima version=$(colima version)"
     ;;
-
+  "lima")
+    echo "limactl --version=$(limactl --version)"
+    ;;
   "orbstack")
     echo "orbstack version=$(orbctl version)"
     ;;

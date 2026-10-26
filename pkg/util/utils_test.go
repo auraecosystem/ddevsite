@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ddev/ddev/pkg/nodeps"
 	"github.com/ddev/ddev/pkg/output"
 	"github.com/ddev/ddev/pkg/util"
 	asrt "github.com/stretchr/testify/assert"
@@ -355,4 +356,112 @@ func TestGetHomeDir(t *testing.T) {
 	if !filepath.IsAbs(home) {
 		t.Fatalf("returned path is not absolute: %s", home)
 	}
+}
+
+// TestFindBashPath tests FindBashPath
+func TestFindBashPath(t *testing.T) {
+	assert := asrt.New(t)
+
+	bashPath := util.FindBashPath()
+
+	// On non-Windows systems, it should return "bash"
+	if !nodeps.IsWindows() {
+		assert.Equal("bash", bashPath)
+		return
+	}
+
+	// On Windows, if bash is found, it should return a valid path
+	// We can't guarantee a specific path because it depends on the installation
+	if bashPath != "" {
+		// Should be an absolute path
+		require.True(t, filepath.IsAbs(bashPath), "Expected absolute path, got: %s", bashPath)
+
+		// Should end with bash.exe on Windows
+		assert.True(strings.HasSuffix(strings.ToLower(bashPath), "bash.exe"),
+			"Expected path ending with bash.exe, got: %s", bashPath)
+
+		// Verify the file exists
+		_, err := os.Stat(bashPath)
+		require.NoError(t, err, "Bash path %s does not exist", bashPath)
+	}
+	// Note: We don't fail if bashPath is empty because bash might not be installed
+	// in the test environment
+}
+
+// TestFormatBytes tests the byte formatting function
+func TestFormatBytes(t *testing.T) {
+	tests := []struct {
+		name     string
+		bytes    int64
+		expected string
+	}{
+		{"Zero bytes", 0, "0B"},
+		{"Small bytes", 512, "512B"},
+		{"Exactly 1KB", 1024, "1.0KB"},
+		{"Multiple KB", 2560, "2.5KB"},
+		{"Exactly 1MB", 1024 * 1024, "1.0MB"},
+		{"Fractional MB", 1024*1024 + 512*1024, "1.5MB"},
+		{"Large MB", 157286400, "150.0MB"},
+		{"Exactly 1GB", 1024 * 1024 * 1024, "1.0GB"},
+		{"Fractional GB", int64(1024*1024*1024) + int64(512*1024*1024), "1.5GB"},
+		{"Multiple GB", int64(5) * 1024 * 1024 * 1024, "5.0GB"},
+		{"Exactly 1TB", int64(1024) * 1024 * 1024 * 1024, "1.0TB"},
+		{"Large volume", 982700000, "937.2MB"}, // Approximate d11 volume size
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := util.FormatBytes(tt.bytes)
+			require.Equal(t, tt.expected, result, "FormatBytes(%d) should return %s, got %s", tt.bytes, tt.expected, result)
+		})
+	}
+}
+
+// TestExtractCurlBody demonstrates extracting response body from curl output with diagnostics.
+//
+// This pattern is useful when you need both:
+// - Parseable response body (e.g., JSON for validation)
+// - HTTP status code visible in error messages for debugging
+//
+// Usage:
+//
+//	out, err := exec.RunHostCommand("curl", "-sf",
+//	    "-w", util.CurlDiagnosticSuffix+"%{http_code}",
+//	    "http://example.com/api/endpoint")
+//	require.NoError(t, err, "curl failed, output='%s'", out)  // Full output with HTTP code for debugging
+//	body := util.ExtractCurlBody(out)                          // Clean body for JSON parsing
+//	var result map[string]interface{}
+//	json.Unmarshal([]byte(body), &result)
+func TestExtractCurlBody(t *testing.T) {
+	if _, err := exec.LookPath("curl"); err != nil {
+		t.Skip("curl not available, skipping test")
+	}
+
+	// Run actual curl command with -w to append HTTP code
+	cmd := exec.Command("curl", "-sf",
+		"-w", util.CurlDiagnosticSuffix+"%{http_code}",
+		"https://httpbin.org/json")
+	outBytes, err := cmd.CombinedOutput()
+	out := string(outBytes)
+
+	require.NoError(t, err, "curl command failed, output='%s'", out)
+
+	// The raw output must include the HTTP code suffix we added
+	require.Contains(t, out, "_CURL_HTTP_CODE_:200",
+		"raw output should contain HTTP code suffix, got: %s", out)
+
+	// ExtractCurlBody strips the diagnostic suffix, leaving clean JSON
+	body := util.ExtractCurlBody(out)
+
+	// Verify extraction actually removed something
+	require.Less(t, len(body), len(out),
+		"extracted body should be shorter than raw output (suffix removed)")
+
+	// Verify the suffix is gone from extracted body
+	require.NotContains(t, body, "_CURL_HTTP_CODE_",
+		"extracted body should not contain diagnostic suffix, got: %s", body)
+
+	// Verify the body is valid JSON that can be parsed
+	require.True(t, strings.HasPrefix(strings.TrimSpace(body), "{"),
+		"extracted body should be valid JSON, got: %s", body)
 }

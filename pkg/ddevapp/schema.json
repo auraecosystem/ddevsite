@@ -409,7 +409,7 @@
       "type": "string"
     },
     "ngrok_args": {
-      "description": "Provide extra args to ngrok in \"ddev share\".",
+      "description": "(Deprecated) Use share_provider_args instead, provide extra args to ngrok in \"ddev share\".",
       "type": "string"
     },
     "no_project_mount": {
@@ -475,6 +475,14 @@
       "description": "Router HTTPS port for this project.",
       "type": "string"
     },
+    "share_default_provider": {
+      "description": "Default share provider for the project (ngrok, cloudflared, or custom). Overrides global configuration.",
+      "type": "string"
+    },
+    "share_provider_args": {
+      "description": "Arguments to pass to the share provider when starting a share session.",
+      "type": "string"
+    },
     "timezone": {
       "description": "Specify timezone for containers and PHP. If unset, DDEV will attempt to derive it from the host system timezone.",
       "type": "string"
@@ -485,6 +493,7 @@
       "enum": [
         "backdrop",
         "cakephp",
+        "codeigniter",
         "craftcms",
         "drupal",
         "drupal6",

@@ -1275,7 +1275,8 @@ func TestTimezoneConfig(t *testing.T) {
 	require.Regexp(t, regexp.MustCompile("timezone=CES?T"), inDBContainerTZData)
 
 	// With timezone set, TZ env should be used if app.Timezone is empty
-	t.Setenv("TZ", "Europe/Rome")
+	// US/Eastern is a legacy name for America/New_York but should still work
+	t.Setenv("TZ", "US/Eastern")
 	app.Timezone = ""
 	err = app.Start()
 	require.NoError(t, err)
@@ -1284,24 +1285,26 @@ func TestTimezoneConfig(t *testing.T) {
 		Cmd:     "printf \"timezone=$(date +%Z)\n\" && php -r 'print \"phptz=\" . date_default_timezone_get();'",
 	})
 	require.NoError(t, err)
-	require.Regexp(t, regexp.MustCompile("timezone=CES?T\nphptz=Europe/Rome"), inWebContainerTZData)
+	require.Regexp(t, regexp.MustCompile("timezone=E[SD]T\nphptz=US/Eastern"), inWebContainerTZData)
 
-	// Make sure db container is also working with CET
+	// Make sure db container is also working with US/Eastern
 	inDBContainerTZData, _, err = app.Exec(&ddevapp.ExecOpts{
 		Service: "db",
 		Cmd:     "echo -n timezone=$(date +%Z)",
 	})
 	require.NoError(t, err)
-	require.Regexp(t, regexp.MustCompile("timezone=CES?T"), inDBContainerTZData)
+	require.Regexp(t, regexp.MustCompile("timezone=E[SD]T"), inDBContainerTZData)
 
 	runTime()
 }
 
 // TestComposerVersionConfig tests to make sure setting Composer version takes effect in the container.
 func TestComposerVersionConfig(t *testing.T) {
-	if dockerutil.IsColima() || dockerutil.IsLima() || dockerutil.IsRancherDesktop() {
-		t.Skip("Skipping on Lima/Colima/Rancher, lots of network connections failed")
+	// Don't run this unless GOTEST_SHORT is unset; it doesn't need to be run everywhere.
+	if os.Getenv("GOTEST_SHORT") != "" {
+		t.Skip("Skip because GOTEST_SHORT is set")
 	}
+
 	assert := asrt.New(t)
 	app := &ddevapp.DdevApp{}
 
