@@ -6,14 +6,38 @@ set -o errexit
 
 set -x
 
+DDEV_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# We install nothing from the runner image's Microsoft repo, and an outage
+# there fails `apt-get update`.
+sudo rm -f /etc/apt/sources.list.d/microsoft-prod.*
+
+# The runner image pins an old Docker and removes Docker's apt repo; install
+# the latest docker-ce the way we tell users to, so CI sees new Docker
+# releases (and their breakage) as soon as users do.
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+sudo tee /etc/apt/sources.list.d/docker.sources >/dev/null <<EOF
+Types: deb
+URIs: https://download.docker.com/linux/ubuntu
+Suites: $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
+Components: stable
+Architectures: $(dpkg --print-architecture)
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+
+sudo apt-get update -qq >/dev/null
+sudo apt-get install -y -qq build-essential expect libnss3-tools libcurl4-gnutls-dev postgresql-client >/dev/null
+sudo apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null
+# The upgrade restarts dockerd
+timeout 120 bash -c 'until docker info >/dev/null 2>&1; do sleep 2; done'
+
 if [ ! -z "${DOCKERHUB_PULL_USERNAME:-}" ]; then
   set +x
   echo "${DOCKERHUB_PULL_PASSWORD}" | docker login --username "${DOCKERHUB_PULL_USERNAME}" --password-stdin
   set -x
 fi
-
-sudo apt-get update -qq >/dev/null
-sudo apt-get install -y -qq build-essential expect libnss3-tools libcurl4-gnutls-dev postgresql-client >/dev/null
 
 curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc \
   | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null \
@@ -22,149 +46,40 @@ curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc \
   && sudo apt-get update -qq >/dev/null \
   && sudo apt-get install -y -qq ngrok
 
+# Install cloudflared
+sudo mkdir -p --mode=0755 /usr/share/keyrings
+curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
+  | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null \
+  && echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main' \
+  | sudo tee /etc/apt/sources.list.d/cloudflared.list \
+  && sudo apt-get update -qq >/dev/null \
+  && sudo apt-get install -y -qq cloudflared
+
+if [[ "${DDEV_TEST_PODMAN_ROOTLESS:-}" == "true" || "${DDEV_TEST_DOCKER_ROOTLESS:-}" == "true" ]]; then
+  # The runner image preinstalls mysql-server, whose usr.sbin.mysqld AppArmor
+  # profile attaches to any unconfined process exec'ing /usr/sbin/mysqld -
+  # including inside rootless containers, which run apparmor-unconfined,
+  # regardless of container engine. A confined mysqld can't read its config
+  # and, under rootless Docker, can't be signaled (docker stop/kill fail with
+  # "permission denied", leaving unkillable containers).
+  sudo ln -sf /etc/apparmor.d/usr.sbin.mysqld /etc/apparmor.d/disable/ 2>/dev/null || true
+  sudo apparmor_parser -R /etc/apparmor.d/usr.sbin.mysqld 2>/dev/null || true
+fi
+
 if [[ ${DDEV_TEST_PODMAN_ROOTLESS:-} == "true" ]]; then
+
   echo "Setting up podman-rootless"
-  sudo systemctl disable --now docker.service docker.socket
-  sudo rm -f /var/run/docker.sock
-  sudo apt-get remove -y podman crun
-  sudo apt-get install -y fuse-overlayfs
-  brew install podman >/dev/null
+  "${DDEV_REPO_ROOT}/scripts/linux-podman-rootless.sh" --install-brew
+  # brew put podman at a new path; refresh this shell's command hash table.
   hash -r
-  # Enable ports below 1024
-  sudo mkdir -p /etc/sysctl.d
-  echo 'net.ipv4.ip_unprivileged_port_start=0' | sudo tee -a /etc/sysctl.d/60-rootless.conf
-  sudo sysctl -p /etc/sysctl.d/60-rootless.conf
-  # Create systemd unit files
-  mkdir -p ~/.config/systemd/user
-  # Create podman.socket
-  cat > ~/.config/systemd/user/podman.socket <<'EOF'
-[Unit]
-Description=Podman API Socket
-Documentation=man:podman-system-service(1)
-
-[Socket]
-ListenStream=%t/podman/podman.sock
-SocketMode=0660
-
-[Install]
-WantedBy=sockets.target
-EOF
-  # Create podman.service (adapted for Homebrew path)
-  cat > ~/.config/systemd/user/podman.service <<'EOF'
-[Unit]
-Description=Podman API Service
-Requires=podman.socket
-After=podman.socket
-Documentation=man:podman-system-service(1)
-StartLimitIntervalSec=0
-
-[Service]
-Delegate=true
-Type=exec
-KillMode=process
-Environment=LOGGING="--log-level=info"
-ExecStart=/home/linuxbrew/.linuxbrew/bin/podman $LOGGING system service
-
-[Install]
-WantedBy=default.target
-EOF
-  # Reload systemd
-  systemctl --user daemon-reload
-  # Set DNS
-  mkdir -p ~/.config/containers/containers.conf.d
-  cat << 'EOF' > ~/.config/containers/containers.conf.d/dns.conf
-[containers]
-dns_servers = ["1.1.1.1", "1.0.0.1"]
-EOF
-  # https://github.com/containers/podman/blob/main/docs/tutorials/performance.md#choosing-a-storage-driver
-  cat << 'EOF' > ~/.config/containers/storage.conf
-[storage]
-driver = "overlay"
-[storage.options.overlay]
-mount_program = "/usr/bin/fuse-overlayfs"
-EOF
-  # Enable and start the socket
-  systemctl --user enable --now podman.socket
-  # Try several times, it can return "failed to reexec: Permission denied"
-  podman info --format '{{.Host.RemoteSocket.Path}}' || podman info --format '{{.Host.RemoteSocket.Path}}' || true
-  # Switch to the podman context
-  docker context create podman-rootless --docker host="unix://$(podman info --format '{{.Host.RemoteSocket.Path}}')"
-  docker context use podman-rootless
   echo "Verifying podman-rootless setup"
   cat /etc/subuid
   cat /etc/subgid
-  podman run --rm ddev/ddev-utilities cat /etc/resolv.conf
   podman info
   podman version
-elif [[ "${DDEV_TEST_PODMAN_ROOT:-}" == "true" ]]; then
-  echo "Setting up podman-root"
-  sudo systemctl disable --now docker.service docker.socket
-  sudo rm -f /var/run/docker.sock
-  sudo apt-get remove -y podman crun
-  brew install podman >/dev/null
-  hash -r
-  # Configure podman to run in root mode
-  # Create tmpfiles.d entry for /run/podman
-  sudo tee /etc/tmpfiles.d/podman.conf > /dev/null <<EOF
-d /run/podman 0770 root docker
-EOF
-  sudo systemd-tmpfiles --create
-  # Create systemd unit files
-  sudo mkdir -p /etc/systemd/system
-  # Create podman.socket
-  sudo tee /etc/systemd/system/podman.socket > /dev/null <<EOF
-[Unit]
-Description=Podman API Socket
-Documentation=man:podman-system-service(1)
 
-[Socket]
-ListenStream=%t/podman/podman.sock
-SocketMode=0660
-
-[Install]
-WantedBy=sockets.target
-EOF
-  # Create podman.service (adapted for Homebrew path)
-  sudo tee /etc/systemd/system/podman.service > /dev/null <<EOF
-[Unit]
-Description=Podman API Service
-Requires=podman.socket
-After=podman.socket
-Documentation=man:podman-system-service(1)
-StartLimitIntervalSec=0
-
-[Service]
-Delegate=true
-Type=exec
-KillMode=process
-Environment=LOGGING="--log-level=info"
-ExecStart=/home/linuxbrew/.linuxbrew/bin/podman \$LOGGING system service
-
-[Install]
-WantedBy=default.target
-EOF
-  # Create override for podman.socket to set user:group
-  sudo mkdir -p /etc/systemd/system/podman.socket.d
-  sudo tee /etc/systemd/system/podman.socket.d/override.conf > /dev/null <<EOF
-[Socket]
-SocketMode=0660
-SocketUser=root
-SocketGroup=docker
-EOF
-  # Reload systemd
-  sudo systemctl daemon-reload
-  # Enable and start the socket
-  sudo systemctl enable --now podman.socket
-  # Try several times, it can return "failed to reexec: Permission denied"
-  sudo /home/linuxbrew/.linuxbrew/bin/podman info --format '{{.Host.RemoteSocket.Path}}' || sudo /home/linuxbrew/.linuxbrew/bin/podman info --format '{{.Host.RemoteSocket.Path}}' || true
-  # Switch to the podman context
-  docker context create podman --docker host="unix://$(sudo /home/linuxbrew/.linuxbrew/bin/podman info --format '{{.Host.RemoteSocket.Path}}')"
-  docker context use podman
-  echo "Verifying podman-root setup"
-  sudo /home/linuxbrew/.linuxbrew/bin/podman run --rm ddev/ddev-utilities cat /etc/resolv.conf
-  sudo /home/linuxbrew/.linuxbrew/bin/podman info
-  sudo /home/linuxbrew/.linuxbrew/bin/podman version
 elif [[ "${DDEV_TEST_DOCKER_ROOTLESS:-}" == "true" ]]; then
+
   echo "Setting up docker-rootless"
   sudo systemctl disable --now docker.service docker.socket
   sudo rm -f /var/run/docker.sock
@@ -188,16 +103,34 @@ include if exists <local/${filename}>
 }
 EOF
   sudo systemctl restart apparmor.service
+  # Set the default network driver to "gvisor-tap-vsock" (see https://github.com/moby/moby/releases/tag/docker-v29.5.0)
   # Allow loopback https://github.com/moby/moby/issues/47684#issuecomment-2166149845
   mkdir -p ~/.config/systemd/user/docker.service.d
   cat << 'EOF' > ~/.config/systemd/user/docker.service.d/override.conf
 [Service]
+Environment="DOCKERD_ROOTLESS_ROOTLESSKIT_NET=gvisor-tap-vsock"
 Environment="DOCKERD_ROOTLESS_ROOTLESSKIT_DISABLE_HOST_LOOPBACK=false"
 EOF
   # Install rootless docker
-  curl -fsSL https://get.docker.com/rootless | sh
+  # Download the rootless installer script
+  curl -fsSL https://get.docker.com/rootless -o /tmp/docker-rootless-install.sh
+
+  # Get Docker rootful version from docker --version (format: "Docker version 29.1.3, build f52814d454")
+  DOCKER_VERSION=$(docker --version | sed -E 's/Docker version ([0-9]+\.[0-9]+\.[0-9]+).*/\1/')
+
+  # Install the latest Docker rootless for now (because of using gvisor-tap-vsock)
+  DOCKER_VERSION=""
+
+  if [ "${DOCKER_VERSION}" != "" ]; then
+    # Replace STABLE_LATEST with the current Docker version to match rootful installation
+    sed -i "s/STABLE_LATEST=\"[0-9.]*\"/STABLE_LATEST=\"${DOCKER_VERSION}\"/" /tmp/docker-rootless-install.sh
+  fi
+
+  # Execute the modified script
+  sh /tmp/docker-rootless-install.sh
   cat /etc/subuid
   cat /etc/subgid
+
 fi
 
 # Without this .curlrc CircleCI linux image doesn't respect mkcert certs
@@ -205,10 +138,14 @@ echo "capath=/etc/ssl/certs/" >>~/.curlrc
 
 source ~/.bashrc
 
-brew tap bats-core/bats-core >/dev/null
-brew tap ddev/ddev >/dev/null
-for item in bats-core ddev docker-compose ghr golangci-lint bats-assert bats-file bats-support; do
-    brew install $item >/dev/null || brew upgrade $item >/dev/null
+brew trust bats-core/bats-core
+
+# Homebrew warns, as a GitHub Actions annotation, whenever the kernel lacks
+# Landlock ABI 10, as hosted runners do. Nothing here can act on it.
+brew_quiet() { brew "$@" 2> >(grep -vF 'or later is required to deny all network access' >&2); }
+
+for item in bats-core bats-core/bats-core/bats-assert bats-core/bats-core/bats-file bats-core/bats-core/bats-support ddev/ddev/ddev golangci-lint gotestsum; do
+  brew_quiet install $item >/dev/null || brew_quiet upgrade -y $item >/dev/null
 done
 
 mkcert -install

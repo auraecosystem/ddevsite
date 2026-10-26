@@ -2,9 +2,11 @@ package nodeps_test
 
 import (
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ddev/ddev/pkg/nodeps"
 	"github.com/stretchr/testify/require"
@@ -32,7 +34,7 @@ func TestPathWithSlashesToArray(t *testing.T) {
 		{".", "./sites", "./sites/default", "./sites/default/files"},
 	}
 
-	for i := 0; i < len(testSources); i++ {
+	for i := range testSources {
 		res := nodeps.PathWithSlashesToArray(testSources[i])
 		require.Equal(t, testExpectations[i], res)
 	}
@@ -244,7 +246,7 @@ func TestIsCodespaces(t *testing.T) {
 	// IsCodespaces should return true only if:
 	// 1. DDEV_PRETEND_CODESPACES=true (for testing purposes), OR
 	// 2. Running on Linux AND CODESPACES=true
-	pretendCodespaces := os.Getenv("DDEV_PRETEND_CODESPACES") == "true"
+	pretendCodespaces := nodeps.IsEnvTrue("DDEV_PRETEND_CODESPACES")
 	codespacesEnv := os.Getenv("CODESPACES") == "true"
 	isLinux := runtime.GOOS == "linux"
 
@@ -378,4 +380,164 @@ func TestIsPathOnWindowsFilesystem(t *testing.T) {
 	require.False(t, nodeps.IsPathOnWindowsFilesystem("/var/www"))
 	require.False(t, nodeps.IsPathOnWindowsFilesystem("/tmp/test"))
 	require.False(t, nodeps.IsPathOnWindowsFilesystem(""))
+}
+
+// TestParseWSLConfigHostAddressLoopback tests the .wslconfig parsing for hostAddressLoopback
+func TestParseWSLConfigHostAddressLoopback(t *testing.T) {
+	tests := map[string]struct {
+		content  string
+		expected bool
+	}{
+		"enabled in experimental section": {
+			content: `[wsl2]
+networkingMode=mirrored
+[experimental]
+hostAddressLoopback=true`,
+			expected: true,
+		},
+		"enabled with different casing": {
+			content: `[EXPERIMENTAL]
+HostAddressLoopback=True`,
+			expected: true,
+		},
+		"enabled with spaces around equals": {
+			content: `[experimental]
+hostAddressLoopback = true`,
+			expected: true,
+		},
+		"enabled with Windows CRLF line endings": {
+			content:  "[experimental]\r\nhostAddressLoopback=true\r\n",
+			expected: true,
+		},
+		"disabled explicitly": {
+			content: `[experimental]
+hostAddressLoopback=false`,
+			expected: false,
+		},
+		"not in experimental section": {
+			content: `[wsl2]
+hostAddressLoopback=true`,
+			expected: false,
+		},
+		"no experimental section": {
+			content: `[wsl2]
+networkingMode=mirrored`,
+			expected: false,
+		},
+		"empty file": {
+			content:  "",
+			expected: false,
+		},
+		"only comments": {
+			content: `# This is a comment
+; This is also a comment
+[experimental]
+# hostAddressLoopback=true`,
+			expected: false,
+		},
+		"setting after another section": {
+			content: `[wsl2]
+networkingMode=mirrored
+[experimental]
+hostAddressLoopback=true
+[other]
+something=else`,
+			expected: true,
+		},
+		"setting in wrong section after experimental": {
+			content: `[experimental]
+someother=value
+[wsl2]
+hostAddressLoopback=true`,
+			expected: false,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			result := nodeps.ParseWSLConfigHostAddressLoopback(tc.content)
+			require.Equal(t, tc.expected, result, "ParseWSLConfigHostAddressLoopback(%q)", tc.content)
+		})
+	}
+}
+
+// TestIsEnvTrue tests IsEnvTrue with various env var values.
+// Accepted values match strconv.ParseBool: 1, t, T, TRUE, true, True,
+// 0, f, F, FALSE, false, False.
+func TestIsEnvTrue(t *testing.T) {
+	tests := map[string]struct {
+		value    string
+		expected bool
+	}{
+		"true":  {value: "true", expected: true},
+		"TRUE":  {value: "TRUE", expected: true},
+		"True":  {value: "True", expected: true},
+		"1":     {value: "1", expected: true},
+		"t":     {value: "t", expected: true},
+		"T":     {value: "T", expected: true},
+		"false": {value: "false", expected: false},
+		"FALSE": {value: "FALSE", expected: false},
+		"False": {value: "False", expected: false},
+		"0":     {value: "0", expected: false},
+		"f":     {value: "f", expected: false},
+		"F":     {value: "F", expected: false},
+		"yes":   {value: "yes", expected: false},
+		"empty": {value: "", expected: false},
+	}
+
+	const testEnv = "DDEV_TEST_IS_ENV_TRUE"
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(testEnv, tc.value)
+			require.Equal(t, tc.expected, nodeps.IsEnvTrue(testEnv))
+			require.Equal(t, !tc.expected, nodeps.IsEnvFalse(testEnv))
+		})
+	}
+}
+
+func TestWriteFileAtomic(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "list.yaml")
+	require.NoError(t, os.WriteFile(target, []byte("old content that is longer\n"), 0600))
+
+	require.NoError(t, nodeps.WriteFileAtomic(target, []byte("new\n"), 0644))
+	content, err := os.ReadFile(target)
+	require.NoError(t, err)
+	require.Equal(t, "new\n", string(content))
+
+	// Windows refuses the rename while a reader has the target open, so the
+	// write has to outlast this reader.
+	reader, err := os.Open(target)
+	require.NoError(t, err)
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		_ = reader.Close()
+	}()
+	require.NoError(t, nodeps.WriteFileAtomic(target, []byte("while open\n"), 0644))
+	content, err = os.ReadFile(target)
+	require.NoError(t, err)
+	require.Equal(t, "while open\n", string(content))
+
+	if !nodeps.IsWindows() {
+		fi, err := os.Stat(target)
+		require.NoError(t, err)
+		require.Equal(t, os.FileMode(0644), fi.Mode().Perm())
+
+		// Writing through a symlink replaces the target and keeps the link.
+		link := filepath.Join(dir, "link.yaml")
+		require.NoError(t, os.Symlink(target, link))
+		require.NoError(t, nodeps.WriteFileAtomic(link, []byte("via link\n"), 0644))
+		fi, err = os.Lstat(link)
+		require.NoError(t, err)
+		require.NotZero(t, fi.Mode()&os.ModeSymlink)
+		content, err = os.ReadFile(target)
+		require.NoError(t, err)
+		require.Equal(t, "via link\n", string(content))
+	}
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	for _, e := range entries {
+		require.NotContains(t, e.Name(), ".tmp")
+	}
 }

@@ -7,14 +7,15 @@ import (
 
 // MutagenCmd is the top-level "ddev utility" command
 var MutagenCmd = &cobra.Command{
-	Use:   "mutagen [command]",
-	Short: "Commands for Mutagen status and sync, etc.",
+	Use:         "mutagen [command]",
+	Annotations: map[string]string{NoDockerCommand: "true"},
+	Short:       "Commands for Mutagen status and sync, etc.",
 	Run: func(cmd *cobra.Command, _ []string) {
 		err := cmd.Usage()
 		util.CheckErr(err)
 	},
 }
 
-func init() {
+func registerMutagenCmd() {
 	RootCmd.AddCommand(MutagenCmd)
 }

@@ -19,12 +19,13 @@ var PushCmd = &cobra.Command{
 	Running push will connect to the configured provider and export and upload the
 	database and/or files. It is very useful for pushing to non-production
 	environments, but should rarely be used to push to production.`,
-	Example: `ddev push pantheon
-ddev push platform
+	Example: `ddev push upsun
 ddev push pantheon -y
-ddev push platform --skip-files -y
+ddev push upsun --skip-files -y
 ddev push acquia --skip-db -y
-ddev push platform --environment=PLATFORM_ENVIRONMENT=main,PLATFORMSH_CLI_TOKEN=abcdef
+ddev push upsun --environment="PLATFORM_ENVIRONMENT=main,UPSUN_CLI_TOKEN=abcdeyourtoken"
+ddev push pantheon --environment="DDEV_PANTHEON_ENVIRONMENT=dev,TERMINUS_MACHINE_TOKEN=abcdeyourtoken"
+ddev push lagoon --environment="LAGOON_PROJECT=your-project,LAGOON_ENVIRONMENT=main"
 `,
 	Args: cobra.ExactArgs(1),
 	PreRun: func(_ *cobra.Command, _ []string) {
@@ -34,6 +35,23 @@ ddev push platform --environment=PLATFORM_ENVIRONMENT=main,PLATFORMSH_CLI_TOKEN=
 
 // appPush does the work of push
 func appPush(providerType string, app *ddevapp.DdevApp, skipConfirmation bool, skipImportArg bool, skipDBArg bool, skipFilesArg bool, env string) {
+	provider, err := app.GetProvider(providerType)
+	if err != nil {
+		util.Failed("Failed to get provider: %v", err)
+	}
+
+	if env != "" {
+		// Add or override the command-line provided environment variables
+		envVars := strings.SplitSeq(env, ",")
+		for v := range envVars {
+			split := strings.Split(v, "=")
+			if len(split) != 2 {
+				util.Failed("Unable to parse environment variable setting: %v", v)
+			}
+			provider.EnvironmentVariables[split[0]] = split[1]
+		}
+	}
+
 	// If we're not performing the import step, we won't be deleting the existing db or files.
 	if !skipConfirmation && !skipImportArg && globalconfig.IsInteractive() {
 		// Only warn the user about relevant risks.
@@ -49,26 +67,14 @@ func appPush(providerType string, app *ddevapp.DdevApp, skipConfirmation bool, s
 			message = "database and files"
 		}
 
-		util.Warning("You're about to push your local %s to your upstream production\nand replace it with your local project's %s.\nThis is normally a very dangerous operation.", message, message)
+		targetInfo := provider.GetInfo()
+		if targetInfo != "" {
+			util.Warning("You're about to push your local %s to %s\nand replace it with your local project's %s.\nThis is normally a very dangerous operation.", message, targetInfo, message)
+		} else {
+			util.Warning("You're about to push your local %s to your upstream production\nand replace it with your local project's %s.\nThis is normally a very dangerous operation.", message, message)
+		}
 		if !util.ConfirmTo("Would you like to continue (not recommended)?", false) {
 			util.Failed("Push cancelled")
-		}
-	}
-
-	provider, err := app.GetProvider(providerType)
-	if err != nil {
-		util.Failed("Failed to get provider: %v", err)
-	}
-
-	if env != "" {
-		// Add or override the command-line provided environment variables
-		envVars := strings.Split(env, ",")
-		for _, v := range envVars {
-			split := strings.Split(v, "=")
-			if len(split) != 2 {
-				util.Failed("Unable to parse environment variable setting: %v", v)
-			}
-			provider.EnvironmentVariables[split[0]] = split[1]
 		}
 	}
 
@@ -79,11 +85,14 @@ func appPush(providerType string, app *ddevapp.DdevApp, skipConfirmation bool, s
 	util.Success("Push succeeded.")
 }
 
-func init() {
+func registerPushCmd() {
 	RootCmd.AddCommand(PushCmd)
+}
 
-	appRoot, err := ddevapp.GetActiveAppRoot("")
-	if err != nil {
+// addPushProviderSubcommands adds a `ddev push <provider>` subcommand for
+// each provider valid in the active project, if any.
+func addPushProviderSubcommands(appRoot string, appRootErr error) {
+	if appRootErr != nil {
 		return
 	}
 
@@ -105,6 +114,9 @@ ddev push %s --skip-files -y`, subCommandName, subCommandName, subCommandName),
 				app, err := ddevapp.GetActiveApp("")
 				if err != nil {
 					util.Failed("push failed: %v", err)
+				}
+				if err = app.StartAppIfNotRunning(); err != nil {
+					util.Failed("Failed to start app %s: %v", app.Name, err)
 				}
 				providerName := subCommandName
 				p, err := app.GetProvider(subCommandName)
@@ -137,6 +149,8 @@ ddev push %s --skip-files -y`, subCommandName, subCommandName, subCommandName),
 		subCommand.Flags().Bool("skip-db", false, "Skip pushing database archive")
 		subCommand.Flags().Bool("skip-files", false, "Skip pushing file archive")
 		subCommand.Flags().Bool("skip-import", false, "Downloads file and/or database archives, but does not import them")
+		// This flag is irrelevant for push
+		_ = subCommand.Flags().MarkHidden("skip-import")
 		subCommand.Flags().String("environment", "", "Add/override environment variables during pull. Commas and equals are not allowed in the names or values.")
 	}
 }

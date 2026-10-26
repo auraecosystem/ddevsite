@@ -8,6 +8,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 
 	"github.com/ddev/ddev/pkg/ddevapp"
@@ -36,12 +37,10 @@ func IsUserDefinedCustomCommand(cmd *cobra.Command) bool {
 // ~/.ddev/commands/<servicename> etc. and
 // .ddev/commands/<servicename> and .ddev/commands/host
 // and if it finds them adds them to Cobra's commands.
-func addCustomCommands(rootCmd *cobra.Command) error {
-	// Custom commands are shell scripts - so we can't use them on windows without bash.
+func addCustomCommands(rootCmd *cobra.Command, activeAppRoot string, activeAppRootErr error) error {
+	// Custom commands are shell scripts - so we can't use them on Windows without bash.
 	if nodeps.IsWindows() {
-		windowsBashPath := util.FindBashPath()
-		if windowsBashPath == "" {
-			util.Warning("Unable to find bash.exe in PATH, not loading custom commands")
+		if windowsBashPath := util.FindBashPath(); windowsBashPath == "" {
 			return nil
 		}
 	}
@@ -49,9 +48,8 @@ func addCustomCommands(rootCmd *cobra.Command) error {
 	// Keep a map so we don't add multiple commands with the same name.
 	commandsAdded := map[string]int{}
 
-	activeAppRoot, err := ddevapp.GetActiveAppRoot("")
 	// If we're not running ddev inside a project directory, we should still add any host commands that can run without one.
-	if err != nil {
+	if activeAppRootErr != nil {
 		globalHostCommandPath := filepath.Join(globalconfig.GetGlobalDdevDir(), "commands", "host")
 		commandFiles, err := fileutil.ListFilesInDir(globalHostCommandPath)
 		if err != nil {
@@ -168,7 +166,7 @@ func addCustomCommandsFromDir(rootCmd *cobra.Command, app *ddevapp.DdevApp, serv
 
 		var aliases []string
 		if val, ok := directives["Aliases"]; ok {
-			for _, alias := range strings.Split(val, ",") {
+			for alias := range strings.SplitSeq(val, ",") {
 				alias = strings.TrimSpace(alias)
 				if foundCmd, _, err := rootCmd.Find([]string{alias}); err != nil {
 					aliases = append(aliases, alias)
@@ -253,14 +251,14 @@ func addCustomCommandsFromDir(rootCmd *cobra.Command, app *ddevapp.DdevApp, serv
 
 		// If hostBinaryExists is specified it doesn't exist here, skip
 		if hostBinaryExists != "" {
-			binExists := false
 			bins := strings.Split(hostBinaryExists, ",")
-			for _, bin := range bins {
-				if fileutil.FileExists(bin) {
-					binExists = true
-					break
+			binExists := slices.ContainsFunc(bins, func(p string) bool {
+				expanded, err := util.ExpandHomedir(strings.TrimSpace(p))
+				if err != nil {
+					expanded = p
 				}
-			}
+				return fileutil.FileExists(expanded)
+			})
 			if !binExists {
 				if isCustomCommandInArgs(commandName) {
 					suggestedBinaries, _ := util.ArrayToReadableOutput(bins)
@@ -430,6 +428,7 @@ func makeContainerCompletionFunc(autocompletePathInContainer string, service str
 			Dir:       app.GetWorkingDir(service, ""),
 			Tty:       false,
 			NoCapture: false,
+			User:      app.GetXDdevExtension(service).ContainerUser,
 		}
 
 		// Execute completion in docker container
@@ -519,6 +518,7 @@ func makeContainerCmd(app *ddevapp.DdevApp, fullPath, name, service string, exec
 			Dir:       app.GetWorkingDir(s, ""),
 			Tty:       isatty.IsTerminal(os.Stdin.Fd()),
 			NoCapture: true,
+			User:      app.GetXDdevExtension(s).ContainerUser,
 		}
 		if relative {
 			opts.Dir = path.Join(app.GetAbsAppRoot(true), app.GetRelativeWorkingDirectory())

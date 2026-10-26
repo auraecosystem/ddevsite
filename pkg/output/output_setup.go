@@ -1,11 +1,15 @@
 package output
 
 import (
+	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/ddev/ddev/pkg/nodeps"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -17,7 +21,7 @@ var (
 		l := log.New()
 		l.SetOutput(os.Stdout)
 		logLevel := log.InfoLevel
-		if os.Getenv("DDEV_DEBUG") == "true" || os.Getenv("DDEV_VERBOSE") == "true" {
+		if nodeps.IsEnvTrue("DDEV_DEBUG") || nodeps.IsEnvTrue("DDEV_VERBOSE") {
 			logLevel = log.DebugLevel
 		}
 		l.SetLevel(logLevel)
@@ -77,8 +81,7 @@ func ParseBoolFlag(long string, short string) bool {
 	longPrefix := "--" + long + "="
 	shortPrefix := "-" + short + "="
 
-	for i := len(args) - 1; i >= 0; i-- {
-		arg := args[i]
+	for _, arg := range slices.Backward(args) {
 		switch {
 		case arg == "--"+long, arg == "-"+short:
 			return true
@@ -105,8 +108,76 @@ func ParseBoolFlag(long string, short string) bool {
 	return false
 }
 
+// JSONProgressWriter is an io.Writer that routes each write through UserErr.Info
+// so compose progress lines are formatted by the active logrus formatter (e.g. JSON)
+// instead of being written as raw text.
+type JSONProgressWriter struct{}
+
+func (w *JSONProgressWriter) Write(p []byte) (int, error) {
+	msg := strings.TrimSpace(string(p))
+	if msg != "" {
+		UserErr.Info(msg)
+	}
+	return len(p), nil
+}
+
 // ColorsEnabled returns true if colored output is enabled
 // Implementation from https://no-color.org/
 func ColorsEnabled() bool {
-	return os.Getenv("NO_COLOR") == "" || os.Getenv("NO_COLOR") == "0"
+	noColor, set := os.LookupEnv("NO_COLOR")
+	return !set || noColor == ""
+}
+
+// WaitTimer tracks elapsed time for wait operations with inline output
+type WaitTimer struct {
+	message   string
+	startTime time.Time
+	lineEnded bool
+}
+
+// StartWait prints a waiting message (without newline) and returns a WaitTimer
+// to track elapsed time. Call Complete() or Done() when the operation finishes.
+// In JSON mode the message is emitted only on success, by Done().
+func StartWait(message string) *WaitTimer {
+	return StartWaitSince(message, time.Now())
+}
+
+// StartWaitSince is StartWait for an operation that began before its message
+// could be printed, so the reported time includes the work leading up to it.
+func StartWaitSince(message string, start time.Time) *WaitTimer {
+	if !JSONOutput {
+		_, _ = fmt.Fprintf(UserOut.Out, "%s...", message)
+		if nodeps.IsEnvTrue("DDEV_DEBUG") || nodeps.IsEnvTrue("DDEV_VERBOSE") {
+			_, _ = fmt.Fprintln(UserOut.Out)
+		}
+	}
+	return &WaitTimer{message: message, startTime: start}
+}
+
+// Complete prints "ready in" and the elapsed time on the same line as the wait message.
+// If err is non-nil, just prints a newline.
+func (w *WaitTimer) Complete(err error) time.Duration {
+	return w.Done(err, "ready")
+}
+
+// LineEnded records that other output has ended the wait line, so Done
+// repeats the message instead of printing the timing on a line of its own.
+func (w *WaitTimer) LineEnded() {
+	w.lineEnded = true
+}
+
+// Done is Complete with a verb other than "ready", such as "built".
+func (w *WaitTimer) Done(err error, verb string) time.Duration {
+	elapsed := time.Since(w.startTime)
+	switch {
+	case JSONOutput || w.lineEnded:
+		if err == nil {
+			UserOut.Printf("%s... %s in %.1fs", w.message, verb, elapsed.Seconds())
+		}
+	case err != nil:
+		_, _ = fmt.Fprintln(UserOut.Out)
+	default:
+		_, _ = fmt.Fprintf(UserOut.Out, " %s in %.1fs\n", verb, elapsed.Seconds())
+	}
+	return elapsed
 }

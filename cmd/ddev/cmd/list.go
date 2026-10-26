@@ -9,10 +9,11 @@ var listCommandSettings = ddevapp.ListCommandSettings{}
 
 // ListCmd represents the list command
 var ListCmd = &cobra.Command{
-	Use:     "list",
-	Short:   "List projects",
-	Long:    `List projects. Shows all projects by default, shows active projects only with --active-only`,
-	Aliases: []string{"l", "ls"},
+	Use:         "list",
+	Annotations: map[string]string{NoDockerCommand: "true"},
+	Short:       "List projects",
+	Long:        `List projects. Shows all projects by default, shows active projects only with --active-only`,
+	Aliases:     []string{"l", "ls"},
 	Example: `ddev list
 ddev list --active-only
 ddev list -A
@@ -23,7 +24,7 @@ ddev list -t typo3`,
 	},
 }
 
-func init() {
+func registerListCmd() {
 	ListCmd.Flags().BoolVarP(&listCommandSettings.ActiveOnly, "active-only", "A", false, "If set, only currently active projects will be displayed.")
 	ListCmd.Flags().BoolVarP(&listCommandSettings.Continuous, "continuous", "", false, "If set, project information will be emitted until the command is stopped.")
 	ListCmd.Flags().BoolVarP(&listCommandSettings.WrapTableText, "wrap-table", "W", false, "Display table with wrapped text if required.")

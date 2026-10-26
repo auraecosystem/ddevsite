@@ -4,7 +4,15 @@ set -eu -o pipefail
 
 os=$(go env GOOS)
 
-rm -rf ~/.ddev/Test* ~/.ddev/global_config.yaml ~/.ddev/project_list.yaml ~/.ddev/homeadditions ~/.ddev/commands ~/.ddev/bin/docker-compose* ~/tmp/ddevtest
+# Keep in sync with wsl2-setup.sh's pin for the GitHub Actions WSL2 runner.
+GOTESTSUM_VERSION="1.13.0"
+
+rm -rf ~/.ddev/Test* ~/.ddev/global_config.yaml ~/.ddev/project_list.yaml ~/.ddev/homeadditions ~/.ddev/commands ~/.ddev/bin/docker-buildx* ~/.ddev/bin/docker-compose* ~/.ddev/traefik ~/tmp/ddevtest
+
+# Leftovers of an earlier run: gob has no tolerance for a struct field's Go type
+# changing between ddev versions, so a stale cache can fail to decode after an
+# upgrade, and a global env file reaches every container of every project after it.
+rm -f ~/.ddev/.remote-config ~/.ddev/.sponsorship-data ~/.ddev/.addon-data ~/.ddev/.env ~/.ddev/.env.*
 
 # Latest git won't let you do much in a non-safe directory
 git config --global --add safe.directory '*' || true
@@ -15,8 +23,30 @@ if ! command -v ngrok >/dev/null; then
     darwin)
         brew install homebrew/cask/ngrok
         ;;
+    esac
+fi
+
+# Install cloudflared if it's not there.
+if ! command -v cloudflared >/dev/null; then
+    case $os in
+    darwin)
+        brew install cloudflared
+        ;;
+    esac
+fi
+
+# Install gotestsum if it's not there. WSL2 bots report GOOS=linux and
+# already have Homebrew (see test.sh's linuxbrew PATH export), so they take
+# the same path as darwin here; native Windows has no package for it.
+if ! command -v gotestsum >/dev/null; then
+    case $os in
+    darwin | linux)
+        brew install gotestsum
+        ;;
     windows)
-        (yes | choco install -y ngrok) || true
+        curl -fsSL "https://github.com/gotestyourself/gotestsum/releases/download/v${GOTESTSUM_VERSION}/gotestsum_${GOTESTSUM_VERSION}_windows_amd64.tar.gz" -o /tmp/gotestsum.tar.gz
+        tar -C /c/ProgramData/chocolatey/bin -xzf /tmp/gotestsum.tar.gz gotestsum.exe
+        rm /tmp/gotestsum.tar.gz
         ;;
     esac
 fi
@@ -24,17 +54,17 @@ fi
 # Upgrade various items on various operating systems
 case $os in
 darwin)
-    brew pin buildkite-agent
-    brew upgrade
+    brew pin buildkite-agent@4
+    brew upgrade -y
     brew uninstall -f mysql-client || true
-    for item in coreutils curl ddev/ddev/ddev golang golangci-lint libpq mkcert mkdocs mysql-client@8.0; do
+    for item in coreutils curl ddev/ddev/ddev golang golangci-lint libpq mkcert mysql-client@8.0; do
         brew install $item || true
     done
     brew link --force libpq
     brew link mysql-client@8.0
     ;;
 windows)
-    (yes | choco upgrade -y ddev golang nodejs markdownlint-cli mkcert mkdocs postgresql) || true
+    (yes | choco upgrade -y ddev golang nodejs markdownlint-cli mkcert postgresql) || true
     ;;
 esac
 
@@ -46,7 +76,7 @@ docker rmi -f $(docker images --filter "dangling=true" -q --no-trunc) >/dev/null
 docker rmi -f $(docker images | awk '/ddev.*-built/ {print $3}' ) >/dev/null 2>&1 || true
 
 # Clean the docker build cache
-docker buildx prune -f -a >/dev/null
+docker buildx prune -f -a >/dev/null 2>&1 || true
 # Remove any images with name '-built'
 docker rm -f $(docker ps -aq) >/dev/null 2>&1 || true
 docker rmi -f $(docker images | awk '/[-]built/ { print $3 }')  >/dev/null 2>&1 || true
@@ -55,11 +85,15 @@ echo "--- cleaning up docker and Test directories"
 echo "Warning: deleting all docker containers and deleting ~/.ddev/Test*"
 ddev poweroff || true
 if [ "$(docker ps -aq | wc -l )" -gt 0 ] ; then
-	docker rm -f $(docker ps -aq) >/dev/null 2>&1
+	docker rm -f $(docker ps -aq) >/dev/null 2>&1 || true
 fi
 
-docker system prune --volumes --force
-docker volume prune -a -f
+docker system prune --volumes --force || true
+docker volume prune -a -f || true
+
+if [ "${DOCKER_TYPE:-}" = "podman-rootless" ] && command -v podman >/dev/null; then
+    podman machine ssh 'sudo fstrim -av' || true
+fi
 
 # Update all images that could have changed
 ( docker images | awk '/ddev|traefik|postgres/ {print $1":"$2 }' | xargs -L1 docker pull ) || true

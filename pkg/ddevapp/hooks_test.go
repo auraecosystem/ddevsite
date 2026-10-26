@@ -15,8 +15,10 @@ import (
 
 // TestProcessHooks tests execution of commands defined in config.yaml
 func TestProcessHooks(t *testing.T) {
+	testcommon.SkipIfGotestShort(t)
+
 	if nodeps.IsWindows() {
-		t.Skip("Skipping on Windows, as it always hangs")
+		t.Skip("Skipping on traditional Windows, as it always hangs")
 	}
 	assert := asrt.New(t)
 
@@ -29,8 +31,7 @@ func TestProcessHooks(t *testing.T) {
 	require.NoError(t, err)
 
 	// We don't get the expected task debug output without DDEV_DEBUG
-	origDdevDebug := os.Getenv("DDEV_DEBUG")
-	_ = os.Setenv(`DDEV_DEBUG`, `true`) // test requires DDEV_DEBUG to see task output
+	t.Setenv("DDEV_DEBUG", "true")
 
 	t.Cleanup(func() {
 		runTime()
@@ -40,7 +41,6 @@ func TestProcessHooks(t *testing.T) {
 		assert.NoError(err)
 		_ = os.RemoveAll(app.GetConfigPath("config.hooks.yaml"))
 		_ = os.RemoveAll(filepath.Join(app.AppRoot, "composer.json"))
-		_ = os.Setenv(`DDEV_DEBUG`, origDdevDebug)
 	})
 	err = app.Restart()
 	require.NoError(t, err)
@@ -123,6 +123,28 @@ func TestProcessHooks(t *testing.T) {
 		require.NoFileExists(t, filepath.Join(app.AppRoot, "TestProcessHooksSkipHooks-php-version-"+app.PHPVersion+".txt"))
 	})
 
+	t.Run("exec task in pre-exec hook does not recurse", func(t *testing.T) {
+		app.Hooks = map[string][]ddevapp.YAMLTask{
+			"pre-exec": {{"exec": "echo pre-exec-ran >> /var/www/html/pre-exec-count.txt"}},
+		}
+		t.Cleanup(func() { _ = os.Remove(filepath.Join(app.AppRoot, "pre-exec-count.txt")) })
+		_, _, err = app.Exec(&ddevapp.ExecOpts{Cmd: "true"})
+		require.NoError(t, err)
+		got, err := os.ReadFile(filepath.Join(app.AppRoot, "pre-exec-count.txt"))
+		require.NoError(t, err)
+		require.Equal(t, "pre-exec-ran\n", string(got))
+	})
+
+	t.Run("composer task in pre-composer and pre-exec hooks does not recurse", func(t *testing.T) {
+		app.Hooks = map[string][]ddevapp.YAMLTask{
+			"pre-composer": {{"composer": "--version"}},
+			"pre-exec":     {{"composer": "--version"}},
+		}
+		t.Cleanup(func() { app.Hooks = nil })
+		_, _, err = app.Composer([]string{"--version"})
+		require.NoError(t, err)
+	})
+
 	t.Run("hook failure handling", func(t *testing.T) {
 		app.Hooks = map[string][]ddevapp.YAMLTask{
 			"hook-test": {
@@ -161,6 +183,37 @@ func TestProcessHooks(t *testing.T) {
 
 			err = app.ProcessHooks("hook-test")
 			require.Error(t, err)
+		})
+	})
+
+	// A failing exec/exec-host hook's output is teed live (unchanged) and
+	// also attached to the logged failure, the same way ExecOnHostOrService
+	// attaches output for a failing provider command.
+	t.Run("failing hook output is attached to the error", func(t *testing.T) {
+		t.Run("exec", func(t *testing.T) {
+			app.Hooks = map[string][]ddevapp.YAMLTask{
+				"hook-test": {
+					{"exec": `echo "boom-output-marker-web" >&2; exit 7`},
+				},
+			}
+			getUserOut := util.CaptureUserOut()
+			err = app.ProcessHooks("hook-test")
+			userOut := getUserOut()
+			require.NoError(t, err)
+			require.Contains(t, userOut, "boom-output-marker-web")
+		})
+
+		t.Run("exec-host", func(t *testing.T) {
+			app.Hooks = map[string][]ddevapp.YAMLTask{
+				"hook-test": {
+					{"exec-host": `echo "boom-output-marker-host" >&2; exit 7`},
+				},
+			}
+			getUserOut := util.CaptureUserOut()
+			err = app.ProcessHooks("hook-test")
+			userOut := getUserOut()
+			require.NoError(t, err)
+			require.Contains(t, userOut, "boom-output-marker-host")
 		})
 	})
 

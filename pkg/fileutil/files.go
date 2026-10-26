@@ -123,6 +123,21 @@ func CopyDir(src string, dst string) error {
 	return nil
 }
 
+// DirSize returns the total size in bytes of all files within a directory tree
+func DirSize(path string) (int64, error) {
+	var size int64
+	err := filepath.Walk(path, func(_ string, info fs.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			size += info.Size()
+		}
+		return nil
+	})
+	return size, err
+}
+
 // IsDirectory returns true if path is a dir, false on error or not directory
 func IsDirectory(path string) bool {
 	fileInfo, err := os.Stat(path)
@@ -158,13 +173,62 @@ func PurgeDirectory(path string) error {
 	}
 
 	for _, file := range files {
-		err = util.Chmod(filepath.Join(path, file), 0777)
+		fullPath := filepath.Join(path, file)
+		fi, err := os.Lstat(fullPath)
 		if err != nil {
 			return err
 		}
-		err = os.RemoveAll(filepath.Join(path, file))
+		// Symlinks must be removed directly without chmod (following a symlink
+		// to chmod it may fail if the target no longer exists).
+		if fi.Mode()&os.ModeSymlink == 0 {
+			err = util.Chmod(fullPath, 0777)
+			if err != nil {
+				return err
+			}
+		}
+		err = os.RemoveAll(fullPath)
+		if err != nil {
+			// On Traditional Windows tests tests fail cleaning up:
+			// config\default_config.yaml: The process cannot access the file because it is being used by another process
+			util.Warning("unable to fully purge '%s': %v", fullPath, err)
+		}
+	}
+	return nil
+}
+
+// PurgeDirectoryExcept removes all contents of a directory except
+// files whose names are in the except map.
+func PurgeDirectoryExcept(path string, except map[string]bool) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+
+	defer util.CheckClose(dir)
+
+	files, err := dir.Readdirnames(-1)
+	if err != nil {
+		return err
+	}
+
+	for _, file := range files {
+		if except[file] {
+			continue
+		}
+		fullPath := filepath.Join(path, file)
+		fi, err := os.Lstat(fullPath)
 		if err != nil {
 			return err
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
+			err = util.Chmod(fullPath, 0777)
+			if err != nil {
+				return err
+			}
+		}
+		err = os.RemoveAll(fullPath)
+		if err != nil {
+			util.Warning("unable to remove '%s': %v", fullPath, err)
 		}
 	}
 	return nil
@@ -225,6 +289,38 @@ func ListFilesInDirFullPath(path string, excludeDirectories bool) ([]string, err
 		fileList = append(fileList, filepath.Join(path, de.Name()))
 	}
 	return fileList, nil
+}
+
+// ListFilesWithDepth returns an array of full path of files found in a directory, traversing up to maxDepth levels.
+// maxDepth=0 means only files directly in dir, maxDepth=1 means dir and one level of subdirectories, etc.
+// maxDepth=-1 means unlimited depth (all files recursively).
+func ListFilesWithDepth(dir string, maxDepth int) ([]string, error) {
+	var files []string
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if maxDepth == -1 {
+				return nil
+			}
+			// Calculate depth and skip directories beyond maxDepth
+			relPath, _ := filepath.Rel(dir, path)
+			var depth int
+			if relPath == "." {
+				depth = 0
+			} else {
+				depth = strings.Count(relPath, string(filepath.Separator)) + 1
+			}
+			if depth > maxDepth {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		files = append(files, path)
+		return nil
+	})
+	return files, err
 }
 
 // RandomFilenameBase generates a temporary filename for use in testing or whatever.
@@ -426,8 +522,40 @@ func RemoveFilesMatchingGlob(pattern string) error {
 	return nil
 }
 
+// CopyFilesMatchingGlob copies files matching a glob pattern from srcDir to destDir.
+// It returns the list of filenames (not full paths) that were copied.
+// Directories are skipped. If no files match, it returns an empty slice with no error.
+func CopyFilesMatchingGlob(srcDir string, destDir string, globPattern string) ([]string, error) {
+	pattern := filepath.Join(srcDir, globPattern)
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("error finding files matching %s: %v", pattern, err)
+	}
+
+	var copiedFiles []string
+	for _, srcFile := range matches {
+		info, err := os.Stat(srcFile)
+		if err != nil {
+			return copiedFiles, fmt.Errorf("error stating file %s: %v", srcFile, err)
+		}
+		// Skip directories
+		if info.IsDir() {
+			continue
+		}
+
+		filename := filepath.Base(srcFile)
+		destFile := filepath.Join(destDir, filename)
+		if err := CopyFile(srcFile, destFile); err != nil {
+			return copiedFiles, fmt.Errorf("error copying %s to %s: %v", srcFile, destFile, err)
+		}
+		copiedFiles = append(copiedFiles, filename)
+	}
+
+	return copiedFiles, nil
+}
+
 // TemplateStringToFile takes a template string, runs templ.Execute on it, and writes it out to file
-func TemplateStringToFile(content string, vars map[string]interface{}, targetFilePath string) error {
+func TemplateStringToFile(content string, vars map[string]any, targetFilePath string) error {
 	templ := template.New("templateStringToFile:" + targetFilePath)
 	templ, err := templ.Parse(content)
 	if err != nil {
@@ -479,10 +607,15 @@ func CheckSignatureOrNoFile(path string, signature string) error {
 			return err
 		}
 		// We found the file and it has the signature in it.
-		if !found {
-			return fmt.Errorf("signature was not found in file %s", path)
+		if found {
+			return nil
 		}
-		return nil
+		// Signature not found - check if file is empty, which means it can be safely overwritten
+		s, statErr := os.Stat(path)
+		if statErr == nil && s != nil && s.Size() == 0 {
+			return nil // Empty file, safe to overwrite
+		}
+		return fmt.Errorf("signature was not found in file %s", path)
 
 	case IsDirectory(path):
 		err = filepath.WalkDir(path, func(path string, info fs.DirEntry, err error) error {
@@ -503,12 +636,18 @@ func CheckSignatureOrNoFile(path string, signature string) error {
 			if err != nil {
 				return err
 			}
-			// We have the file and it does not have the signature in it.
-			// that means it's not safe to overwrite it.
-			if !found {
-				return fmt.Errorf("signature was not found in file %s", path)
+			// If signature found, file can be overwritten
+			if found {
+				return nil
 			}
-			return nil
+			// Signature not found - check if file is empty, which means it can be safely overwritten
+			s, statErr := os.Stat(path)
+			if statErr == nil && s != nil && s.Size() == 0 {
+				return nil // Empty file, safe to overwrite
+			}
+			// We have the file and it does not have the signature in it and is not empty.
+			// that means it's not safe to overwrite it.
+			return fmt.Errorf("signature was not found in file %s", path)
 		})
 	}
 	return err

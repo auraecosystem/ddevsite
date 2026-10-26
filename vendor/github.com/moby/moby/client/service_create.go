@@ -59,16 +59,18 @@ func (cli *Client) ServiceCreate(ctx context.Context, options ServiceCreateOptio
 			options.Spec.TaskTemplate.ContainerSpec.Image = taggedImg
 		}
 		if options.QueryRegistry {
-			resolveWarning := resolveContainerSpecImage(ctx, cli, &options.Spec.TaskTemplate, options.EncodedRegistryAuth)
-			warnings = append(warnings, resolveWarning)
+			if warning := resolveContainerSpecImage(ctx, cli, &options.Spec.TaskTemplate, options.EncodedRegistryAuth); warning != "" {
+				warnings = append(warnings, warning)
+			}
 		}
 	case options.Spec.TaskTemplate.PluginSpec != nil:
 		if taggedImg := imageWithTagString(options.Spec.TaskTemplate.PluginSpec.Remote); taggedImg != "" {
 			options.Spec.TaskTemplate.PluginSpec.Remote = taggedImg
 		}
 		if options.QueryRegistry {
-			resolveWarning := resolvePluginSpecRemote(ctx, cli, &options.Spec.TaskTemplate, options.EncodedRegistryAuth)
-			warnings = append(warnings, resolveWarning)
+			if warning := resolvePluginSpecRemote(ctx, cli, &options.Spec.TaskTemplate, options.EncodedRegistryAuth); warning != "" {
+				warnings = append(warnings, warning)
+			}
 		}
 	}
 
@@ -76,7 +78,7 @@ func (cli *Client) ServiceCreate(ctx context.Context, options ServiceCreateOptio
 	if options.EncodedRegistryAuth != "" {
 		headers[registry.AuthHeader] = []string{options.EncodedRegistryAuth}
 	}
-	resp, err := cli.post(ctx, "/services/create", nil, options.Spec, headers)
+	resp, err := cli.post(ctx, "/services/create", nil, headers, options.Spec)
 	defer ensureReaderClosed(resp)
 	if err != nil {
 		return ServiceCreateResult{}, err
@@ -93,35 +95,33 @@ func (cli *Client) ServiceCreate(ctx context.Context, options ServiceCreateOptio
 }
 
 func resolveContainerSpecImage(ctx context.Context, cli DistributionAPIClient, taskSpec *swarm.TaskSpec, encodedAuth string) string {
-	var warning string
-	if img, imgPlatforms, err := imageDigestAndPlatforms(ctx, cli, taskSpec.ContainerSpec.Image, encodedAuth); err != nil {
-		warning = digestWarning(taskSpec.ContainerSpec.Image)
-	} else {
-		taskSpec.ContainerSpec.Image = img
-		if len(imgPlatforms) > 0 {
-			if taskSpec.Placement == nil {
-				taskSpec.Placement = &swarm.Placement{}
-			}
-			taskSpec.Placement.Platforms = imgPlatforms
-		}
+	img, imgPlatforms, err := imageDigestAndPlatforms(ctx, cli, taskSpec.ContainerSpec.Image, encodedAuth)
+	if err != nil {
+		return digestWarning(taskSpec.ContainerSpec.Image)
 	}
-	return warning
+	taskSpec.ContainerSpec.Image = img
+	if len(imgPlatforms) > 0 {
+		if taskSpec.Placement == nil {
+			taskSpec.Placement = &swarm.Placement{}
+		}
+		taskSpec.Placement.Platforms = imgPlatforms
+	}
+	return ""
 }
 
 func resolvePluginSpecRemote(ctx context.Context, cli DistributionAPIClient, taskSpec *swarm.TaskSpec, encodedAuth string) string {
-	var warning string
-	if img, imgPlatforms, err := imageDigestAndPlatforms(ctx, cli, taskSpec.PluginSpec.Remote, encodedAuth); err != nil {
-		warning = digestWarning(taskSpec.PluginSpec.Remote)
-	} else {
-		taskSpec.PluginSpec.Remote = img
-		if len(imgPlatforms) > 0 {
-			if taskSpec.Placement == nil {
-				taskSpec.Placement = &swarm.Placement{}
-			}
-			taskSpec.Placement.Platforms = imgPlatforms
-		}
+	img, imgPlatforms, err := imageDigestAndPlatforms(ctx, cli, taskSpec.PluginSpec.Remote, encodedAuth)
+	if err != nil {
+		return digestWarning(taskSpec.PluginSpec.Remote)
 	}
-	return warning
+	taskSpec.PluginSpec.Remote = img
+	if len(imgPlatforms) > 0 {
+		if taskSpec.Placement == nil {
+			taskSpec.Placement = &swarm.Placement{}
+		}
+		taskSpec.Placement.Platforms = imgPlatforms
+	}
+	return ""
 }
 
 func imageDigestAndPlatforms(ctx context.Context, cli DistributionAPIClient, image, encodedAuth string) (string, []swarm.Platform, error) {
@@ -137,21 +137,37 @@ func imageDigestAndPlatforms(ctx context.Context, cli DistributionAPIClient, ima
 
 	if len(distributionInspect.Platforms) > 0 {
 		platforms = make([]swarm.Platform, 0, len(distributionInspect.Platforms))
+		seen := make(map[swarm.Platform]struct{}, len(distributionInspect.Platforms))
 		for _, p := range distributionInspect.Platforms {
+			// skip attestations and other data included in the manifest index.
+			if p.OS == "unknown" || p.Architecture == "unknown" {
+				continue
+			}
 			// clear architecture field for arm. This is a temporary patch to address
-			// https://github.com/docker/swarmkit/issues/2294. The issue is that while
+			// https://github.com/moby/swarmkit/issues/2294. The issue is that while
 			// image manifests report "arm" as the architecture, the node reports
 			// something like "armv7l" (includes the variant), which causes arm images
 			// to stop working with swarm mode. This patch removes the architecture
 			// constraint for arm images to ensure tasks get scheduled.
 			arch := p.Architecture
-			if strings.ToLower(arch) == "arm" {
+			if strings.EqualFold(arch, "arm") {
 				arch = ""
 			}
-			platforms = append(platforms, swarm.Platform{
+			platform := swarm.Platform{
 				Architecture: arch,
 				OS:           p.OS,
-			})
+			}
+
+			// Skip duplicates. Swarm currently only uses os/arch, and doesn't
+			// support other fields (Variant, OSVersion, OSFeatures), which
+			// usually results in duplicate "os/arch" combinations coming from
+			// the image.
+			if _, ok := seen[platform]; ok {
+				continue
+			}
+			seen[platform] = struct{}{}
+
+			platforms = append(platforms, platform)
 		}
 	}
 	return imageWithDigest, platforms, err

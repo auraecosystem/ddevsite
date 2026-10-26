@@ -1,6 +1,62 @@
 # Using the `ddev` Command
 
-Type `ddev` or `ddev -h` in a terminal window to see the available DDEV [commands](../usage/commands.md). There are commands to configure a project, start, stop, describe, etc. Each command also has help using `ddev help <command>` or `ddev command -h`. For example, `ddev help snapshot` will show help and examples for the snapshot command.
+Type `ddev help` or `ddev --help` or `ddev -h` in a terminal window to see the available DDEV [commands](../usage/commands.md). There are commands to configure a project, start, stop, describe, etc. Each command also has help using `ddev help <command>` or `ddev command -h`. For example, `ddev help snapshot` will show help and examples for the snapshot command.
+
+## Interactive Dashboard
+
+Running `ddev` with no arguments launches an interactive terminal dashboard. The dashboard shows all your DDEV projects and their status, and lets you manage them with these keyboard shortcuts.
+
+### Navigation
+
+| Key | Action |
+|-----|--------|
+| <kbd>Enter</kbd> | Open project detail view |
+| <kbd>↑</kbd> / <kbd>↓</kbd> or <kbd>k</kbd> / <kbd>j</kbd> | Move the selection, or scroll the detail and log views |
+| <kbd>PgUp</kbd>/<kbd>b</kbd> / <kbd>PgDn</kbd>/<kbd>f</kbd>, <kbd>Home</kbd>/<kbd>g</kbd> / <kbd>End</kbd>/<kbd>G</kbd> | Scroll the list, detail or logs a screen at a time, or jump to the start or end |
+| <kbd>u</kbd> / <kbd>d</kbd> | Scroll the detail or logs half a screen up or down |
+| <kbd>Esc</kbd> / <kbd>Backspace</kbd> | Go back |
+| <kbd>/</kbd> | Filter projects by name, type, status, or directory name; <kbd>Enter</kbd>, <kbd>Tab</kbd>, <kbd>↑</kbd> or <kbd>↓</kbd> ends typing, and <kbd>Esc</kbd> clears the filter |
+| <kbd>r</kbd> | Refresh |
+| <kbd>?</kbd> | Show or hide the full list of keys |
+| <kbd>q</kbd> | Quit |
+
+### Projects
+
+| Key | Action |
+|-----|--------|
+| <kbd>s</kbd> / <kbd>S</kbd> | Start / Stop the project |
+| <kbd>R</kbd> | Restart the project |
+| <kbd>D</kbd> | Delete the project and its database, like [`ddev delete`](../usage/commands.md#delete); confirm with <kbd>y</kbd>, or <kbd>O</kbd> to skip the snapshot |
+| <kbd>l</kbd> | Launch project URL in browser |
+| <kbd>m</kbd> | Launch Mailpit in browser |
+| <kbd>x</kbd> | Launch XHGui in browser |
+| <kbd>o</kbd> | Open project directory in the file manager |
+| <kbd>v</kbd> / <kbd>p</kbd> | Open project in VS Code / PhpStorm |
+| <kbd>e</kbd> | SSH into web container (detail view) |
+| <kbd>L</kbd> | Follow logs (detail view) |
+| <kbd>X</kbd> | Toggle Xdebug (detail view) |
+| <kbd>c</kbd> | Copy the project URL (detail view) |
+| <kbd>n</kbd> | Make a database snapshot, like [`ddev snapshot`](../usage/commands.md#snapshot), while the project runs (detail view) |
+| <kbd>N</kbd> | Restore the latest snapshot, like [`ddev snapshot restore --latest`](../usage/commands.md#snapshot-restore); confirm with <kbd>y</kbd> (detail view) |
+| <kbd>U</kbd> | Update the installed add-ons that have a newer release, like [`ddev add-on update`](../usage/commands.md#add-on-update); confirm with <kbd>y</kbd> (detail view) |
+| <kbd>a</kbd> / <kbd>A</kbd> | Start all / Stop all projects; confirm with <kbd>y</kbd> |
+| <kbd>P</kbd> | Poweroff all DDEV projects and containers; confirm with <kbd>y</kbd> |
+| <kbd>C</kbd> | Run `ddev config` interactively in the current directory |
+
+Commands such as start and delete run in the terminal itself, so their output, errors included, stays in the terminal after you quit the dashboard.
+
+In terminals that support [OSC 8 hyperlinks](https://gist.github.com/egmontkob/eb114294efbcd5adb1944c9f3cb5feda), project paths and URLs in the dashboard and detail view are clickable, as are the VS Code and PhpStorm links in the detail view. The editor links use the `vscode://` and `phpstorm://` URL schemes, so they work only when that editor is installed, and some terminals block those schemes. PhpStorm does not register `phpstorm://` on Windows, so there the PhpStorm link needs a separately installed handler. The <kbd>p</kbd> key avoids this by using PhpStorm's command-line launcher when it is on your `PATH`, which [JetBrains Toolbox](https://www.jetbrains.com/toolbox-app/) can install.
+
+To disable the dashboard and show the classic help text instead, set [`no_tui: true`](../configuration/config.md#no_tui) in your global configuration (`$HOME/.ddev/global_config.yaml`), or set the environment variable `DDEV_NO_TUI=true`.
+
+### Terminal Compatibility
+
+The dashboard automatically detects your terminal's color capabilities and adapts its output. If colors or styling don't render correctly in your terminal, you have several options:
+
+* **Disable colors**: Run `NO_COLOR=1 ddev` or `export NO_COLOR=1` in your shell to disable all color output while keeping the dashboard functional.
+* **Use simple formatting globally**: Run `ddev config global --simple-formatting=true` to disable colors and table formatting across all DDEV commands, including the dashboard. See [`simple_formatting`](../configuration/config.md#simple_formatting).
+* **Set `TERM` appropriately**: If your terminal supports color but DDEV doesn't detect it, make sure your `TERM` environment variable is set correctly (e.g., `xterm-256color`). Some SSH clients or multiplexers like `tmux` or `screen` may need explicit configuration.
+* **Disable the dashboard entirely**: If the interactive dashboard doesn't work well in your environment (e.g., a very limited terminal or CI), use `DDEV_NO_TUI=true` or set [`no_tui: true`](../configuration/config.md#no_tui) in `$HOME/.ddev/global_config.yaml` to fall back to the classic help output.
 
 * [`ddev config`](../usage/commands.md#config) configures a project’s type and docroot, either interactively or with flags.
 * [`ddev start`](../usage/commands.md#start) starts up a project.
@@ -17,7 +73,7 @@ Type `ddev` or `ddev -h` in a terminal window to see the available DDEV [command
 ## Lots of Other Commands
 
 * [`ddev mysql`](../usage/commands.md#mysql) gives direct access to the MySQL client and [`ddev psql`](../usage/commands.md#psql) to the PostgreSQL `psql` client.
-* [`ddev sequelace`](../usage/commands.md#sequelace), [`ddev tableplus`](../usage/commands.md#tableplus), and [`ddev querious`](../usage/commands.md#querious) (macOS only, if the app is installed) give access to the Sequel Ace, TablePlus or Querious database browser GUIs.
+* [`ddev sequelace`](../usage/commands.md#sequelace), [`ddev tableplus`](../usage/commands.md#tableplus), [`ddev tablepro`](../usage/commands.md#tablepro), and [`ddev querious`](../usage/commands.md#querious) (macOS only, if the app is installed) give access to the Sequel Ace, TablePlus, TablePro or Querious database browser GUIs.
 * [`ddev dbeaver`](../usage/commands.md#dbeaver) (if installed) gives access to the DBeaver database browser GUI.
 * [`ddev heidisql`](../usage/commands.md#heidisql) (Windows/WSL2/Linux, if installed) gives access to the HeidiSQL database browser GUI.
 * [`ddev import-db`](../usage/commands.md#import-db) and [`ddev export-db`](../usage/commands.md#export-db) import or export SQL or compressed SQL files.
@@ -27,18 +83,22 @@ Type `ddev` or `ddev -h` in a terminal window to see the available DDEV [command
 * [`ddev xdebug`](../usage/commands.md#xdebug) enables Xdebug, `ddev xdebug off` disables it, and `ddev xdebug status` shows status. You can toggle Xdebug on and off easily using `ddev xdebug toggle`.
 * [`ddev xhprof`](../usage/commands.md#xhprof) enables xhprof, `ddev xhprof off` disables it, and `ddev xhprof status` shows status.
 * [`ddev xhgui`](../usage/commands.md#xhgui) enables XHGui, `ddev xhgui off` disables it, and `ddev xhgui status` shows status.
+* [`ddev dr`](../usage/commands.md#dr) (Drupal 11.4+ only) gives direct access to the `dr` CLI, the next-generation Drupal CLI available in Drupal 11.4+.
 * [`ddev drush`](../usage/commands.md#drush) (Drupal and Backdrop only) gives direct access to the `drush` CLI.
 * [`ddev artisan`](../usage/commands.md#artisan) (Laravel only) gives direct access to the Laravel `artisan` CLI.
+* [`ddev asterios`](../usage/commands.md#asterios) (Asterios only) gives direct access to the Asterios `asterios` CLI.
 * [`ddev magento`](../usage/commands.md#magento) (Magento2 only) gives access to the `magento` CLI.
-* [`ddev console`](../usage/commands.md#console) (Symfony only) gives access to the `symfony console` CLI.
+* [`ddev maho`](../usage/commands.md#maho) (Maho only) gives direct access to the `maho` CLI.
+* [`ddev console`](../usage/commands.md#console) (Symfony and Shopware only) gives access to the `symfony console` CLI.
 * [`ddev craft`](../usage/commands.md#craft) (Craft CMS only) gives access to the `craft` CLI.
 * [`ddev npm`](../usage/commands.md#npm) gives direct access to the `npm` CLI.
 * [`ddev npx`](../usage/commands.md#npx) gives direct access to the `npx` CLI.
 * [`ddev yarn`](../usage/commands.md#yarn) gives direct access to the `yarn` CLI.
 * [`ddev cake`](../usage/commands.md#cake) (CakePHP only) gives direct access to the `cake` CLI.
 * [`ddev sake`](../usage/commands.md#sake) (Silverstripe CMS only) gives direct access to the `sake` CLI.
+* [`ddev spark`](../usage/commands.md#spark) (CodeIgniter) gives direct access to the `spark` CLI.
 * [`ddev typo3`](../usage/commands.md#typo3) (TYPO3 only) gives direct access to the `typo3` CLI.
-* [`ddev wp`](../usage/commands.md#wp) (WordPress only) gives direct access to the `wp` CLI.
+* [`ddev wp`](../usage/commands.md#wp) (WordPress and Bedrock only) gives direct access to the `wp` CLI.
 
 ## Node.js Tools
 
@@ -59,7 +119,8 @@ You can export a database with [`ddev export-db`](../usage/commands.md#export-db
 
 ```bash
 ddev export-db --file=/tmp/db.sql.gz
-ddev export-db --gzip=false --file=/tmp/db.sql
+ddev export-db --file=/tmp/db.sql
+ddev export-db --compression=zstd >/tmp/db.sql.zst
 ddev export-db >/tmp/db.sql.gz
 ```
 
@@ -67,13 +128,16 @@ ddev export-db >/tmp/db.sql.gz
 
 To import static file assets for a project, such as uploaded images and documents, use the command [`ddev import-files`](../usage/commands.md#import-files). This command will prompt you to specify the location of your import asset, then import the assets into the project’s upload directory. To define a custom upload directory, set the [`upload_dirs`](../configuration/config.md#upload_dirs) config option. If no custom upload directory is defined, the default will be used:
 
-* For Backdrop projects, this is `files`.
-* For Drupal projects, this is `sites/default/files`.
+* For Backdrop projects, this is the `files` directory.
+* For Craft CMS projects, this is the `files` directory.
+* For Drupal projects, this is the `sites/default/files` directory.
 * For Magento 1 projects, this is the `media` directory.
-* For Magento 2 projects, this is the `pub/media` directory.
+* For Magento 2 projects, this is the `media` directory.
 * For Shopware projects, this is the `media` directory.
+* For Silverstripe CMS projects, this is the `assets` directory.
 * For TYPO3 projects, this is the `fileadmin` directory.
 * For WordPress projects, this is the `wp-content/uploads` directory.
+* For WordPress Bedrock projects, this is the `app/uploads` directory.
 
 Other project types need a custom configuration to be able to use this command.
 
@@ -89,7 +153,7 @@ Archive extraction path:
 Successfully imported files for d10
 ```
 
-`ddev import-files` supports the following file types: `.tar`, `.tar.gz`, `.tar.xz`, `.tar.bz2`, `.tgz`, or `.zip`.
+`ddev import-files` supports the following file types: `.tar`, `.tar.gz`, `.tar.xz`, `.tar.bz2`, `.tar.zst`, `.tgz`, or `.zip`.
 
 It can also import a directory containing static assets.
 
@@ -155,6 +219,119 @@ Normally, `ddev exec` commands are executed in the container using Bash, which m
 The [`ddev ssh`](../usage/commands.md#ssh) command opens an interactive Bash or sh shell session to the container for a DDEV service. The web service is connected by default, and the session can be ended by typing `exit`. To connect to another service, use the `--service` flag to specify the service you want to connect to. For example, to connect to the database container, you would run `ddev ssh --service db`. To specify the destination directory, use the `--dir` flag. For example, to connect to the database container and be placed into the `/home` directory, you would run `ddev ssh --service db --dir /home`.
 
 You can also use your personal SSH keys within the web container. Run `ddev auth ssh` to add the keys from your `~/.ssh` directory and provide a passphrase, and those keys will be usable from within the web container. You generally only have to `ddev auth ssh` one time per computer reboot. This is a very popular approach for accessing private Composer repositories, or for using `drush` aliases against remote servers.
+
+If your keys live in an SSH agent rather than in `~/.ssh`, as with 1Password or a hardware key, see [Using an Existing SSH Agent](#using-an-existing-ssh-agent).
+
+### Using an Existing SSH Agent
+
+If you already use an SSH agent, such as the macOS agent, 1Password, Secretive, `gpg-agent` with a YubiKey, or one forwarded with `ssh -A`, DDEV's containers can use it directly. Set this once:
+
+```bash
+ddev config global --ssh-agent-upstream=host
+ddev auth ssh      # lists the keys your containers can use
+```
+
+After that, every project's containers use your agent when they start, with nothing to add per project. `ddev auth ssh` only shows which keys are available, and `ddev exec ssh -T git@github.com` tests them. Every container on the DDEV network can ask your agent to sign while this is on; agents that confirm each use, like 1Password, limit that exposure.
+
+If `ddev auth ssh` says "Make sure that agent is running and holds your keys", your agent is stopped or locked; open it or load your keys, and DDEV picks it up again without a restart. To go back to adding key files, run `ddev config global --ssh-agent-upstream=""` and then `ddev auth ssh`.
+
+If a connection instead fails with "Too many authentication failures", the server capped how many keys it will try, and relaying a whole agent offers more than the few keys you'd add by hand; see [Too Many Authentication Failures](../extend/in-container-configuration.md#too-many-authentication-failures) to limit which key gets offered per host.
+
+??? tip "macOS: which agent do my containers get?"
+    That depends on your Docker provider:
+
+    | Provider | What to do | Agent containers get |
+    | -- | -- | -- |
+    | OrbStack | Nothing extra | The agent named by `IdentityAgent` in `~/.ssh/config`, such as 1Password, otherwise the macOS agent. Restart OrbStack after changing `~/.ssh/config`. |
+    | Docker Desktop | Nothing extra | Always the macOS agent |
+    | Colima | Start it with `colima start --ssh-agent` | Always the macOS agent |
+    | Lima | Run `limactl edit <instance> --set .ssh.forwardAgent=true` once | Always the macOS agent |
+    | Rancher Desktop, Podman | Not supported | DDEV warns and uses its own agent; add key files with `ddev auth ssh` as usual |
+
+    To use 1Password, Secretive, or `gpg-agent`:
+
+    * With OrbStack, set `IdentityAgent` in `~/.ssh/config` as your agent's setup instructions describe, then restart OrbStack.
+    * Docker Desktop, Colima, and Lima ignore `IdentityAgent`. Point the system-wide `SSH_AUTH_SOCK` at your agent as its documentation describes; for 1Password, see [Configure SSH_AUTH_SOCK globally for every client](https://developer.1password.com/docs/ssh/agent/compatibility/).
+    * Exporting `SSH_AUTH_SOCK` in your shell profile doesn't reach any of these providers.
+
+    To use the macOS agent, load your keys into it, saving the passphrase in the Keychain:
+
+    ```bash
+    ssh-add --apple-use-keychain ~/.ssh/id_ed25519
+    ssh-add -l
+    ```
+
+??? tip "Linux: pointing at your own agent"
+    `host` uses the agent in `$SSH_AUTH_SOCK` when a project starts. A forwarded agent (`ssh -A`) gets a new socket for each login, so run `ddev auth ssh` again after logging in again. When the socket is a symlink, as with VS Code Remote's `/tmp/vscode-ssh-auth-sock-*`, DDEV uses the socket it points to. After VS Code or SSH reconnects, a terminal opened earlier still points to the old, dead socket, so run `ddev auth ssh` from a new terminal. A desktop agent's socket doesn't change, so you can set it directly, for example on Ubuntu with `ddev config global --ssh-agent-upstream=/run/user/$(id -u)/gcr/ssh`. An agent you start yourself with `eval $(ssh-agent -s)` works when you run `ddev` from that shell; to use it from any shell, start it on a fixed socket with `mkdir -p -m 700 ~/.ssh-agent && eval $(ssh-agent -a ~/.ssh-agent/agent.sock -s)` and set `ddev config global --ssh-agent-upstream=$HOME/.ssh-agent/agent.sock`. Keep the socket in its own directory rather than `~/.ssh`, because DDEV mounts the socket's whole directory into the `ddev-ssh-agent` container.
+
+??? tip "Docker Desktop: using an agent forwarded with `ssh -A`"
+    Docker Desktop relays the agent in the `SSH_AUTH_SOCK` it started with, not your shell's, and a forwarded agent gets a new socket for each login. To follow each new login without restarting Docker Desktop, start it once on a fixed path and point that path at each login's socket from `~/.ssh/rc`, which `sshd` runs at login:
+
+    ```bash
+    # Once. On macOS, use 'launchctl setenv SSH_AUTH_SOCK ...' and 'docker desktop restart' instead.
+    mkdir -p -m 700 ~/.ssh-agent-forward
+    systemctl --user set-environment SSH_AUTH_SOCK=$HOME/.ssh-agent-forward/agent.sock
+    systemctl --user restart docker-desktop
+
+    # In ~/.ssh/rc:
+    if [ -n "$SSH_AUTH_SOCK" ]; then ln -sf "$SSH_AUTH_SOCK" ~/.ssh-agent-forward/agent.sock; fi
+    ```
+
+    The most recent `ssh -A` login wins, and after it ends, containers can't reach an agent until you log in again. With X11 forwarding, `~/.ssh/rc` also has to run `xauth`, as `man sshd` describes. The Docker Desktop setting doesn't last past a reboot.
+
+??? tip "WSL2: bridging a Windows agent"
+    DDEV can't reach Windows agents such as 1Password and the Windows OpenSSH agent directly, because they listen only on a Windows named pipe. Bridge that pipe to a Unix socket with `socat` in WSL2 and [`npiperelay`](https://github.com/albertony/npiperelay) on Windows, then point DDEV at the socket. DDEV doesn't start the bridge for you. This works with Docker Desktop's WSL integration as well as Docker installed inside WSL2, although Docker Desktop on Windows doesn't forward an agent of its own.
+
+    1. Install `socat` in WSL2 with `sudo apt install socat`, and `npiperelay` in PowerShell with `winget install albertony.npiperelay`. `npiperelay` is x64-only; Windows on Arm runs it under emulation.
+    2. With [systemd enabled in WSL2](https://learn.microsoft.com/en-us/windows/wsl/systemd), run the bridge as a user service, which starts with WSL2 whether or not you open a shell. Run this in a WSL2 shell, where `npiperelay.exe` is on `PATH`; the service itself doesn't get the Windows `PATH`, so the unit records the full path:
+
+        ```bash
+        mkdir -p ~/.config/systemd/user
+        cat > ~/.config/systemd/user/ssh-agent-bridge.service <<EOF
+        [Unit]
+        Description=Bridge the Windows SSH agent to ~/.1password/agent.sock
+
+        [Service]
+        ExecStartPre=/usr/bin/mkdir -p -m 700 %h/.1password
+        ExecStart=/usr/bin/socat UNIX-LISTEN:%h/.1password/agent.sock,fork,unlink-early EXEC:"$(command -v npiperelay.exe) -ei -s //./pipe/openssh-ssh-agent",nofork
+        Restart=on-failure
+        SuccessExitStatus=143
+
+        [Install]
+        WantedBy=default.target
+        EOF
+        systemctl --user enable --now ssh-agent-bridge
+        ```
+
+        Without systemd, add this to `~/.bashrc` instead, so that each new shell starts the bridge if it isn't already running:
+
+        ```bash
+        export SSH_AUTH_SOCK=$HOME/.1password/agent.sock
+        ssh-add -l >/dev/null 2>&1
+        if [ $? -eq 2 ]; then
+          rm -f "$SSH_AUTH_SOCK"
+          mkdir -p -m 700 "$(dirname "$SSH_AUTH_SOCK")"
+          (setsid socat UNIX-LISTEN:"$SSH_AUTH_SOCK",fork EXEC:"npiperelay.exe -ei -s //./pipe/openssh-ssh-agent",nofork &) >/dev/null 2>&1
+        fi
+        ```
+
+    3. Check that `SSH_AUTH_SOCK=~/.1password/agent.sock ssh-add -l` lists your keys, then run:
+
+        ```bash
+        ddev config global --ssh-agent-upstream=$HOME/.1password/agent.sock
+        ddev auth ssh
+        ```
+
+    To use the same agent for `ssh` and `git` in WSL2, add `export SSH_AUTH_SOCK=$HOME/.1password/agent.sock` to `~/.bashrc`. If the bridge stops, containers can't use your keys until it runs again, and nothing in DDEV needs a restart.
+
+??? tip "Traditional Windows: key files, or piping from 1Password"
+    `ssh_agent_upstream` doesn't work here. Windows agents, including 1Password and the Windows OpenSSH agent, listen on a named pipe that Docker Desktop and other Windows providers can't pass to containers. DDEV warns and uses its own agent, so add your key files from `%USERPROFILE%\.ssh` with `ddev auth ssh`. To use a key stored in 1Password without saving it to a file, pipe it from the [1Password CLI](https://developer.1password.com/docs/cli/get-started/), in PowerShell or Git Bash:
+
+    ```bash
+    op read "op://<vault>/<item>/private key?ssh-format=openssh" | ddev auth ssh -f -
+    ```
+
+    Turn on **Settings** > **Developer** > **Integrate with 1Password CLI** in the 1Password app first, and add `--account <account>.1password.com` to `op read` if you're signed in to more than one account. Run the command again after `ddev poweroff` or a reboot, because DDEV's agent forgets keys when it stops.
 
 ### `ddev logs`
 

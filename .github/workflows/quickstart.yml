@@ -5,7 +5,7 @@ defaults:
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main ]
   pull_request:
     paths:
       - "docs/content/users/quickstart.md"
@@ -23,13 +23,9 @@ on:
         type: boolean
         required: false
         default: false
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-
-env:
-  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 permissions:
   actions: write
@@ -37,14 +33,38 @@ permissions:
 jobs:
   build:
     name: Docs Quickstart test
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
+    # 90 was already tight for the quickstart-test suite alone; the "Wait for
+    # pushed images" step can now add up to ~40 more minutes (see
+    # containers/wait-for-images.sh) before the suite even starts.
+    timeout-minutes: 150
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      - name: Load variables from public-variables branch
+        if: github.event_name != 'workflow_dispatch'
+        run: |
+          git fetch --depth=1 --no-tags https://github.com/ddev/ddev public-variables:refs/public-variables-tmp
+          while IFS= read -r varname; do
+            [[ "$varname" == "README.md" ]] && continue
+            value=$(git show "refs/public-variables-tmp:.github/public-variables/$varname" | tr -d '\r' | paste -s -d '|' -)
+            echo "$varname=${value}"
+            echo "$varname=$value" >> $GITHUB_ENV
+          done < <(git ls-tree --name-only refs/public-variables-tmp:.github/public-variables/)
+          git update-ref -d refs/public-variables-tmp
+
+      - name: Wait for pushed images
+        # This runner holds no push credentials, so it can race
+        # image-push.yml's approval/build/push - see containers/wait-for-images.sh.
+        run: containers/wait-for-images.sh
+
       - name: Set up Homebrew
         id: set-up-homebrew
         uses: Homebrew/actions/setup-homebrew@main
+        with:
+          brew-gh-api-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Remove unnecessary items on disk
         uses: jlumbroso/free-disk-space@main
@@ -63,7 +83,7 @@ jobs:
       # 1password secrets are not available on forked PRs and some other PRs
       - name: Load 1password secret(s) magento2 etc if available
         if: ${{ env.OP_SERVICE_ACCOUNT_TOKEN != '' }}
-        uses: 1password/load-secrets-action@v3
+        uses: 1password/load-secrets-action@v5
         with:
           export-env: true
         env:
@@ -71,18 +91,25 @@ jobs:
           MAGENTO2_PUBLIC_ACCESS_KEY: "op://test-secrets/MAGENTO2_ACCESS_KEYS/public_access_key"
           MAGENTO2_PRIVATE_ACCESS_KEY: "op://test-secrets/MAGENTO2_ACCESS_KEYS/private_access_key"
 
-      - name: Setup tmate session
+      - name: Setup upterm session
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
-        uses: mxschmitt/action-tmate@v3
+        uses: owenthereal/action-upterm@v1
         with:
           limit-access-to-actor: true
 
       - name: Run quickstart test
+        env:
+          DDEV_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          brew unlink ddev || true
+          make
           # Use mutagen by default as it may cause different behaviors
-          ddev config global --performance-mode=mutagen
-          # bats refuses ever to exit until all processes started by it
-          # have exited. So we don't want to let bats/ddev start mutagen daemon
-          mkdir -p ~/tmp/dummystart && pushd ~/tmp/dummystart && ddev config --auto && ddev start -y && popd
+          $(make DDEV_BINARY_FULLPATH) config global --performance-mode=mutagen
+          # Unauthenticated Composer downloads from GitHub get rate-limited (HTTP 429)
+          mkdir -p ~/.ddev/homeadditions/.composer
+          printf '{"github-oauth":{"github.com":"%s"}}\n' "${DDEV_GITHUB_TOKEN}" > ~/.ddev/homeadditions/.composer/auth.json
           make quickstart-test
-          ddev poweroff
+
+      - name: Fail on timeout
+        if: ${{ cancelled() }}
+        run: exit 1

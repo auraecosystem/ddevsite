@@ -10,6 +10,7 @@ var AddonCmd = &cobra.Command{
 	Aliases: []string{"addon", "add-ons", "addons"},
 	Short:   "A collection of commands for managing installed 3rd party add-ons",
 	Example: `ddev add-on get ddev/ddev-redis
+ddev add-on update
 ddev add-on remove someaddonname
 ddev add-on list
 ddev add-on list --installed
@@ -17,6 +18,6 @@ ddev add-on search redis
 `,
 }
 
-func init() {
+func registerAddonCmd() {
 	RootCmd.AddCommand(AddonCmd)
 }

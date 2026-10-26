@@ -28,6 +28,8 @@ These are normally configured in the repository environment variables.
 * `AUR_EDGE_GIT_URL`: The Git URL for AUR edge (normally `ddev-edge-bin`), for example `ssh://aur@aur.archlinux.org/ddev-edge-bin.git`.
 * `AUR_PACKAGE_NAME`: The base name of the AUR package. Normally `ddev` for production, but `ddev-test` for testing repository.
 * `AUR_STABLE_GIT_URL`: The Git URL for AUR stable (normally `ddev-bin`), for example `ssh://aur@aur.archlinux.org/ddev-bin.git`.
+* `CLOUDSMITH_ORG`: The organization on [Cloudsmith](https://cloudsmith.com) that receives `apt`/`yum` package pushes.
+* `CLOUDSMITH_REPO`: The repository within `CLOUDSMITH_ORG` that receives package pushes, so `ddev-test/ddev` can push to a separate test repository from `ddev/ddev`.
 * `DDEV_IGNORE_EXPIRING_KEYS`: If the value is `"false"` then daily tests will fail if signing keys are expiring soon, default is `"false"` on `ddev/ddev`
 * `DDEV_MAX_DAYS_BEFORE_CERT_EXPIRATION`: Number of days before expiration to warn about expiring signing keys, default is `90` on `ddev/ddev`.
 * `DDEV_WINDOWS_SIGN`: If the value is `"true"` then `make` will attempt to sign the Windows executables, which requires building on our self-hosted Windows runner.
@@ -49,13 +51,20 @@ The following “Repository secret” environment variables must be configured i
 
 * `AUR_SSH_PRIVATE_KEY`: Private SSH key for the `ddev-releaser` user. This must be processed into a single line, for example, `perl -p -e 's/\n/<SPLIT>/' ~/.ssh/id_rsa_ddev_releaser| pbcopy`.
 * `CHOCOLATEY_API_KEY`: API key for Chocolatey.
+* `DDEV_CLOUDSMITH_API_TOKEN`: API token for the `CLOUDSMITH_ORG`/`CLOUDSMITH_REPO` above.
 * `DDEV_GITHUB_TOKEN`: GitHub personal token (`repo` scope, classic PAT) that gives access to create releases and push to the Homebrew repositories.
 * `DDEV_MACOS_APP_PASSWORD`: Password used for notarization, see [signing_tools](https://github.com/ddev/signing_tools).
-* `DDEV_MACOS_SIGNING_PASSWORD`: Password for the macOS signing key, see [signing_tools](https://github.com/ddev/signing_tools).
 * `DDEV_WINDOWS_SIGNING_PASSWORD`: Windows signing password.
 * `DOCKERHUB_TOKEN`: Token for pushing to `hub.docker.com`. or updating image descriptions.
 * `FURY_TOKEN`: Push token assigned to the above Gemfury account.
 * `GORELEASER_KEY`: License key for GoReleaser Pro.
+
+The macOS Developer ID certificate and its password are stored in the
+`ddev-signing` vault, not `push-secrets`. Configure the
+`DDEV_SIGNING_SERVICE_ACCOUNT_TOKEN` GitHub Actions secret with a dedicated,
+read-only service account that has access only to that vault. The macOS release
+job downloads the certificate to a temporary file and deletes it when the job
+exits.
 
 ## Creating a Release
 
@@ -64,21 +73,70 @@ The following “Repository secret” environment variables must be configured i
 ### Prerelease Tasks
 
 * Create and execute a test plan.
-* Make sure [`version-history.md`](https://github.com/ddev/ddev/blob/main/version-history.md) is up to date.
-* Push the new version of `ddev/ddev-php-base`.
-* Update `ddev/ddev-webserver` to use the new version of `ddev/ddev-php-base` and push it with the proper tag.
-* Make sure the Docker images are all tagged and pushed.
-* Make sure [`pkg/versionconstants/versionconstants.go`](https://github.com/ddev/ddev/blob/main/pkg/versionconstants/versionconstants.go) is all set to point to the new images and tests have been run.
+* Run `make release-prep TAG=vX.Y.Z` and open a pull request with the result, so every image is rebuilt, pushed and tested under the release. See [Preparing the image tags](#preparing-the-image-tags-make-release-prep) below.
+* Merge that pull request into `main` before creating the release. `pkg/versionconstants/versionconstants.go`'s image tags are plain source constants, not `-ldflags`, so a release tagged before the merge builds a binary that still names the prerelease image tags, even though the registry already has `vX.Y.Z` images under the new ones.
+
+### Preparing the image tags: `make release-prep`
+
+`make release-prep TAG=v1.25.4` — or bare `make release-prep`, which asks for the tag — does the source-file half of a release:
+
+* Stamps `# ddev-release-marker: v1.25.4` into every image's `Dockerfile`, replacing any marker left by a previous release. A Dockerfile comment is stripped by the parser, so this moves the image's content hash without changing a single layer of the image it produces, which is what makes CI rebuild all of them.
+* Rewrites each tag in [`pkg/versionconstants/versionconstants.go`](https://github.com/ddev/ddev/blob/main/pkg/versionconstants/versionconstants.go) to the resulting hash, and each `<TagVar>Branch` to `v1.25.4` so `ddev version` names the release.
+
+It builds nothing and commits nothing. Commit the result and open a pull request: the [Image build](https://github.com/ddev/ddev/blob/main/.github/workflows/image-build-push.yml) workflow builds every image, publishes it under its content hash *and* under `v1.25.4` and `latest`, and the test suites then run against those exact images, before the release is cut. Nothing has to be dispatched by hand.
+
+Open that pull request from a branch in this repository, not from a fork. `create-manifests`, the job that adds the release names, doesn't run for fork pull requests, so a release branch pushed to a fork would build every image and quietly leave `vX.Y.Z` and `latest` off. `detect` fails the run when it finds a release marker on a fork pull request, before anything is built.
+
+`release-prep` also takes a prerelease tag (`v1.25.4-alpha1`, `-beta2`, `-rc1`), which follows exactly the same path except that `latest` is left pointing at the last stable release. No other suffix is accepted, so `git describe` output can't be stamped as a release by accident.
+
+For a stable release, `latest` moves when that pull request builds rather than when the GitHub release is created.
+
+The trailing `// <branch>-<hash>` comment on each tag keeps naming the branch rather than the release, because that is the alias the push actually publishes; `containers/validate-image-tag.sh` rejects an alias whose prefix is release-shaped, so a `v1.25.4-<hash>` tag never exists.
 
 ### Actual Release Creation
 
-1. Create a [release](https://github.com/ddev/ddev/releases) for the new version using the GitHub UI. It should be “prerelease” if it’s an edge release.
-2. Make sure you're about to create the right release tag.
-3. Use the “Auto-generate release notes” option to get the commit list, then edit to add all the other necessary info.
+1. Confirm the `release-prep` pull request above is merged to `main` — the release tag has to be cut from a commit that already has the new tags in `versionconstants.go`, not from a `main` that still points at the previous release's images.
+2. Create a [release](https://github.com/ddev/ddev/releases) for the new version using the GitHub UI. It should be “prerelease” if it’s an edge release.
+3. Make sure you're about to create the right release tag.
+4. Use the “Auto-generate release notes” option to get the commit list, then edit to add all the other necessary info.
+
+## Automatic Image Build and Push
+
+Any pull request that changes `containers/` — including from a fork — is built and pushed automatically by the [Image build](https://github.com/ddev/ddev/blob/main/.github/workflows/image-build-push.yml) / [Image push](https://github.com/ddev/ddev/blob/main/.github/workflows/image-push.yml) workflow pair. See [Automatic Image Build and Push](building-contributing.md#automatic-image-build-and-push) in the contributing guide for how the flow works and why it's safe to run on fork-authored Dockerfiles.
+
+A release no longer needs any of this. When `detect` sees a release marker in an image's `Dockerfile`, `create-manifests` publishes `vX.Y.Z` and `latest` as further names on the manifest it is already creating — the same build the release pull request's tests then run against, rather than a separate rebuild. It skips both if `vX.Y.Z` already exists in the registry, so the marker left behind after the release merges can't move a released tag onto a later build.
+
+The two workflows below (manual `workflow_dispatch`) remain for re-pushing a specific tag by hand. Their `tag` input is optional: leave it empty and the workflow uses the tag the checkout actually needs, which is safer than retyping a content hash.
+
+When the tag is a content hash, these workflows also publish the `<branch>-<hash>` alias next to it — the same second name the automatic flow creates — so a manual push doesn't leave a bare hash with nothing readable beside it in the registry. A `vX.Y.Z` tag is already readable and gets no alias.
+
+A `containers/ddev-dbserver` change builds and pushes all 20 database variants (36 jobs), because they all share a single `BaseDBTag`. That variant matrix lives in `containers/ddev-dbserver/variants.txt` and is read by `variants.sh`, which also generates that directory's make targets, the automatic flow's image list, and `push-tagged-dbimage.yml`'s matrix — add a database version there and every consumer picks it up.
+
+### One-time setup: the `image-push` GitHub Environment
+
+Fork PRs from a contributor without push access go through a single approval, gated by the `image-push` GitHub Environment (Settings → Environments), *before* anything is built — as soon as `detect` finds an image that needs building:
+
+1. Create the environment `image-push`.
+2. Add required reviewers (the maintainers/dev team).
+3. Leave `PUSH_SERVICE_ACCOUNT_TOKEN` as a repository secret. The environment gates the approval, not the secret: one job holds the approval and the build/push jobs run after it, so a run costs one approval rather than one per image, and those jobs read the repository secret — the same one the non-fork path has always used.
+
+This approval only applies to fork PRs from a contributor without push access — checked via `author_association`. A fork PR from a maintainer's own fork (`OWNER`/`MEMBER`/`COLLABORATOR`), a push to `main`, or a same-repo PR all build and push without any approval at all, using the repository-level `PUSH_SERVICE_ACCOUNT_TOKEN` secret directly (those paths never gate on `environment:`, so this environment's protection rules don't apply to them).
+
+When testing this on `ddev-test/ddev`, do the same steps there first, and confirm `vars.DOCKER_ORG` on that repository points at the DockerHub org used for testing.
+
+That org is not the one `versionconstants.go` names, so a binary built from `ddev-test/ddev` asks for `ddev/ddev-webserver:vX.Y.Z` while its images were published to `ddevhq`. Set `DDEV_DOCKER_ORG` to pull them from where they actually landed:
+
+```bash
+DDEV_DOCKER_ORG=ddevhq ddev start
+```
+
+It replaces the org on the web, db, router, ssh-agent, and xhgui images, leaving upstream images like `postgres` alone, and `ddev version` shows what it resolved to. Unset, it changes nothing.
+
+Since a job referencing an environment that doesn't exist yet gets auto-created with no protection rules (silently *not* gating), verify the environment actually has a `required_reviewers` rule before relying on it, e.g. `gh api repos/<owner>/<repo>/environments/image-push`.
 
 ## Pushing Docker Images with the GitHub Actions Workflow
 
-The easiest way to push Docker images is to use the GitHub Actions workflow, especially if the code for the image is already in the [ddev/ddev](https://github.com/ddev/ddev) repository.
+The easiest way to push Docker images is to use the GitHub Actions workflow, especially if the code for the image is already in the [ddev/ddev](https://github.com/ddev/ddev) repository. For a normal container change on a pull request, you shouldn't need this — see [Automatic Image Build and Push](#automatic-image-build-and-push) above.
 
 ### Actual release creation
 
@@ -90,14 +148,14 @@ You can push all images besides `ddev-dbserver` at <https://github.com/ddev/ddev
 
 You can push `ddev-dbserver` images at <https://github.com/ddev/ddev/actions/workflows/push-tagged-dbimage.yml>
 
-If you need to push from a forked PR, you’ll have to do this from your fork (for example, `https://github.com/rfay/ddev/actions/workflows/push-tagged-image.yml`), and you’ll have to specify the branch on the fork. This requires setting the `DOCKERHUB_TOKEN` and `DOCKERHUB_USERNAME` secrets on the forked PR, for example `https://github.com/rfay/ddev/settings/secrets/actions`. You can do the same with `ddev-dbserver` at `https://github.com/rfay/ddev/actions/workflows/push-tagged-dbimage.yml` for example.
+A forked PR that changes a container image no longer needs any of this — see [Automatic Image Build and Push](#automatic-image-build-and-push) above. The fork-your-own-secrets workaround described in earlier versions of this doc is superseded by that flow.
 
 * Visit `https://github.com/ddev/ddev/actions/workflows/push-tagged-image.yml`.
 * Click the “Push tagged image” workflow on the left side of the page.
 * Click the “Run workflow” button in the blue section above the workflow runs.
 * Choose the branch to build from (usually `main`).
-* Enter the image (`ddev-webserver`, `ddev-php-base`, etc.).
-* Enter the tag that will be used in `pkg/version/version.go`.
+* Enter the image (`ddev-webserver`, etc.).
+* Enter the tag that will be used in `pkg/versionconstants/versionconstants.go`. For a normal (non-release) dev change, running `make` at the repository root already builds the image locally and computes/writes this tag automatically — run `make print-image-tags` to read the exact value to enter here.
 
 ## Pushing Docker Images Manually
 
@@ -106,9 +164,8 @@ While it’s more error-prone, images can be pushed from the command line:
 1. `docker login` with a user that has push privileges.
 2. `docker buildx use multi-arch-builder || docker buildx create --name multi-arch-builder --use`.
 3. `cd containers/<image>`.
-4. Before pushing `ddev-webserver`, make sure you’ve pushed a version of `ddev-php-base` and updated `ddev-webserver`’s Dockerfile to use that as a base.
-5. `make push VERSION=<release_version> DOCKER_ARGS=--no-cache` for most of the images. For `ddev-dbserver` it’s `make PUSH=true VERSION=<release_version> DOCKER_ARGS=--no-cache`. There’s a [push-all.sh](https://github.com/ddev/ddev/blob/main/containers/push-all.sh) script to update all of them, but it takes forever.
-6. `ddev-dbserver` images can be pushed with `make PUSH=true VERSION=<release_version> DOCKER_ARGS=--no-cache` from the `containers/ddev-dbserver` directory.
+4. `make push VERSION=<release_version> DOCKER_ARGS=--no-cache` for most of the images. For `ddev-dbserver` it’s `make PUSH=true VERSION=<release_version> DOCKER_ARGS=--no-cache`. There’s a [push-all.sh](https://github.com/ddev/ddev/blob/main/containers/push-all.sh) script to update all of them, but it takes forever.
+5. `ddev-dbserver` images can be pushed with `make PUSH=true VERSION=<release_version> DOCKER_ARGS=--no-cache` from the `containers/ddev-dbserver` directory.
 
 ## Maintaining `ddev-dbserver` MySQL 5.7 ARM64 Images
 
@@ -123,10 +180,8 @@ We may not build every image for every point release. If there have been no chan
 
 But here are the steps for building:
 
-1. The `ddev/ddev-php-base` image must be updated as necessary with a new tag before pushing `ddev-webserver`. You can do this using the [process above](#pushing-docker-images-with-the-github-actions-workflow).
-2. The `ddev/ddev-webserver` Dockerfile must `FROM ddev/ddev-php-base:<tag>` before building/pushing `ddev-webserver`. But then it can be pushed using either the GitHub Actions or the manual technique.
-3. If you’re bumping `ddev-dbserver` 8.0 minor release, follow the upstream [Maintaining ddev-dbserver MySQL 5.7](#maintaining-ddev-dbserver-mysql-57-arm64-images) instructions.
-4. Update `pkg/version/version.go` with the correct versions for the new images, and run all the tests.
+1. If you’re bumping `ddev-dbserver` 8.0 minor release, follow the upstream [Maintaining ddev-dbserver MySQL 5.7](#maintaining-ddev-dbserver-mysql-57-arm64-images) instructions.
+2. Update `pkg/version/version.go` with the correct versions for the new images, and run all the tests.
 
 ## Manually Updating Homebrew Formulas
 
@@ -188,13 +243,16 @@ This is done automatically by the release build on a dedicated Windows test runn
 
 ## APT and YUM/RPM Package Management
 
-The Linux `apt` and `yum`/`rpm` packages are built and pushed by the `nfpms` and `furies` sections of the [.goreleaser.yml](https://github.com/ddev/ddev/blob/main/.goreleaser.yml) file.
-
-* The actual packages are served by [gemfury.com](https://gemfury.com/).
+* The `nfpms` section of [.goreleaser.yml](https://github.com/ddev/ddev/blob/main/.goreleaser.yml) builds the actual `.deb`/`.rpm` packages; `furies` and `cloudsmiths` each push those same built packages to their respective repository.
+* The primary location for APT/YUM packages is [Cloudsmith](https://cloudsmith.com), pushed via the `cloudsmiths` section of [.goreleaser.yml](https://github.com/ddev/ddev/blob/main/.goreleaser.yml), using the `CLOUDSMITH_ORG`/`CLOUDSMITH_REPO` variables and `DDEV_CLOUDSMITH_API_TOKEN` secret.
+* We provided and uploaded a custom GPG signing key to the Cloudsmith repository (backed up as `DDEV_CLOUDSMITH_SIGNING_KEY` in 1Password). This is a one-time repository setting on Cloudsmith's side, not part of the release process — Cloudsmith signs every pushed package with it automatically, and neither `.goreleaser.yml` nor the GitHub Actions workflow references it.
+* Cloudsmith's [custom domain](https://help.cloudsmith.io/docs/custom-domains) `packages.ddev.com` is live and serves the same content as `dl.cloudsmith.io/public/ddev/ddev/...` (drop the `ddev/ddev` organization/repository segment, keep `public`, e.g. `packages.ddev.com/public/deb/ubuntu`, `packages.ddev.com/public/rpm/any-distro/any-version`, `packages.ddev.com/public/gpg.key`).
+* Linux `apt` and `yum`/`rpm` packages are also pushed in parallel to the historical Gemfury repository using the `furies` sections of the [.goreleaser.yml](https://github.com/ddev/ddev/blob/main/.goreleaser.yml) file. This will eventually be phased out.
+* The Gemfury packages are served by [gemfury.com](https://gemfury.com/).
 * The name of the organization in GemFury is `drud`, managed at `https://manage.fury.io/dashboard/drud`.
 * [Randy Fay](https://github.com/rfay), [Matt Stein](https://github.com/mattstein), and [Simon Gillis](https://github.com/gilbertsoft) are authorized as owners on this dashboard.
-* The `pkg.ddev.com` domain name is set up as a custom alias for our package repositories; see `https://manage.fury.io/manage/drud/domains`. (Users do not see `drud` anywhere. Although we could have moved to a new organization for this, the existing repositories contain all the historical versions so it made sense to be less disruptive.)
-* The `pkg.ddev.com` `CNAME` is managed in Cloudflare because `ddev.com` is managed there.
+* The `pkg.ddev.com` domain name has been used as a custom alias for the Gemfury package repositories; see `https://manage.fury.io/manage/drud/domains`. (Users do not see `drud` anywhere. Although we could have moved to a new organization for this, the existing repositories contain all the historical versions so it made sense to be less disruptive.)
+* The `packages.ddev.com` and `pkg.ddev.com` `CNAME` records are managed in Cloudflare because `ddev.com` is managed there.
 * The fury.io tokens are in DDEV’s shared 1Password account.
 
 ## Testing Release Creation

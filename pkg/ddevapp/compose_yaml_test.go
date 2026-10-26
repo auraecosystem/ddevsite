@@ -8,7 +8,10 @@ import (
 	"github.com/ddev/ddev/pkg/ddevapp"
 	"github.com/ddev/ddev/pkg/dockerutil"
 	"github.com/ddev/ddev/pkg/fileutil"
+	"github.com/ddev/ddev/pkg/globalconfig"
 	"github.com/ddev/ddev/pkg/testcommon"
+	"github.com/ddev/ddev/pkg/util"
+	"github.com/ddev/ddev/pkg/versionconstants"
 	asrt "github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -39,12 +42,34 @@ services:
     image: ddev/ddev-utilities
     x-ddev:
       ssh-shell: fish
-  noshell:
+  devilbox:
+    image: ddev/ddev-utilities
+    x-ddev:
+      container-user: "  devilbox  "
+  no-shell:
     image: ddev/ddev-utilities
     x-ddev:
       describe-info: "has info but no shell"
-  noextension:
+  no-extension:
     image: ddev/ddev-utilities
+  omit-ddev-labels:
+    image: ddev/ddev-utilities
+    x-ddev:
+      omit-ddev-labels: true
+  with-others:
+    image: ddev/ddev-utilities
+    x-ddev:
+      describe-info: "has other fields"
+  pull-images:
+    image: ddev/ddev-utilities
+    x-ddev:
+      pull-images:
+        - "  busybox:1.36  "
+        - alpine:3.20
+  pull-images-scalar:
+    image: ddev/ddev-utilities
+    x-ddev:
+      pull-images: busybox:1.36
 `
 
 	project, err := dockerutil.CreateComposeProject(composeYAML)
@@ -75,9 +100,16 @@ services:
 		assert.Equal("fish", xDdev.SSHShell)
 	})
 
+	// Test service with a configured container-user
+	t.Run("service with custom container user", func(t *testing.T) {
+		xDdev := app.GetXDdevExtension("devilbox")
+		assert.Equal("User: devilbox", xDdev.DescribeInfo)
+		assert.Equal("devilbox", xDdev.ContainerUser)
+	})
+
 	// Test service with no shell - should default to sh
 	t.Run("service without shell defaults to sh", func(t *testing.T) {
-		xDdev := app.GetXDdevExtension("noshell")
+		xDdev := app.GetXDdevExtension("no-shell")
 		assert.Equal("has info but no shell", xDdev.DescribeInfo)
 		assert.Equal("", xDdev.DescribeURLPort)
 		assert.Equal("sh", xDdev.SSHShell)
@@ -85,10 +117,33 @@ services:
 
 	// Test service with no x-ddev extension - should default to sh
 	t.Run("service without x-ddev extension", func(t *testing.T) {
-		xDdev := app.GetXDdevExtension("noextension")
+		xDdev := app.GetXDdevExtension("no-extension")
 		assert.Equal("", xDdev.DescribeInfo)
 		assert.Equal("", xDdev.DescribeURLPort)
 		assert.Equal("sh", xDdev.SSHShell)
+		assert.Equal("", xDdev.ContainerUser)
+		assert.False(xDdev.OmitDdevLabels)
+	})
+
+	// Test service with omit-ddev-labels: true
+	t.Run("service with omit-ddev-labels true", func(t *testing.T) {
+		xDdev := app.GetXDdevExtension("omit-ddev-labels")
+		assert.True(xDdev.OmitDdevLabels)
+	})
+
+	// Test service with other x-ddev fields but no omit-ddev-labels
+	t.Run("service without omit-ddev-labels defaults to false", func(t *testing.T) {
+		xDdev := app.GetXDdevExtension("with-others")
+		assert.False(xDdev.OmitDdevLabels)
+	})
+
+	t.Run("service with pull-images", func(t *testing.T) {
+		require.Equal(t, []string{"busybox:1.36", "alpine:3.20"}, app.GetXDdevExtension("pull-images").PullImages)
+		require.Empty(t, app.GetXDdevExtension("with-others").PullImages)
+
+		restoreErr := util.CaptureUserErr()
+		require.Empty(t, app.GetXDdevExtension("pull-images-scalar").PullImages)
+		require.Contains(t, restoreErr(), "Invalid x-ddev in service pull-images-scalar")
 	})
 
 	// Test non-existent service
@@ -227,11 +282,20 @@ func TestFixupComposeYaml(t *testing.T) {
 	require.NotEmpty(t, app.ComposeYaml)
 	require.NotEmpty(t, app.ComposeYaml.Services)
 
-	expectedServices := []string{"web", "db", "dummy1"}
+	expectedServices := []string{"web", "db", "dummy1", "dummy2", "dummy3", "dummy4", "dummy5"}
 	for _, serviceName := range expectedServices {
 		_, ok := app.ComposeYaml.Services[serviceName]
 		require.True(t, ok, "%s service not found in app.ComposeYaml.Services", serviceName)
 	}
+
+	// dummy1 sets its own container_name; dummy4 is scaled and sets its own hostname.
+	for _, serviceName := range []string{"web", "db", "dummy1", "dummy2", "dummy3"} {
+		service := app.ComposeYaml.Services[serviceName]
+		require.Equal(t, ddevapp.GetContainerName(app, serviceName), service.ContainerName, "service %s container_name", serviceName)
+		require.Equal(t, app.Name+"-"+serviceName, service.Hostname, "service %s hostname", serviceName)
+	}
+	require.Empty(t, app.ComposeYaml.Services["dummy4"].ContainerName)
+	require.Equal(t, "custom-hostname", app.ComposeYaml.Services["dummy4"].Hostname)
 
 	webService := app.ComposeYaml.Services["web"]
 	require.Nil(t, webService.Networks["ddev_default"])
@@ -240,10 +304,39 @@ func TestFixupComposeYaml(t *testing.T) {
 	require.NotNil(t, webService.Networks["dummy"])
 	assert.Equal(2, webService.Networks["dummy"].Priority)
 
+	// Verify the rootless user handling added by fixupComposeYaml: Docker rootless
+	// runs the web service as 0:0 when bind mounts are active (the host user maps
+	// to container UID 0), Linux Podman rootless uses userns keep-id (macOS/Windows
+	// Podman must not use keep-id due to GID mapping limitations), and every other
+	// case keeps the container user. Only the web service is ever forced to 0:0.
+	uid, gid, _ := dockerutil.GetContainerUser()
+	userGroup := uid + ":" + gid
+	switch {
+	case dockerutil.IsDockerRootless() && !globalconfig.DdevGlobalConfig.NoBindMounts:
+		require.Equal(t, "0:0", webService.User, "web should run as 0:0 on Docker rootless with bind mounts")
+	case dockerutil.UseKeepID():
+		require.Equal(t, userGroup, webService.User)
+		require.Equal(t, "keep-id", webService.UserNSMode, "web should use userns keep-id on Linux Podman rootless")
+	default:
+		require.Equal(t, userGroup, webService.User)
+		require.Empty(t, webService.UserNSMode, "UserNSMode should not be set outside Linux Podman rootless")
+	}
+	require.Equal(t, userGroup, app.ComposeYaml.Services["db"].User, "only the web service is set to 0:0; db keeps the container user")
+
 	hostDockerInternal := dockerutil.GetHostDockerInternal()
 
+	totalPortsChecked := 0
+	buildServicesChecked := 0
+	omitLabelServicesChecked := 0
+	networkModeServicesChecked := 0
 	for serviceName, service := range app.ComposeYaml.Services {
 		t.Run("service_"+serviceName, func(t *testing.T) {
+			if serviceName == "dummy5" {
+				networkModeServicesChecked++
+				require.Empty(t, service.Networks, "service %s with network_mode should have no networks", serviceName)
+				require.NotContains(t, service.ExtraHosts, "host.docker.internal", "service %s shares a network namespace, so can't have extra_hosts", serviceName)
+				return
+			}
 			require.Contains(t, service.Networks, "ddev_default", "service %s missing ddev_default network", serviceName)
 			require.Contains(t, service.Networks, "default", "service %s missing default network", serviceName)
 
@@ -257,10 +350,41 @@ func TestFixupComposeYaml(t *testing.T) {
 			}
 
 			for portIndex, port := range service.Ports {
+				totalPortsChecked++
 				require.Equal(t, "127.0.0.1", port.HostIP, "service %s port %d should have HostIP set to 127.0.0.1", serviceName, portIndex)
+			}
+
+			if serviceName == "dummy3" {
+				omitLabelServicesChecked++
+				for k := range ddevapp.GetDdevLabels(app) {
+					require.NotContains(t, service.Labels, k, "service %s should not have label %s", serviceName, k)
+				}
+				if service.Build != nil {
+					for k := range ddevapp.GetDdevLabels(app) {
+						require.NotContains(t, service.Build.Labels, k, "service %s build should not have label %s", serviceName, k)
+					}
+				}
+				return
+			}
+
+			for k, v := range ddevapp.GetDdevLabels(app) {
+				require.Contains(t, service.Labels, k, "service %s missing label %s", serviceName, k)
+				require.Equal(t, v, service.Labels[k], "service %s label %s value incorrect", serviceName, k)
+			}
+
+			if service.Build != nil {
+				buildServicesChecked++
+				for k, v := range ddevapp.GetDdevLabels(app) {
+					require.Contains(t, service.Build.Labels, k, "service %s build missing label %s", serviceName, k)
+					require.Equal(t, v, service.Build.Labels[k], "service %s build label %s value incorrect", serviceName, k)
+				}
 			}
 		})
 	}
+	require.Positive(t, buildServicesChecked, "build label check never ran")
+	require.Positive(t, totalPortsChecked, "port HostIP check never ran")
+	require.Positive(t, omitLabelServicesChecked, "omit-ddev-labels check never ran")
+	require.Positive(t, networkModeServicesChecked, "network_mode check never ran")
 
 	hasPort12345 := false
 	for _, port := range webService.Ports {
@@ -299,4 +423,144 @@ func TestFixupComposeYaml(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestGetDdevLabels verifies that GetDdevLabels returns the correct labels
+// for both global (nil app) and project-specific contexts.
+func TestGetDdevLabels(t *testing.T) {
+	// nil app: only global labels, no project-specific keys
+	labels := ddevapp.GetDdevLabels(nil)
+	require.Contains(t, labels, "com.ddev.platform")
+	require.Equal(t, "ddev", labels["com.ddev.platform"])
+	require.Contains(t, labels, "com.ddev.site-name")
+	require.Equal(t, "", labels["com.ddev.site-name"])
+	require.Contains(t, labels, "com.ddev.webtag")
+	require.Equal(t, versionconstants.WebTag, labels["com.ddev.webtag"])
+	require.NotContains(t, labels, "com.ddev.app-type")
+	require.NotContains(t, labels, "com.ddev.approot")
+
+	// with app: project-specific labels are added/overridden
+	app := &ddevapp.DdevApp{Name: "mysite", Type: "php", AppRoot: "/tmp/mysite"}
+	labels = ddevapp.GetDdevLabels(app)
+	require.Contains(t, labels, "com.ddev.platform")
+	require.Equal(t, "ddev", labels["com.ddev.platform"])
+	require.Contains(t, labels, "com.ddev.site-name")
+	require.Equal(t, "mysite", labels["com.ddev.site-name"])
+	require.Contains(t, labels, "com.ddev.app-type")
+	require.Equal(t, "php", labels["com.ddev.app-type"])
+	require.Contains(t, labels, "com.ddev.approot")
+	require.Equal(t, "/tmp/mysite", labels["com.ddev.approot"])
+	require.Contains(t, labels, "com.ddev.webtag")
+	require.Equal(t, versionconstants.WebTag, labels["com.ddev.webtag"])
+}
+
+// TestFindServiceImages checks which images FindServiceImages returns for each
+// kind of service, and the platform each has to be pulled for.
+func TestFindServiceImages(t *testing.T) {
+	app := &ddevapp.DdevApp{Name: "proj"}
+	project, err := dockerutil.CreateComposeProject(`
+name: test-project
+services:
+  web:
+    image: example/web:1-proj-built
+    build:
+      context: .
+  plain:
+    image: example/plain:1
+  web-worker:
+    image: example/web:1-proj-built
+  pinned:
+    image: example/pinned:1
+    platform: linux/amd64
+  built:
+    image: example/built:1-proj-built
+    build:
+      context: .
+      platforms:
+        - linux/s390x
+  multi:
+    image: example/multi:1-proj-built
+    build:
+      context: .
+      platforms:
+        - linux/amd64
+        - linux/arm64
+  foreign:
+    image: example/foreign:1-proj-built
+    build:
+      context: .
+      platforms:
+        - linux/s390x
+        - linux/ppc64le
+  qualified:
+    image: example/qualified:1-proj-qualified-built
+    build:
+      context: .
+  other-qualifier:
+    image: example/other:1-proj-qualified-built
+    build:
+      context: .
+  untagged-base:
+    image: ddev-proj-untagged-base-built
+    build:
+      context: .
+  local-tag:
+    image: example/local:1
+    build:
+      context: .
+  no-image:
+    build:
+      context: .
+    x-ddev:
+      pull-images:
+        - ${FIND_SERVICE_IMAGES_BASE:-example/pull:1}
+        - " example/pull-extra:1 "
+  pull-pinned:
+    image: example/pull-pinned:1-proj-built
+    platform: linux/arm64
+    build:
+      context: .
+    x-ddev:
+      pull-images:
+        - example/pull-pinned:1
+        - example/pull-pinned-extra:1
+  image-and-pull:
+    image: example/image:1
+    x-ddev:
+      pull-images:
+        - example/image-extra:1
+`)
+	require.NoError(t, err)
+	app.ComposeYaml = project
+
+	images, err := app.FindAllImages()
+	require.NoError(t, err)
+	platforms := map[string]string{}
+	for _, image := range images {
+		platforms[image.Image] = image.Platform
+	}
+	require.Len(t, images, len(platforms), "an image is listed twice: %v", images)
+	require.Equal(t, map[string]string{
+		"example/web:1":               "",
+		"example/plain:1":             "",
+		"example/pinned:1":            "linux/amd64",
+		"example/built:1":             "linux/s390x",
+		"example/multi:1":             "",
+		"example/foreign:1":           "linux/s390x",
+		"example/qualified:1":         "",
+		"example/pull:1":              "",
+		"example/pull-extra:1":        "",
+		"example/pull-pinned:1":       "linux/arm64",
+		"example/pull-pinned-extra:1": "linux/arm64",
+		"example/image:1":             "",
+		"example/image-extra:1":       "",
+	}, platforms)
+
+	images, err = app.FindServiceImages([]string{"no-image", "local-tag"})
+	require.NoError(t, err)
+	var names []string
+	for _, image := range images {
+		names = append(names, image.Image)
+	}
+	require.ElementsMatch(t, []string{"example/pull:1", "example/pull-extra:1"}, names)
 }

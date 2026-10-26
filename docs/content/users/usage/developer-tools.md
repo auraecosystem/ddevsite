@@ -12,14 +12,12 @@ Hundreds of useful developer tools are included inside the containers and can be
 
 * MySQL client (`mysql`) - Command-line interface for interacting with MySQL/MariaDB.
 * PostgreSQL client (`psql`) - Command-line tool for PostgreSQL.
-* [Drush](http://www.drush.org) - Command-line shell and Unix scripting interface for Drupal.
-* [PHIVE](https://phar.io/) - Command-line tool for “PHAR Installation and Verification Environment”.
-* [WP-CLI](http://wp-cli.org/) - Command-line tools for managing WordPress installations, available both as `wp` and as `wp-cli`.
-* [n98-magerun](https://github.com/netz98/n98-magerun) - Command-line tool for Magento 1 / OpenMage installations, available as `magerun`.
-* [n98-magerun2](https://github.com/netz98/n98-magerun2) - Command-line tool for Magento Open Source / Mage-OS / Adobe Commerce installations, available as `magerun2`.
+* [PHIVE](https://github.com/phar-io/phive) - Command-line tool for “PHAR Installation and Verification Environment”.
 * `npm` and `yarn` (these also have `ddev` shortcuts like [`ddev npm`](../usage/commands.md#npm) and [`ddev yarn`](../usage/commands.md#yarn)).
 * `node` (for front-end build tools like [Vite](vite.md), see the [Vite Integration](vite.md) documentation)
 * `sqlite3`
+
+DDEV also installs some tools only for the project types that need them, such as [Drush](http://www.drush.org), [WP-CLI](http://wp-cli.org/), [n98-magerun](https://github.com/netz98/n98-magerun), and [n98-magerun2](https://github.com/netz98/n98-magerun2). See [Project-Specific Utilities](../extend/customizing-images.md#project-specific-utilities) for the full list.
 
 These tools can be accessed for single commands using [`ddev exec <command>`](cli.md#executing-commands-in-containers) or [`ddev ssh`](cli.md#ssh-into-containers) for an interactive `bash` or `sh` session.
 
@@ -46,7 +44,7 @@ When using `ddev composer create-project` your project should be essentially emp
 
 1. `composer create-project --no-plugins --no-scripts --no-install` clones a bare Composer package without any additional actions.
 2. `composer run-script post-root-package-install` runs if `--no-scripts` is not given as a flag to `ddev composer create-project`.
-3. `composer install` runs if `--no-install` is not given as a flag to `ddev composer create-project`. If `composer install` fails, DDEV runs `COMPOSER_NO_SECURITY_BLOCKING=1 composer update` to attempt installation of older package versions that may have security advisories.
+3. `composer install` runs if `--no-install` is not given as a flag to `ddev composer create-project`.
 4. `composer run-script post-create-project-cmd` runs if `--no-scripts` is not given as a flag to `ddev composer create-project`.
 
 All flags that you provide to `ddev composer create-project` are checked for validity. All invalid flags will be ignored. If they are valid for `composer create-project`, they will be also passed to `composer run-script` and `composer install`, but only if these commands support these flags.
@@ -57,13 +55,48 @@ To execute a fully-featured `composer create-project` command, you can execute t
 
 **composer.json Location**: It’s most common for `composer.json` to be in the project root, but you can specify an alternate Composer root using DDEV’s `composer_root` option in `.ddev/config.yaml`, or `ddev config --composer-root <dir>`. The `composer_root` value is the *relative* path from the project root to the directory containing `composer.json`. If yours is at `docroot/composer.json`, for example, the `composer_root` value should be `docroot`.
 
-!!!tip "Careful with Global Requirements!"
-    If you run `ddev composer global require` (or `composer global require` inside the web container), global packages will be installed at the home directory within the container (`~/.composer`) and will disappear when the container restarts—meaning you’ll need to re-run the command.
-
-    You may want to synchronize created Composer configuration and installed packages with the DDEV’s [`homeadditions` directory](../extend/in-container-configuration.md) on your host machine.
-
 !!!tip "How to debug Composer itself?"
     To use Xdebug with Composer, [see instructions](../debugging-profiling/step-debugging.md#composer).
+
+### Composer Limitations
+
+!!!warning "Container changes do not persist"
+    Changes made outside your project directory are lost when the container restarts. Some Composer commands make such changes, see below. For other cases, see [Persisting Changes Across Restarts](../extend/in-container-configuration.md#persisting-changes-across-restarts).
+
+#### Composer Global Packages Do Not Persist
+
+If you run `ddev composer global require` (or `composer global require` inside the web container), global packages will be installed at the home directory within the container (`$HOME/.composer`) and will disappear when the container restarts.
+
+To keep them, [store `~/.composer` in `ddev-global-cache`](../extend/in-container-configuration.md#persisting-home-subdirectories-in-ddev-global-cache), or install the tools with a [custom Dockerfile](../extend/customizing-images.md#examples).
+
+#### Composer Self-Update Changes Do Not Persist
+
+Running `ddev composer self-update` (or `composer self-update` inside the web container) will update Composer within the container, but the change will be lost when the container restarts. Don't try to keep `/usr/local/bin/composer` across restarts, because then `composer_version` and DDEV upgrades can't update it.
+
+The Composer version is cached after the first image build and automatically updates only when DDEV is upgraded.
+
+If you need to update Composer:
+
+1. Check the [`composer_version`](../configuration/config.md#composer_version) setting in `.ddev/config.yaml` and set it to your desired version:
+
+    * `composer_version: ""` (empty) - equivalent to `composer self-update --stable`
+    * `composer_version: "2"` (v2) - equivalent to `composer self-update --2`
+    * `composer_version: "2.2"` (v2.2 LTS) - equivalent to `composer self-update --2.2`
+    * `composer_version: "2.9.3"` (specific) - equivalent to `composer self-update 2.9.3`. This is the most consistent option for teams, as it ensures all members use the exact same version regardless of when they first build the image, avoiding inconsistencies in dependency resolution.
+
+2. [Restart](../usage/commands.md#restart) to install it:
+
+    ```bash
+    ddev restart
+    ```
+
+    To get a newer release without changing the value, for example with `""` or `"2"`, restart with `--no-cache` or [rebuild](../usage/commands.md#utility-rebuild). This rebuilds the whole image and takes longer:
+
+    ```bash
+    ddev restart --no-cache
+    # or
+    ddev utility rebuild
+    ```
 
 ### Composer from `vendor/bin/composer`
 
@@ -102,11 +135,7 @@ After your project is started, access the Mailpit web interface at `https://mysi
 
 Mailpit will **not** intercept emails if your application is configured to use SMTP or a third-party ESP integration.
 
-If you’re using SMTP for outgoing mail—with [Symfony Mailer](https://www.drupal.org/project/symfony_mailer) or [SMTP](https://www.drupal.org/project/smtp) modules, for example—update your application’s SMTP server configuration to use `localhost` and Mailpit’s port `1025`.
-
-For Drupal 9+ `settings.ddev.php` overrides the Symfony Mailer sendmail configuration to use Mailpit.
-
-For Drupal 8/9 `settings.ddev.php` overrides the [Swift Mailer](https://www.drupal.org/project/swiftmailer) transport configuration to use Mailpit.
+For Drupal 9+, `settings.ddev.php` automatically overrides [Symfony Mailer](https://www.drupal.org/project/symfony_mailer) and [Symfony Mailer Lite](https://www.drupal.org/project/symfony_mailer_lite) transport configurations to use Mailpit; for other SMTP modules (like [SMTP](https://www.drupal.org/project/smtp)), update your application’s SMTP server configuration to use `localhost` and Mailpit’s port `1025`.
 
 For Laravel projects, Mailpit will capture Swift messages via SMTP. Update your `.env` to use Mailpit with the following settings:
 
@@ -118,6 +147,21 @@ MAIL_USERNAME=null
 MAIL_PASSWORD=null
 MAIL_ENCRYPTION=null
 ```
+
+!!!note "Mailpit auto-tagging behavior"
+    Mailpit automatically extracts [tags](https://mailpit.axllent.org/docs/usage/tagging/#disable-auto-tagging) from email addresses using *plus addressing*. For example, an email sent to `address+1@example.com` will be tagged with `1` (the part after `+`). This can be useful for filtering, but may be unexpected if you're not aware of it.
+
+    If this behavior is distracting, you can disable it by setting the following [environment variable](../configuration/environment-variables.md):
+
+    ```dotenv
+    MP_TAGS_DISABLE=plus-addresses
+    ```
+
+    The easiest way is to set it globally for all DDEV projects:
+
+    ```bash
+    ddev config global --web-environment-add=MP_TAGS_DISABLE=plus-addresses
+    ```
 
 ## Using Development Tools on the Host Machine
 
@@ -131,7 +175,7 @@ Each project’s database port is unique, and randomly chosen from available por
 
 You can force this port to be the same on every [`ddev start`](../usage/commands.md#start) by setting [`host_db_port`](../configuration/config.md#host_db_port) in the project’s `.ddev/config.yaml`. For example, `host_db_port: "49156"` or `ddev config --host-db-port=49156`. This value needs to be different on each running DDEV project, and unless it is set, the database port will change on every `ddev start`.
 
-You can use this port with various tools that need a direct port, like `mysql` or `psql` clients, but it’s usually easiest to use [`ddev mysql`](../usage/commands.md#mysql), `ddev psql`, `ddev sequelace`, [`ddev tableplus`](../usage/commands.md#tableplus), etc, which set everything up for you.
+You can use this port with various tools that need a direct port, like `mysql` or `psql` clients, but it’s usually easiest to use [`ddev mysql`](../usage/commands.md#mysql), `ddev psql`, `ddev sequelace`, [`ddev tableplus`](../usage/commands.md#tableplus), [`ddev tablepro`](../usage/commands.md#tablepro), etc, which set everything up for you.
 
 (If you use PhpStorm and its integrated database browser, use the [DDEV Integration Plugin](https://plugins.jetbrains.com/plugin/18813-ddev-integration) to manage all of this for you.)
 

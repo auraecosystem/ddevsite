@@ -1,34 +1,49 @@
 package dockerutil
 
 import (
+	"bytes"
+	"cmp"
 	"context"
 	"fmt"
 	"io"
 	"net"
 	"net/url"
+	"os/exec"
+	"path/filepath"
 	"sync"
 
+	"github.com/ddev/ddev/pkg/globalconfig"
+	"github.com/ddev/ddev/pkg/nodeps"
 	"github.com/ddev/ddev/pkg/util"
 	"github.com/ddev/ddev/pkg/versionconstants"
+	"github.com/docker/cli/cli-plugins/manager"
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/cli/cli/flags"
 	"github.com/docker/cli/cli/version"
+	"github.com/docker/compose/v5/pkg/api"
+	"github.com/docker/compose/v5/pkg/compose"
 	"github.com/moby/moby/api/types/system"
 	"github.com/moby/moby/client"
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 // dockerManager manages Docker client configuration and connection state
 // Some of these values are set on demand when first requested
 type dockerManager struct {
-	goContext         context.Context            // Go context for Docker API calls
-	apiClient         client.APIClient           // Docker API for making calls to Docker daemon
-	cli               *command.DockerCli         // Docker CLI for getting dockerContextName and host
-	dockerContextName string                     // Current Docker context name (e.g., "default", "desktop-linux")
-	host              string                     // Docker daemon URL (e.g., "unix:///var/run/docker.sock")
-	hostIP            string                     // IP address of Docker host
-	hostIPErr         error                      // Error from Docker host IP lookup, if any
-	info              system.Info                // Docker system information from daemon (version, OS, etc.)
-	serverVersion     client.ServerVersionResult // Docker server version information
+	goContext                  context.Context            // Go context for Docker API calls
+	apiClient                  client.APIClient           // Docker API for making calls to Docker daemon
+	cli                        *command.DockerCli         // Docker CLI for getting dockerContextName and host
+	composeForLoad             api.Compose                // compose service with io.Discard streams; used only for LoadProject - never for Up/Down/Build
+	dockerContextName          string                     // Current Docker context name (e.g., "default", "desktop-linux")
+	host                       string                     // Docker daemon URL (e.g., "unix:///var/run/docker.sock")
+	hostIP                     string                     // IP address of Docker host
+	hostIPErr                  error                      // Error from Docker host IP lookup, if any
+	info                       system.Info                // Docker system information from daemon (version, OS, etc.)
+	serverVersion              client.ServerVersionResult // Docker server version information
+	cliPlugins                 []manager.Plugin           // Lazily discovered CLI plugins
+	cliPluginsErr              error                      // Error from CLI plugin discovery, if any
+	cliPluginsExtraDirsDefault []string                   // Extra directories to search for CLI plugins
 }
 
 var (
@@ -44,18 +59,33 @@ var (
 func getDockerManagerInstance() (*dockerManager, error) {
 	sDockerManagerOnce.Do(func() {
 		sDockerManager = &dockerManager{}
-		// Suppress any output (stdout, stderr) from docker/cli
 		sDockerManager.cli, sDockerManagerErr = command.NewDockerCli(
+			// Suppress any output (stdout, stderr) from docker/cli.
 			command.WithCombinedStreams(io.Discard),
+			// Detach stdin (an empty io.ReadCloser, not os.Stdin) so an in-process
+			// compose exec doesn't compete with the bubbletea TUI for keystrokes;
+			// interactive/piped execs set real stdin via SetExecStdin.
+			command.WithInputStream(io.NopCloser(bytes.NewReader(nil))),
 		)
 		if sDockerManagerErr != nil {
 			return
 		}
+		// InstallFlags and SetDefaultOptions are necessary to match
+		// the plugin mode behavior to handle env vars such as
+		// DOCKER_TLS and DOCKER_TLS_VERIFY.
+		// See https://github.com/docker/cli/blob/master/cmd/docker-trust/trust/commands.go
+		flagSet := pflag.NewFlagSet("ddev", pflag.ContinueOnError)
 		opts := flags.NewClientOptions()
+		opts.InstallFlags(flagSet)
+		opts.SetDefaultOptions(flagSet)
 		sDockerManagerErr = sDockerManager.cli.Initialize(opts)
 		if sDockerManagerErr != nil {
 			return
 		}
+		sDockerManager.cliPluginsExtraDirsDefault = sDockerManager.cli.ConfigFile().CLIPluginsExtraDirs
+		// Must be done after Initialize(), which reloads configFile from disk.
+		sDockerManager.updateCLIPluginsExtraDirs()
+		sDockerManager.cliPlugins, sDockerManager.cliPluginsErr = manager.ListPlugins(sDockerManager.cli, &cobra.Command{})
 		sDockerManager.dockerContextName = sDockerManager.cli.CurrentContext()
 		sDockerManager.host = sDockerManager.cli.DockerEndpoint().Host
 		util.Verbose("getDockerManagerInstance(): dockerContextName=%s, host=%s", sDockerManager.dockerContextName, sDockerManager.host)
@@ -68,6 +98,22 @@ func getDockerManagerInstance() (*dockerManager, error) {
 		sDockerManager.apiClient, sDockerManagerErr = command.NewAPIClientFromFlags(
 			opts,
 			sDockerManager.cli.ConfigFile(),
+		)
+		if sDockerManagerErr != nil {
+			return
+		}
+		// Inject the same client into the CLI so the compose SDK shares one HTTP transport.
+		sDockerManagerErr = command.WithAPIClient(sDockerManager.apiClient)(sDockerManager.cli)
+		if sDockerManagerErr != nil {
+			return
+		}
+		// Cache a compose service with io.Discard streams, used only for LoadProject.
+		// Must not be used for Up/Down/Build/Exec — those need stream/progress overrides via NewComposeService.
+		// Ordering invariant: getDockerManagerInstance must run after globalconfig.EnsureGlobalConfig().
+		sDockerManager.composeForLoad, sDockerManagerErr = compose.NewComposeService(
+			sDockerManager.cli,
+			compose.WithOutputStream(io.Discard),
+			compose.WithErrorStream(io.Discard),
 		)
 		if sDockerManagerErr != nil {
 			return
@@ -104,13 +150,12 @@ func GetDockerClientInfo() (system.Info, error) {
 	return dm.info, nil
 }
 
-// GetDockerContextNameAndHost returns the Docker context name and host
+// GetDockerContextNameAndHost returns the Docker context name and host.
+// They are resolved before connecting, so they are returned along with
+// any error from reaching the Docker daemon.
 func GetDockerContextNameAndHost() (string, string, error) {
 	dm, err := getDockerManagerInstance()
-	if err != nil {
-		return "", "", err
-	}
-	return dm.dockerContextName, dm.host, nil
+	return dm.dockerContextName, dm.host, err
 }
 
 // GetDockerIP returns either the default Docker IP address (127.0.0.1)
@@ -121,6 +166,29 @@ func GetDockerIP() (string, error) {
 		return "", err
 	}
 	return dm.hostIP, dm.hostIPErr
+}
+
+// IsRemoteDockerHost returns true if the Docker host IP is not a local address,
+// indicating that Docker is running on a remote machine.
+func IsRemoteDockerHost() bool {
+	dockerIP, err := GetDockerIP()
+	if err != nil {
+		return false
+	}
+	parsedIP := net.ParseIP(dockerIP)
+	if parsedIP == nil || parsedIP.IsLoopback() {
+		return false
+	}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return true // If we can't determine local IPs, assume remote to be safe
+	}
+	for _, addr := range addrs {
+		if ipNet, ok := addr.(*net.IPNet); ok && ipNet.IP.Equal(parsedIP) {
+			return false
+		}
+	}
+	return true
 }
 
 // getDockerIPFromDockerHost returns the IP address of the Docker host based on the provided Docker host string.
@@ -162,6 +230,37 @@ func ResetDockerHost(host string) error {
 	return nil
 }
 
+// updateCLIPluginsExtraDirs updates CLIPluginsExtraDirs by prepending any
+// platform-specific plugin directories ahead of the saved defaults.
+// DDEV's global bin dir takes highest priority (prepended last), so its
+// buildx overrides both the snap path and any user-configured dirs.
+func (dm *dockerManager) updateCLIPluginsExtraDirs() {
+	dirs := dm.cliPluginsExtraDirsDefault
+	if nodeps.IsLinux() {
+		// Respect docker-buildx bundled with Docker snap on Linux https://snapcraft.io/docker
+		if dockerPath, err := exec.LookPath("docker"); err == nil && dockerPath == "/snap/bin/docker" {
+			dirs = append([]string{"/snap/docker/current/usr/libexec/docker/cli-plugins"}, dirs...)
+		}
+	}
+	if globalconfig.GetRequiredDockerBuildxVersion() != "" {
+		// Prepend global ddev bin directory so it takes priority over snap and
+		// any user-configured extra dirs and ~/.docker/cli-plugins.
+		dirs = append([]string{filepath.Join(globalconfig.GetGlobalDdevDir(), "bin")}, dirs...)
+	}
+	dm.cli.ConfigFile().CLIPluginsExtraDirs = dirs
+}
+
+// ResetCLIPlugins resets the cached list of Docker CLI plugins in the singleton.
+func ResetCLIPlugins() error {
+	dm, err := getDockerManagerInstance()
+	if err != nil {
+		return err
+	}
+	dm.updateCLIPluginsExtraDirs()
+	dm.cliPlugins, dm.cliPluginsErr = manager.ListPlugins(dm.cli, &cobra.Command{})
+	return dm.cliPluginsErr
+}
+
 // GetServerVersion gets the cached versions of Docker provider engine
 // This is a struct which has all info from "docker version" command
 func GetServerVersion() (client.ServerVersionResult, error) {
@@ -189,4 +288,79 @@ func GetDockerAPIVersion() (string, error) {
 		return "", err
 	}
 	return dm.serverVersion.APIVersion, nil
+}
+
+// GetCLIPlugins returns the list of Docker CLI plugins installed on the system.
+// Results are cached after the first call. They are listed before connecting,
+// so they are returned even when the Docker daemon can't be reached.
+func GetCLIPlugins() ([]manager.Plugin, error) {
+	dm, err := getDockerManagerInstance()
+	if dm.cliPlugins == nil {
+		return nil, cmp.Or(dm.cliPluginsErr, err)
+	}
+	return dm.cliPlugins, dm.cliPluginsErr
+}
+
+// GetCLIPlugin returns the specified Docker CLI plugin by name, or an error if not found or if the plugin has an error.
+func GetCLIPlugin(name string) (manager.Plugin, error) {
+	plugins, err := GetCLIPlugins()
+	if err != nil {
+		return manager.Plugin{}, err
+	}
+	for _, p := range plugins {
+		if p.Name == name {
+			if p.Err != nil {
+				return p, fmt.Errorf("plugin %q has error: %v", name, p.Err)
+			}
+			return p, nil
+		}
+	}
+	return manager.Plugin{}, fmt.Errorf("docker CLI plugin %q not found", name)
+}
+
+// RunCLIPluginCommand runs a Docker CLI plugin command with the specified arguments and optional stdin.
+// If stdin is not nil, it will be passed to the command's stdin.
+// Returns the combined stdout and stderr output, and any error.
+func RunCLIPluginCommand(pluginName string, stdin io.Reader, args ...string) (string, error) {
+	dm, err := getDockerManagerInstance()
+	if err != nil {
+		return "", err
+	}
+
+	// Verify plugin exists
+	_, err = GetCLIPlugin(pluginName)
+	if err != nil {
+		return "", err
+	}
+
+	// Create a minimal cobra command for manager.PluginRunCommand
+	// It needs this to check for command conflicts
+	rootCmd := &cobra.Command{}
+
+	// Build the command arguments: docker <plugin> <args...>
+	// manager.PluginRunCommand expects os.Args to be set, but we can create a command directly
+	cmd, err := manager.PluginRunCommand(dm.cli, pluginName, rootCmd)
+	if err != nil {
+		return "", fmt.Errorf("failed to create plugin command for %q: %w", pluginName, err)
+	}
+
+	// Override the args if provided
+	if len(args) > 0 {
+		cmd.Args = append([]string{cmd.Path, pluginName}, args...)
+	}
+
+	// manager.PluginRunCommand sets Stdout/Stderr to os.Stdout/os.Stderr
+	// We need to override them to capture output
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+
+	// Set stdin if provided
+	if stdin != nil {
+		cmd.Stdin = stdin
+	}
+
+	err = cmd.Run()
+	output := outBuf.String() + errBuf.String()
+	return output, err
 }

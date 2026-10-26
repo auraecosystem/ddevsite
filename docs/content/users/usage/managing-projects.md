@@ -14,6 +14,8 @@ For **Magento 1**, DDEV settings go into `app/etc/local.xml`.
 
 In **Magento 2**, DDEV settings go into `app/etc/env.php`.
 
+For **Maho**, DDEV settings go into `app/etc/local.xml`.
+
 For **TYPO3**, DDEV settings are written to `config/system/additional.php`. If `additional.php` exists and is not managed by DDEV, it will not be modified.
 
 For **WordPress**, DDEV settings are written to a DDEV-managed file, `wp-config-ddev.php`. The `ddev config` command will attempt to write settings through the following steps:
@@ -41,6 +43,9 @@ If you’re providing the `settings.php` or `wp-config.php` and DDEV is creating
 **WordPress**: Load a `wp-config-local.php` after `wp-config-ddev.php`, and make changes there. Wrap with `if (getenv('IS_DDEV_PROJECT') == 'true')` as needed.
 
 ## Listing Project Information
+
+!!!tip "TUI (Terminal UI) Alternative"
+    You can also view and manage all your projects from the [interactive dashboard](../usage/cli.md#interactive-dashboard) by running `ddev` with no arguments.
 
 Run [`ddev list`](../usage/commands.md#list) or `ddev list --active-only` current projects.
 
@@ -131,8 +136,10 @@ Database imports can be any of the following file types:
 
 - Raw SQL Dump (`.sql`)
 - Gzipped SQL Dump (`.sql.gz`)
+- `bzip2` SQL Dump (`.sql.bz2`)
 - Xz’d SQL Dump (`.sql.xz`)
-- (Gzipped) Tarball Archive (`.tar`, `.tar.gz`, `.tgz`)
+- Zstandard SQL Dump (`.sql.zst`)
+- Tarball Archive (`.tar`, `.tar.gz`, `.tgz`, `.tar.bz2`, `.tar.xz`, `.tar.zst`)
 - ZIP Archive (`.zip`)
 - stdin
 

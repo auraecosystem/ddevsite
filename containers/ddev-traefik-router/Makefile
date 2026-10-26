@@ -10,8 +10,8 @@ include ../containers_shared.mk
 DOCKER_REPO ?= $(DOCKER_ORG)/ddev-traefik-router
 
 test: container
-	bash -c "test/containertest.sh $(DOCKER_REPO):$(VERSION)"
+	test/test.sh $(DOCKER_REPO):$(VERSION)
 
 multi-arch:
-	docker buildx build --platform $(BUILD_ARCHS) -t $(DOCKER_REPO):$(VERSION) $(DOCKER_ARGS) .; \
+	docker buildx build --platform $(BUILD_ARCHS) -t $(DOCKER_REPO):$(VERSION) --label "com.ddev.image-tag=$(DDEV_IMAGE_TAG)" $(DOCKER_ARGS) .; \
 	echo "created multi-arch builds $(BUILD_ARCHS) for $(DOCKER_REPO)";

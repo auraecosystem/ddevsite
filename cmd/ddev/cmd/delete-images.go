@@ -71,7 +71,7 @@ var DeleteImagesCmd = &cobra.Command{
 	},
 }
 
-func init() {
+func registerDeleteImagesCmd() {
 	DeleteImagesCmd.Flags().BoolP("yes", "y", false, "Yes - skip confirmation prompt")
 	DeleteImagesCmd.Flags().BoolP("all", "a", false, "If set, deletes all Docker images created by DDEV.")
 	DeleteCmd.AddCommand(DeleteImagesCmd)
@@ -195,7 +195,6 @@ func deleteDdevImages(deleteAll, dryRun bool) error {
 					(strings.HasPrefix(tag, "postgres:") && strings.HasSuffix(tag, "-built")) ||
 					tag == routerImage ||
 					tag == sshImage ||
-					(strings.HasPrefix(tag, sshImage) && strings.HasSuffix(tag, "-built")) ||
 					tag == xhguiImage ||
 					strings.HasPrefix(tag, utilitiesImage) {
 					skip = true
@@ -247,7 +246,7 @@ func deleteDdevImages(deleteAll, dryRun bool) error {
 		} else if len(img.RepoDigests) > 0 {
 			var names []string
 			for _, digest := range img.RepoDigests {
-				name := strings.SplitN(digest, "@", 2)[0]
+				name, _, _ := strings.Cut(digest, "@")
 				names = append(names, name+":<none>")
 			}
 			imageName = strings.Join(names, ", ")

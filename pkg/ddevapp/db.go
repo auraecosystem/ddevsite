@@ -1,6 +1,7 @@
 package ddevapp
 
 import (
+	"fmt"
 	"regexp"
 	"slices"
 	"strconv"
@@ -11,6 +12,103 @@ import (
 	"github.com/ddev/ddev/pkg/util"
 	"github.com/ddev/ddev/pkg/versionconstants"
 )
+
+// DatabaseMismatchMessage describes a project configured for one database while
+// its database volume holds another, and spells out the two ways forward: put
+// the configuration back, or throw the existing database away. Both `ddev start`
+// (which refuses) and `ddev config` (which only warns) report it.
+func (app *DdevApp) DatabaseMismatchMessage(existingDBType string) string {
+	configuredDBType := app.Database.Type + ":" + app.Database.Version
+	message := fmt.Sprintf("project %s is configured for database %s, but its database volume holds %s.\nTo keep the existing database, put the configuration back with 'ddev config --database=%s'.", app.Name, configuredDBType, existingDBType, existingDBType)
+
+	// `ddev utility migrate-database` only converts between MariaDB and MySQL.
+	convertible := true
+	for _, dbType := range []string{existingDBType, configuredDBType} {
+		if !slices.Contains([]string{nodeps.MariaDB, nodeps.MySQL}, strings.Split(dbType, ":")[0]) {
+			convertible = false
+		}
+	}
+	if convertible {
+		message += fmt.Sprintf("\nTo convert the existing database to %s, put the configuration back and then run 'ddev utility migrate-database %s'.", configuredDBType, configuredDBType)
+	}
+
+	return message + fmt.Sprintf("\nTo throw the existing database away and start over with %s, use 'ddev start --reset-database', which snapshots it first unless you add --omit-snapshot.\nSee %s", configuredDBType, "https://docs.ddev.com/en/stable/users/extend/database-types/")
+}
+
+// ResetDatabaseVolume removes the project's database volumes so that the next
+// start creates and seeds a new one. Unless omitSnapshot, the existing database
+// is snapshotted first, at the database version that actually created it, which
+// is not necessarily the version the project is now configured for.
+func (app *DdevApp) ResetDatabaseVolume(omitSnapshot bool) error {
+	volumes := []string{}
+	for _, volume := range []string{app.GetMariaDBVolumeName(), app.GetPostgresVolumeName()} {
+		if dockerutil.VolumeExists(volume) {
+			volumes = append(volumes, volume)
+		}
+	}
+	if len(volumes) == 0 {
+		return nil
+	}
+
+	if !omitSnapshot {
+		snapshotName, err := app.SnapshotAtExistingDBVersion("")
+		if err != nil {
+			return fmt.Errorf("unable to snapshot the existing database before removing it: %v\nUse --omit-snapshot to remove it without a snapshot", err)
+		}
+		if snapshotName != "" {
+			util.Success("Snapshotted the existing database as '%s' before removing it", snapshotName)
+		}
+	}
+
+	// The volume can't be removed while the db container has it mounted.
+	if dbContainer, err := GetContainer(app, "db"); err == nil && dbContainer != nil {
+		if err = dockerutil.RemoveContainer(dbContainer.ID); err != nil {
+			return fmt.Errorf("failed to remove db container: %v", err)
+		}
+	}
+	for _, volume := range volumes {
+		if err := dockerutil.RemoveVolume(volume); err != nil {
+			return fmt.Errorf("failed to remove database volume %s: %v", volume, err)
+		}
+		util.Success("Removed database volume %s", volume)
+	}
+	return nil
+}
+
+// SnapshotAtExistingDBVersion snapshots the database that is in the database
+// volume using the database type/version that created it, which can differ from
+// the project's configured one after a `database:` change in config.yaml. It
+// returns the snapshot name, or an empty string if there is no database to
+// snapshot.
+func (app *DdevApp) SnapshotAtExistingDBVersion(snapshotName string) (string, error) {
+	existingDBType, err := app.GetExistingDBType()
+	if err != nil {
+		return "", err
+	}
+	if existingDBType == "" {
+		return "", nil
+	}
+
+	// Starting the project with the configured version would refuse outright, so
+	// stand the db up as whatever the volume actually holds, just long enough to
+	// snapshot it.
+	if existingDBType != app.Database.Type+":"+app.Database.Version {
+		configuredDatabase := app.Database
+		dbType, dbVersion, _ := strings.Cut(existingDBType, ":")
+		app.Database = DatabaseDesc{Type: dbType, Version: dbVersion}
+		defer func() {
+			app.Database = configuredDatabase
+		}()
+		util.Warning("Starting the database as %s to snapshot it, because that is what its volume holds", existingDBType)
+	}
+
+	if status, _ := app.SiteStatus(); status != SiteRunning {
+		if err = app.Start(); err != nil {
+			return "", err
+		}
+	}
+	return app.Snapshot(snapshotName, false)
+}
 
 // GetExistingDBType returns type/version like mariadb:10.11 or postgres:13 or "" if no existing volume
 // This has to make a Docker container run so is fairly costly.
@@ -27,28 +125,34 @@ func (app *DdevApp) GetExistingDBType() (string, error) {
 	return GetDBTypeVersionFromString(dbVersionInfo), nil
 }
 
-// getDBVersionFromVolume inspects the database volume to determine version info
-// Returns the raw version string found in the volume, or empty string if none found
-func (app *DdevApp) getDBVersionFromVolume() (string, error) {
-	// Command to check for database version files:
-	// 1. MySQL/MariaDB: /var/tmp/mysql/db_mariadb_version.txt
-	// 2. PostgreSQL <=17: /var/tmp/postgres/PG_VERSION
-	// 3. PostgreSQL 18+: /var/tmp/postgres/[version]/docker/PG_VERSION (check common versions)
-	cmd := []string{"sh", "-c", `
+// getDBVersionFromVolumeScript returns a shell script that finds and prints
+// whichever known database version file exists:
+//   - mariadbVersionFile: MySQL/MariaDB's db_mariadb_version.txt
+//   - postgresVersionFile: PostgreSQL <=17's PG_VERSION, sitting directly at the
+//     volume root
+//   - postgresVersionGlob: PostgreSQL 18+'s PG_VERSION, one level down in a
+//     version-specific directory (e.g. .../18/docker/PG_VERSION) - see
+//     GetPostgresDataDir/GetPostgresDataPath, since 18+ mounts the volume one
+//     level higher than earlier versions did
+//
+// Callers pass either the utility-container mount points below, or the real
+// in-container paths used when reading directly from a running db container.
+func getDBVersionFromVolumeScript(mariadbVersionFile, postgresVersionFile, postgresVersionGlob string) string {
+	return fmt.Sprintf(`
 		# Check MySQL/MariaDB version file
-		if [ -f /var/tmp/mysql/db_mariadb_version.txt ]; then
-			cat /var/tmp/mysql/db_mariadb_version.txt
+		if [ -f "%[1]s" ]; then
+			cat "%[1]s"
 			exit 0
 		fi
 
 		# Check PostgreSQL version file (pre-18 location)
-		if [ -f /var/tmp/postgres/PG_VERSION ]; then
-			cat /var/tmp/postgres/PG_VERSION
+		if [ -f "%[2]s" ]; then
+			cat "%[2]s"
 			exit 0
 		fi
 
 		# Check PostgreSQL 18+ version files in version-specific directories
-		for version_file in /var/tmp/postgres/*/docker/PG_VERSION; do
+		for version_file in %[3]s; do
 			if [ -f "$version_file" ]; then
 				cat "$version_file"
 				exit 0
@@ -57,7 +161,54 @@ func (app *DdevApp) getDBVersionFromVolume() (string, error) {
 
 		# No version file found
 		exit 0
-	`}
+	`, mariadbVersionFile, postgresVersionFile, postgresVersionGlob)
+}
+
+// getDBVersionFromVolume inspects the database volume to determine version info
+// Returns the raw version string found in the volume, or empty string if none found
+func (app *DdevApp) getDBVersionFromVolume() (string, error) {
+	// If the db service is already running, read its version file directly via
+	// exec instead of mounting the db volume into a separate utility container.
+	// This is both cheaper (no extra container to create/pull/remove) and, on
+	// providers where a volume can only be attached read-write by one container
+	// at a time (Apple Container/socktainer), the only way this can succeed at
+	// all: the running db container already holds the volume read-write, so a
+	// second attach - read-only or not - fails outright. See #7372.
+	dbContainerName := GetContainerName(app, "db")
+	if state, err := dockerutil.GetContainerStateByName(dbContainerName); err == nil && state == "running" {
+		script := getDBVersionFromVolumeScript(
+			"/var/lib/mysql/db_mariadb_version.txt",
+			"/var/lib/postgresql/data/PG_VERSION",
+			"/var/lib/postgresql/*/docker/PG_VERSION",
+		)
+		out, stderr, err := dockerutil.Exec(dbContainerName, script, "")
+		if err != nil {
+			return "", fmt.Errorf("unable to inspect database version/type on running container %s: %v, stderr=%s", dbContainerName, err, stderr)
+		}
+		return strings.TrimSpace(out), nil
+	}
+
+	// Command to check for database version files:
+	// 1. MySQL/MariaDB: /var/tmp/mysql/db_mariadb_version.txt
+	// 2. PostgreSQL <=17: /var/tmp/postgres/PG_VERSION
+	// 3. PostgreSQL 18+: /var/tmp/postgres/[version]/docker/PG_VERSION (check common versions)
+	cmd := []string{"sh", "-c", getDBVersionFromVolumeScript(
+		"/var/tmp/mysql/db_mariadb_version.txt",
+		"/var/tmp/postgres/PG_VERSION",
+		"/var/tmp/postgres/*/docker/PG_VERSION",
+	)}
+
+	var volumesNeeded []string
+	if dockerutil.VolumeExists(app.GetMariaDBVolumeName()) {
+		volumesNeeded = append(volumesNeeded, app.GetMariaDBVolumeName()+":/var/tmp/mysql")
+	}
+	if dockerutil.VolumeExists(app.GetPostgresVolumeName()) {
+		volumesNeeded = append(volumesNeeded, app.GetPostgresVolumeName()+":/var/tmp/postgres")
+	}
+	// No database volumesNeeded exist
+	if len(volumesNeeded) == 0 {
+		return "", nil
+	}
 
 	_, out, err := dockerutil.RunSimpleContainer(
 		versionconstants.UtilitiesImage,
@@ -65,10 +216,7 @@ func (app *DdevApp) getDBVersionFromVolume() (string, error) {
 		cmd,
 		[]string{}, // envVars
 		[]string{}, // uid
-		[]string{ // volumes
-			app.GetMariaDBVolumeName() + ":/var/tmp/mysql",
-			app.GetPostgresVolumeName() + ":/var/tmp/postgres",
-		},
+		volumesNeeded,
 		"",    // workingDir
 		true,  // rm
 		false, // detach

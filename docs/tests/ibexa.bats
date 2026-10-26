@@ -12,41 +12,29 @@ teardown() {
 }
 
 @test "Ibexa DXP quickstart with $(ddev --version)" {
-  # mkdir ${PROJNAME} && cd ${PROJNAME}
-  run mkdir ${PROJNAME} && cd ${PROJNAME}
-  assert_success
-  # ddev config --project-type=php --docroot=public --web-environment-add DATABASE_URL=mysql://db:db@db:3306/db
-  run ddev config --project-type=php --docroot=public --web-environment-add DATABASE_URL=mysql://db:db@db:3306/db
-  assert_success
-  # ddev start -y
-  run ddev start -y
-  assert_success
-  # ddev composer create-project ibexa/oss-skeleton
-  run ddev composer create-project ibexa/oss-skeleton
-  assert_success
-  # ddev exec console ibexa:install --no-interaction
-  run ddev exec console ibexa:install --no-interaction
-  assert_success
-  # ddev exec console ibexa:graphql:generate-schema
-  run ddev exec console ibexa:graphql:generate-schema
-  assert_success
-  # ddev launch
-  run bash -c "DDEV_DEBUG=true ddev launch /admin/login"
-  assert_output "FULLURL https://${PROJNAME}.ddev.site/admin/login"
-  assert_success
+  # mkdir -p ${PROJNAME} && cd ${PROJNAME}
+  run -0 mkdir -p ${PROJNAME}
+  cd ${PROJNAME}
+  run -0 ddev config --project-type=symfony --docroot=public
+  run -0 ddev start -y
+  run -0 _retry ddev composer create-project ibexa/oss-skeleton
+  run -0 ddev console ibexa:install --no-interaction
+  run -0 ddev console ibexa:graphql:generate-schema
+
+  _extra_info
+
+  DDEV_DEBUG=true run -0 ddev launch /admin/login
+  assert_output "FULLURL ${PRIMARY_URL}/admin/login"
   # validate running project
-  run curl -sfI https://${PROJNAME}.ddev.site
-  assert_success
+  run -0 curl -sSfI ${PRIMARY_URL}
   assert_output --partial "x-powered-by: Ibexa Open Source v5"
   assert_output --partial "HTTP/2 200"
 
-  run curl -sf https://${PROJNAME}.ddev.site
-  assert_success
-  assert_output --partial "Open-source solution for building custom, scalable websites."
-  assert_output --partial "Powered by Ibexa DXP"
+  _assert_page_contains ${PRIMARY_URL} \
+    "Open-source solution for building custom, scalable websites." \
+    "Powered by Ibexa DXP"
 
-  run curl -sf https://${PROJNAME}.ddev.site/admin/login
-  assert_success
-  assert_output --partial "Welcome to<br/> Ibexa DXP"
-  assert_output --partial "<h3 class=\"ibexa-login__support-headline\">Get to know Ibexa DXP</h3>"
+  _assert_page_contains ${PRIMARY_URL}/admin/login \
+    "Welcome to<br/> Ibexa DXP" \
+    "<h3 class=\"ibexa-login__support-headline\">Get to know Ibexa DXP</h3>"
 }

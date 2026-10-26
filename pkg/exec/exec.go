@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/ddev/ddev/pkg/globalconfig"
+	"github.com/ddev/ddev/pkg/interrupt"
 	"github.com/ddev/ddev/pkg/output"
 )
 
@@ -93,8 +94,28 @@ func RunInteractiveCommand(command string, args []string) error {
 	return err
 }
 
-// RunInteractiveCommandWithOutput writes to the host and
-// also to the passed io.Writer
+// RunInteractiveCommandWithCapture runs a command interactively like
+// RunInteractiveCommand(), but also returns a copy of what it printed, so a
+// failure can be reported with its output attached. stdout and stderr are
+// captured into separate buffers, each written by its own os/exec copy
+// goroutine, so callers that rely on stderr staying off stdout (exec-host
+// hooks piping DDEV's stderr, for instance) see the same separation as
+// RunInteractiveCommand().
+func RunInteractiveCommandWithCapture(command string, args []string) (string, error) {
+	var capturedStdout, capturedStderr bytes.Buffer
+	cmd := HostCommand(command, args...)
+	cmd.Stdin = os.Stdin
+	// Byte-for-byte tee, unlike RunInteractiveCommandWithOutput(), so progress
+	// output and colors reach the terminal unchanged.
+	cmd.Stdout = io.MultiWriter(os.Stdout, &capturedStdout)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &capturedStderr)
+	err := cmd.Run()
+	return capturedStdout.String() + "\n" + capturedStderr.String(), err
+}
+
+// RunInteractiveCommandWithOutput connects stdin and writes the command's
+// combined output to the passed io.Writer, line by line with ANSI color
+// codes removed. Nothing goes to the terminal unless out writes there.
 func RunInteractiveCommandWithOutput(command string, args []string, out io.Writer) error {
 	cmd := HostCommand(command, args...)
 	cmd.Stdin = os.Stdin
@@ -116,20 +137,24 @@ func RunInteractiveCommandWithOutput(command string, args []string, out io.Write
 		_ = pr.Close()
 	}()
 
+	release := interrupt.Delegate(syscall.SIGINT, syscall.SIGTERM)
+	defer release()
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+	defer signal.Stop(sigs)
+	waitDone := make(chan struct{})
+	defer close(waitDone)
 
-	// Goroutine to handle signals so the script can do the right thing
+	// Forward signals so the script can do the right thing
 	go func() {
-		sig := <-sigs
-		// Send the received signal to the child process
-		if err := cmd.Process.Signal(sig); err != nil {
-			panic(err)
+		select {
+		case sig := <-sigs:
+			_ = cmd.Process.Signal(sig)
+		case <-waitDone:
 		}
 	}()
 
-	err = cmd.Wait()
-	return err
+	return cmd.Wait()
 }
 
 // RunHostCommand executes a command on the host and returns the

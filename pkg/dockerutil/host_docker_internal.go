@@ -10,6 +10,7 @@ import (
 	ddevexec "github.com/ddev/ddev/pkg/exec"
 	"github.com/ddev/ddev/pkg/globalconfig"
 	"github.com/ddev/ddev/pkg/nodeps"
+	"github.com/ddev/ddev/pkg/util"
 	"github.com/moby/moby/client"
 )
 
@@ -26,6 +27,15 @@ var (
 	// hostDockerInternalOnce ensures hostDockerInternal is initialized only once
 	hostDockerInternalOnce sync.Once
 )
+
+// ResetHostDockerInternal clears the cached HostDockerInternal and resets the
+// sync.Once so GetHostDockerInternal() will recompute on its next call.
+// Call this after mutating global configuration (for example in tests or when
+// reloading ~/.ddev/global_config.yaml).
+func ResetHostDockerInternal() {
+	hostDockerInternal = nil
+	hostDockerInternalOnce = sync.Once{}
+}
 
 // GetHostDockerInternal determines the correct host.docker.internal configuration for containers.
 // Returns HostDockerInternal containing IP, extra_hosts value, and debug message.
@@ -61,6 +71,14 @@ func GetHostDockerInternal() *HostDockerInternal {
 		case nodeps.IsCodespaces():
 			message = "IsCodespaces uses 'host-gateway' in extra_hosts"
 
+		case nodeps.IsDevcontainer():
+			message = "IsDevcontainer uses 'host-gateway' in extra_hosts"
+
+		case nodeps.IsWSL2() && nodeps.IsWSL2NoneMode():
+			// WSL2 networking=none disables the network bridge entirely; no internet
+			// access and no path to the Windows host from the distro or containers.
+			message = "IsWSL2 with networkingMode=none; no internet access and no network path to Windows host"
+
 		case nodeps.IsWSL2() && IsDockerDesktop():
 			// If IDE is on Windows, return; we don't have to do anything.
 			message = "IsWSL2 and IsDockerDesktop"
@@ -69,7 +87,28 @@ func GetHostDockerInternal() *HostDockerInternal {
 			// If IDE is inside WSL2 then the normal Linux processing should work
 			message = fmt.Sprintf("xdebug_ide_location=%s uses 'host-gateway' in extra_hosts, see https://docs.ddev.com/en/stable/users/configuration/config/#xdebug_ide_location", globalconfig.DdevGlobalConfig.XdebugIDELocation)
 
+		case nodeps.IsWSL2() && nodeps.IsWSL2VirtioProxyMode() && !IsDockerDesktop():
+			// In virtioproxy mode, the default gateway is the actual network router,
+			// not the Windows host. We need the Windows vEthernet (WSL) Hyper-V interface IP.
+			virtioProxyIP, err := getWSL2VirtioProxyWindowsIP()
+			if err == nil {
+				ipAddress = virtioProxyIP
+				message = "IsWSL2 virtioproxy and !IsDockerDesktop; received from Windows vEthernet (WSL) interface"
+			} else {
+				// No Hyper-V virtual switch found (common on ARM64 Windows).
+				// Fall back to WSL2's own physical IP so host.docker.internal resolves.
+				// This enables IDE-in-WSL2 (xdebug_ide_location=wsl2) but not Windows-side IDE.
+				if wsl2PhysIP, physErr := getWSL2PhysicalIP(); physErr == nil {
+					ipAddress = wsl2PhysIP
+					message = fmt.Sprintf("IsWSL2 virtioproxy and !IsDockerDesktop; no vEthernet (WSL) found, using WSL2 physical IP %s (IDE-in-WSL2 only)", wsl2PhysIP)
+				} else {
+					message = fmt.Sprintf("IsWSL2 virtioproxy and !IsDockerDesktop; unable to get IP: %v", err)
+				}
+				util.Warning("WSL2 virtioproxy mode: no Hyper-V virtual switch (vEthernet WSL) found.\nA Windows-side IDE cannot be reached from Docker containers in this configuration.\nTo use Xdebug, run your IDE inside WSL2:\n  ddev config global --xdebug-ide-location=wsl2")
+			}
+
 		case nodeps.IsWSL2() && !nodeps.IsWSL2MirroredMode() && !IsDockerDesktop():
+			// Covers "nat" networking mode
 			// Microsoft instructions for finding Windows IP address at
 			// https://learn.microsoft.com/en-us/windows/wsl/networking#accessing-windows-networking-apps-from-linux-host-ip
 			// If IDE is on Windows, we have to parse /etc/resolv.conf
@@ -95,10 +134,13 @@ func GetHostDockerInternal() *HostDockerInternal {
 			message = "IsLinux uses 'host-gateway' in extra_hosts"
 
 			if IsDockerRootless() {
-				// Docker rootless doesn't update "host-gateway" value
-				// https://github.com/moby/moby/issues/47684#issuecomment-2166149845
-				ipAddress = "10.0.2.2"
-				message = "IsDockerRootless"
+				rootlessHostIP, netDriver, err := getDockerRootlessHostIP()
+				if err != nil {
+					message = fmt.Sprintf("IsDockerRootless; unable to determine host IP: %v", err)
+				} else {
+					ipAddress = rootlessHostIP
+					message = fmt.Sprintf("IsDockerRootless with RootlessKit net driver '%s'", netDriver)
+				}
 			}
 
 		default:
@@ -172,6 +214,51 @@ $ip
 	return ip, nil
 }
 
+// getWSL2VirtioProxyWindowsIP uses PowerShell to get the Windows vEthernet (WSL) interface IP.
+// In virtioproxy mode, the default gateway is the network router (not Windows),
+// so we need the Hyper-V virtual switch IP that connects Windows to WSL2.
+func getWSL2VirtioProxyWindowsIP() (string, error) {
+	psScript := `Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceAlias -like 'vEthernet (WSL*' } | Select-Object -First 1 -ExpandProperty IPAddress`
+
+	cmd := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", psScript)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("powershell failed in getWSL2VirtioProxyWindowsIP: %w (output: %s)", err, string(out))
+	}
+
+	ip := strings.TrimSpace(string(out))
+	if ip == "" {
+		return "", fmt.Errorf("no vEthernet (WSL) IPv4 address found via PowerShell")
+	}
+
+	if parsedIP := net.ParseIP(ip); parsedIP == nil {
+		return "", fmt.Errorf("unable to parse IP address '%s' from vEthernet (WSL) interface", ip)
+	}
+
+	return ip, nil
+}
+
+// getWSL2PhysicalIP returns the WSL2 VM's own physical IP address by finding
+// the source IP used for traffic to an external destination. This is used as a
+// fallback in virtioproxy mode when no Hyper-V virtual switch is present.
+func getWSL2PhysicalIP() (string, error) {
+	out, err := ddevexec.RunHostCommand("ip", "-4", "route", "get", "1.1.1.1")
+	if err != nil {
+		return "", fmt.Errorf("unable to run 'ip -4 route get 1.1.1.1': %v", err)
+	}
+	// Output looks like: "1.1.1.1 via X.X.X.X dev ethN src Y.Y.Y.Y uid Z"
+	parts := strings.Fields(out)
+	for i, part := range parts {
+		if part == "src" && i+1 < len(parts) {
+			ip := strings.TrimSpace(parts[i+1])
+			if parsedIP := net.ParseIP(ip); parsedIP != nil {
+				return ip, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("unable to parse WSL2 physical IP from 'ip route get' output: %s", out)
+}
+
 // getWSL2WindowsHostIP uses 'ip -4 route show default' to get the Windows IP address
 // for use in determining host.docker.internal
 func getWSL2WindowsHostIP() (string, error) {
@@ -212,4 +299,31 @@ func getDockerLinuxBridgeIP() (string, error) {
 		}
 	}
 	return "", fmt.Errorf("no gateway found in Docker bridge network")
+}
+
+// getDockerRootlessHostIP returns the IP at which the host's loopback is reachable
+// from containers under Docker rootless, and the RootlessKit network driver name.
+// See https://github.com/moby/moby/issues/47684#issuecomment-2166149845
+// See https://github.com/moby/moby/blob/master/contrib/dockerd-rootless.sh
+// See https://github.com/rootless-containers/rootlesskit/blob/master/docs/network.md
+func getDockerRootlessHostIP() (string, string, error) {
+	serverVersion, err := GetServerVersion()
+	if err != nil {
+		return "", "", err
+	}
+	netDriver := ""
+	for _, component := range serverVersion.Components {
+		if strings.EqualFold(component.Name, "rootlesskit") {
+			netDriver = component.Details["NetworkDriver"]
+			break
+		}
+	}
+	switch netDriver {
+	case "":
+		return "", "", fmt.Errorf("unable to determine RootlessKit network driver from 'docker version'")
+	case "gvisor-tap-vsock":
+		return "10.0.2.1", netDriver, nil
+	default:
+		return "10.0.2.2", netDriver, nil
+	}
 }

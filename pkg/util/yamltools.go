@@ -6,18 +6,18 @@ import (
 	"os"
 
 	"dario.cat/mergo"
-	"go.yaml.in/yaml/v3"
+	"go.yaml.in/yaml/v4"
 )
 
 // YamlFileToMap reads the named file into a map[string]interface{}
-func YamlFileToMap(fname string) (map[string]interface{}, error) {
+func YamlFileToMap(fname string) (map[string]any, error) {
 	file, err2 := os.ReadFile(fname)
 	contents, err := file, err2
 	if err != nil {
 		return nil, fmt.Errorf("unable to read file %s (%v)", fname, err)
 	}
 
-	itemMap := make(map[string]interface{})
+	itemMap := make(map[string]any)
 	err = yaml.Unmarshal(contents, &itemMap)
 	if err != nil {
 		return nil, fmt.Errorf("unable to unmarshal %s: %v", contents, err)
@@ -26,19 +26,19 @@ func YamlFileToMap(fname string) (map[string]interface{}, error) {
 }
 
 // YamlToDict turns random yaml-based interface into a map[string]interface{}
-func YamlToDict(topm interface{}) (map[string]interface{}, error) {
-	res := make(map[string]interface{})
+func YamlToDict(topm any) (map[string]any, error) {
+	res := make(map[string]any)
 	var err error
 
 	switch topm.(type) {
-	case map[string]interface{}:
-		for yk, v := range topm.(map[string]interface{}) {
+	case map[string]any:
+		for yk, v := range topm.(map[string]any) {
 			switch v.(type) {
 			case string:
 				res[yk] = v
-			case map[string]interface{}:
+			case map[string]any:
 				res[yk], err = YamlToDict(v)
-			case interface{}:
+			case any:
 				res[yk] = v
 			default:
 				Warning("Configuration has invalid type '%T' for '%s'", v, yk)

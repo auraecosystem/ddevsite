@@ -30,6 +30,9 @@ type stateManager struct {
 // Load see interface description.
 func (m *stateManager) Load() (err error) {
 	m.state, err = m.storage.Read()
+	if m.state == nil {
+		m.state = make(types.RawState)
+	}
 
 	if err == nil {
 		m.stateChanged = false
@@ -65,7 +68,7 @@ func (m *stateManager) Changed() bool {
 func (m *stateManager) Get(key types.StateEntryKey, stateEntry types.StateEntry) (err error) {
 	// Check stateEntry is a pointer.
 	val := reflect.ValueOf(stateEntry)
-	if val.Kind() != reflect.Ptr {
+	if val.Kind() != reflect.Pointer {
 		return errors.New("stateEntry must be a pointer")
 	}
 
@@ -94,7 +97,7 @@ func (m *stateManager) Get(key types.StateEntryKey, stateEntry types.StateEntry)
 func (m *stateManager) Set(key types.StateEntryKey, stateEntry types.StateEntry) (err error) {
 	// Check stateEntry is not a pointer.
 	val := reflect.ValueOf(stateEntry)
-	if val.Kind() == reflect.Ptr {
+	if val.Kind() == reflect.Pointer {
 		return errors.New("stateEntry must not be a pointer")
 	}
 

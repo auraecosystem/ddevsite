@@ -12,33 +12,27 @@ teardown() {
 }
 
 @test "CakePHP Composer quickstart with $(ddev --version)" {
-  # mkdir ${PROJNAME} && cd ${PROJNAME}
-  run mkdir ${PROJNAME} && cd ${PROJNAME}
-  assert_success
+  PROJNAME=my-cakephp-composer-site
 
-  # ddev config --project-type=cakephp --docroot=webroot
-  run ddev config --project-type=cakephp --docroot=webroot
-  assert_success
+  run -0 mkdir -p ${PROJNAME}
+  cd ${PROJNAME}
 
-  # ddev start -y
-  run ddev start -y
-  assert_success
+  run -0 ddev config --project-type=cakephp --docroot=webroot
 
-  # ddev composer create-project --prefer-dist --no-interaction cakephp/app:~5.0
-  run ddev composer create-project --prefer-dist --no-interaction cakephp/app:~5.0
-  assert_success
+  run -0 ddev start -y
+
+  run -0 _retry ddev composer create-project --prefer-dist --no-interaction cakephp/app:~5.0
+
+  _extra_info
 
   # validate ddev launch
-  run bash -c "DDEV_DEBUG=true ddev launch"
-  assert_output "FULLURL https://${PROJNAME}.ddev.site"
-  assert_success
+  DDEV_DEBUG=true run -0 ddev launch
+  assert_output "FULLURL ${PRIMARY_URL}"
   # validate running project
-  run curl -sfI https://${PROJNAME}.ddev.site
-  assert_success
+  run -0 curl -sSfI ${PRIMARY_URL}
   assert_output --partial "server: nginx"
   assert_output --partial "HTTP/2 200"
-  run curl -sf https://${PROJNAME}.ddev.site
-  assert_success
-  assert_output --partial "CakePHP: the rapid development PHP framework:"
-  assert_output --partial "Welcome to CakePHP"
+  _assert_page_contains ${PRIMARY_URL} \
+    "CakePHP: the rapid development PHP framework:" \
+    "Welcome to CakePHP"
 }

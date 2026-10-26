@@ -12,63 +12,48 @@ teardown() {
 }
 
 @test "Contao Composer quickstart with $(ddev --version)" {
-  # mkdir ${PROJNAME} && cd ${PROJNAME}
-  run mkdir ${PROJNAME} && cd ${PROJNAME}
-  assert_success
-  # ddev config --project-type=php --docroot=public --webserver-type=apache-fpm --php-version=8.2
-  run ddev config --project-type=php --docroot=public --webserver-type=apache-fpm --php-version=8.2
-  assert_success
-  # ddev start -y
-  run ddev start -y
-  assert_success
-  # ddev composer create-project contao/managed-edition:5.3
-  run ddev composer create-project contao/managed-edition:5.3
-  assert_success
+  PROJNAME=my-contao-composer-site
+
+  run -0 mkdir -p ${PROJNAME}
+  cd ${PROJNAME}
+
+  run -0 ddev config --project-type=php --docroot=public --webserver-type=apache-fpm --php-version=8.4
+
+  run -0 ddev start -y
+
+  _extra_info
+
+  run -0 _retry ddev composer create-project contao/managed-edition:5.7
   # Set DATABASE_URL and MAILER_DSN in .env.local
-  # ddev dotenv set .env.local --database-url=mysql://db:db@db:3306/db --mailer-dsn=smtp://localhost:1025
-  run ddev dotenv set .env.local --database-url=mysql://db:db@db:3306/db --mailer-dsn=smtp://localhost:1025
-  assert_success
+  run -0 ddev dotenv set .env.local --database-url=mysql://db:db@db:3306/db --mailer-dsn=smtp://localhost:1025
   # Create the database
-  # ddev exec contao-console contao:migrate --no-interaction
-  run ddev exec contao-console contao:migrate --no-interaction
-  assert_success
+  run -0 ddev exec contao-console contao:migrate --no-interaction
   # Create backend user
-  # ddev exec contao-console contao:user:create --username=admin --name=Administrator --email=admin@example.com --language=en --password=Password123 --admin
-  run ddev exec contao-console contao:user:create --username=admin --name=Administrator --email=admin@example.com --language=en --password=Password123 --admin
-  assert_success
-  # ddev launch
-  run bash -c "DDEV_DEBUG=true ddev launch contao"
-  assert_output "FULLURL https://${PROJNAME}.ddev.site/contao"
-  assert_success
+  run -0 ddev exec contao-console contao:user:create --username=admin --name=Administrator --email=admin@example.com --language=en --password=Password123 --admin
+  DDEV_DEBUG=true run -0 ddev launch contao
+  assert_output "FULLURL ${PRIMARY_URL}/contao"
   # validate running project
-  run curl -sfI https://${PROJNAME}.ddev.site/contao/login
-  assert_success
+  run -0 curl -sSfI ${PRIMARY_URL}/contao/login
   assert_output --partial "HTTP/2 200"
 }
 
 @test "Contao Manager quickstart with $(ddev --version)" {
-  # mkdir ${PROJNAME} && cd ${PROJNAME}
-  run mkdir ${PROJNAME} && cd ${PROJNAME}
-  assert_success
-  run ddev config --project-type=php --docroot=public --webserver-type=apache-fpm --php-version=8.2
-  assert_success
+  PROJNAME=my-contao-manager-site
+
+  run -0 mkdir -p ${PROJNAME}
+  cd ${PROJNAME}
+  run -0 ddev config --project-type=php --docroot=public --webserver-type=apache-fpm --php-version=8.4
   # set DATABASE_URL and MAILER_DSN in .env.local
-  # ddev dotenv set .env.local --database-url=mysql://db:db@db:3306/db --mailer-dsn=smtp://localhost:1025
-  run ddev dotenv set .env.local --database-url=mysql://db:db@db:3306/db --mailer-dsn=smtp://localhost:1025
-  assert_success
-  # ddev start -y
-  run ddev start -y
-  assert_success
-  # ddev exec "wget -O public/contao-manager.phar.php https://download.contao.org/contao-manager/stable/contao-manager.phar"
-  run ddev exec "wget -O public/contao-manager.phar.php https://download.contao.org/contao-manager/stable/contao-manager.phar"
-  assert_success
-  # ddev launch
-  run bash -c "DDEV_DEBUG=true ddev launch contao-manager.phar.php"
-  assert_output "FULLURL https://${PROJNAME}.ddev.site/contao-manager.phar.php"
-  assert_success
+  run -0 ddev dotenv set .env.local --database-url=mysql://db:db@db:3306/db --mailer-dsn=smtp://localhost:1025
+  run -0 ddev start -y
+
+  _extra_info
+
+  run -0 ddev exec "wget -O public/contao-manager.phar.php https://download.contao.org/contao-manager/stable/contao-manager.phar"
+  DDEV_DEBUG=true run -0 ddev launch contao-manager.phar.php
+  assert_output "FULLURL ${PRIMARY_URL}/contao-manager.phar.php"
   # validate running project
-  run curl -sfI https://${PROJNAME}.ddev.site/contao-manager.phar.php
-  assert_success
+  run -0 curl -sSfI ${PRIMARY_URL}/contao-manager.phar.php
   assert_output --partial "HTTP/2 302"
   assert_output --partial "location: /contao-manager.phar.php/"
 }

@@ -234,9 +234,15 @@ checksum:
 #### RELEASE ####
 release:
   prerelease: auto
+  # Releases are created manually via the GitHub UI before the tag is pushed
+  mode: append
   github:
     owner: "{{ .Env.REPOSITORY_OWNER }}"
     name: ddev
+  footer: |
+    ---
+    💙 DDEV is free and open source, maintained by the nonprofit DDEV Foundation.
+    If this release saves you time, consider [sponsoring DDEV](https://ddev.com/sponsor).
 
 brews:
 - name: ddev
@@ -517,6 +523,19 @@ furies:
   secret_name: "FURY_TOKEN"
   disable: '{{ ne .Prerelease "" }}'
 
+cloudsmiths:
+- organization: "{{ .Env.CLOUDSMITH_ORG }}"
+  repository: "{{ .Env.CLOUDSMITH_REPO }}"
+  secret_name: "DDEV_CLOUDSMITH_API_TOKEN"
+  formats:
+  - deb
+  - rpm
+  distributions:
+    deb:
+    - "any-distro/any-version"
+    rpm: "any-distro/any-version"
+  disable: '{{ ne .Prerelease "" }}'
+
 
 dockerhub:
 
@@ -535,11 +554,13 @@ dockerhub:
       - '{{ .Env.DOCKER_ORG }}/ddev-dbserver-mariadb-10.11'
       - '{{ .Env.DOCKER_ORG }}/ddev-dbserver-mariadb-11.4'
       - '{{ .Env.DOCKER_ORG }}/ddev-dbserver-mariadb-11.8'
+      - '{{ .Env.DOCKER_ORG }}/ddev-dbserver-mariadb-12.3'
       - '{{ .Env.DOCKER_ORG }}/ddev-dbserver-mysql-5.5'
       - '{{ .Env.DOCKER_ORG }}/ddev-dbserver-mysql-5.6'
       - '{{ .Env.DOCKER_ORG }}/ddev-dbserver-mysql-5.7'
       - '{{ .Env.DOCKER_ORG }}/ddev-dbserver-mysql-8.0'
       - '{{ .Env.DOCKER_ORG }}/ddev-dbserver-mysql-8.4'
+      - '{{ .Env.DOCKER_ORG }}/ddev-dbserver-mysql-9.7'
 
     disable: '{{ contains .Env.DOCKERHUB_USERNAME "NOPUSH" }}'
     username: '{{ .Env.DOCKERHUB_USERNAME }}'
@@ -548,18 +569,6 @@ dockerhub:
     full_description:
       from_file:
         path: ./containers/ddev-dbserver/README.md
-
-  #ddev-php-base
-  - images:
-      - '{{ .Env.DOCKER_ORG }}/ddev-php-base'
-      - '{{ .Env.DOCKER_ORG }}/ddev-php-prod'
-    disable: '{{ contains .Env.DOCKERHUB_USERNAME "NOPUSH" }}'
-    username: '{{ .Env.DOCKERHUB_USERNAME }}'
-    secret_name: "DOCKERHUB_TOKEN"
-    description: DDEV's ddev-php-base image, base image for ddev-webserver
-    full_description:
-      from_file:
-        path: ./containers/ddev-php-base/README.md
 
   #ddev-ssh-agent
   - images:

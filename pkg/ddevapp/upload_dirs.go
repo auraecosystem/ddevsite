@@ -5,7 +5,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"strings"
+	"slices"
 
 	"github.com/ddev/ddev/pkg/fileutil"
 	"github.com/ddev/ddev/pkg/util"
@@ -18,10 +18,8 @@ func (app *DdevApp) addUploadDir(uploadDir string) {
 		util.Failed("Failed to validate upload_dirs: %v", err)
 	}
 
-	for _, existingUploadDir := range app.UploadDirs {
-		if uploadDir == existingUploadDir {
-			return
-		}
+	if slices.Contains(app.UploadDirs, uploadDir) {
+		return
 	}
 
 	app.UploadDirs = append(app.UploadDirs, uploadDir)
@@ -196,9 +194,13 @@ func (app *DdevApp) CreateUploadDirsIfNecessary() {
 // - slice of string (possibly empty)
 // - boolean false
 func (app *DdevApp) validateUploadDirs() error {
-	// Check that upload dirs aren't outside the project root.
+	// Check that upload dirs aren't outside the project root. uploadDir is relative
+	// to the docroot, so it's allowed to climb back out of the docroot (e.g. "../private")
+	// as long as the result stays within AppRoot.
 	for _, uploadDir := range app.UploadDirs {
-		if !strings.HasPrefix(app.calculateHostUploadDirFullPath(uploadDir), app.AppRoot) {
+		fullPath := app.calculateHostUploadDirFullPath(uploadDir)
+		relPath, err := filepath.Rel(app.AppRoot, fullPath)
+		if err != nil || !filepath.IsLocal(relPath) {
 			return fmt.Errorf("invalid upload dir `%s` outside of project root `%s` found", uploadDir, app.AppRoot)
 		}
 	}

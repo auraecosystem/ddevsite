@@ -12,7 +12,6 @@ import (
 	"github.com/ddev/ddev/pkg/nodeps"
 	"github.com/ddev/ddev/pkg/testcommon"
 	"github.com/ddev/ddev/pkg/util"
-	asrt "github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -24,16 +23,14 @@ type settingsLocations struct {
 var drupalBackdropSettingsLocations = map[string]settingsLocations{
 	nodeps.AppTypeDrupal6:  {main: "sites/default/settings.php", local: "sites/default/settings.ddev.php"},
 	nodeps.AppTypeDrupal7:  {main: "sites/default/settings.php", local: "sites/default/settings.ddev.php"},
-	nodeps.AppTypeDrupal10: {main: "sites/default/settings.php", local: "sites/default/settings.ddev.php"},
 	nodeps.AppTypeDrupal11: {main: "sites/default/settings.php", local: "sites/default/settings.ddev.php"},
+	nodeps.AppTypeDrupal12: {main: "sites/default/settings.php", local: "sites/default/settings.ddev.php"},
 	nodeps.AppTypeBackdrop: {main: "settings.php", local: "settings.ddev.php"},
 }
 
 // TestWriteSettings tests writing app settings (like Drupal
 // settings.php/settings.ddev.php
 func TestWriteSettings(t *testing.T) {
-	assert := asrt.New(t)
-
 	expectations := map[string]string{
 		nodeps.AppTypeBackdrop:  "settings.ddev.php",
 		nodeps.AppTypeDrupal6:   "sites/default/settings.ddev.php",
@@ -45,42 +42,50 @@ func TestWriteSettings(t *testing.T) {
 	testDir := testcommon.CreateTmpDir(t.Name())
 
 	app, err := ddevapp.NewApp(testDir, true)
-	assert.NoError(err)
+	require.NoError(t, err)
 
 	t.Cleanup(func() {
 		err = app.Stop(true, false)
-		assert.NoError(err)
+		require.NoError(t, err)
 		_ = os.RemoveAll(testDir)
 	})
 
 	err = os.MkdirAll(filepath.Join(testDir, app.Docroot, "sites", "default"), 0777)
-	assert.NoError(err)
+	require.NoError(t, err)
 
 	// Create expected folders for TYPO3.
 	err = os.MkdirAll(filepath.Join(testDir, app.Docroot, "typo3"), 0777)
-	assert.NoError(err)
+	require.NoError(t, err)
 
 	err = os.MkdirAll(filepath.Join(testDir, app.Docroot, "typo3conf"), 0777)
-	assert.NoError(err)
+	require.NoError(t, err)
 
 	// TYPO3 wants LocalConfiguration.php to exist in the repo ahead of time.
 	err = os.WriteFile(filepath.Join(testDir, app.Docroot, "typo3conf", "LocalConfiguration.php"), []byte("<?php\n"), 0644)
-	assert.NoError(err)
+	require.NoError(t, err)
 
 	for apptype, settingsRelativePath := range expectations {
 		app.Type = apptype
 
 		expectedSettingsFile := filepath.Join(testDir, settingsRelativePath)
 		_, err = os.Stat(expectedSettingsFile)
-		assert.True(os.IsNotExist(err))
+		require.True(t, os.IsNotExist(err))
 		createdFile, err := app.CreateSettingsFile()
-		assert.NoError(err)
-		assert.EqualValues(expectedSettingsFile, createdFile)
+		require.NoError(t, err)
+		require.EqualValues(t, expectedSettingsFile, createdFile)
 		_, err = os.Stat(expectedSettingsFile)
-		assert.NoError(err)
+		require.NoError(t, err)
 		signatureFound, err := fileutil.FgrepStringInFile(expectedSettingsFile, nodeps.DdevFileSignature)
-		assert.NoError(err)
-		assert.True(signatureFound, "Failed to find %s in %s", nodeps.DdevFileSignature, expectedSettingsFile)
+		require.NoError(t, err)
+		require.True(t, signatureFound, "Failed to find %s in %s", nodeps.DdevFileSignature, expectedSettingsFile)
+
+		// For WordPress, verify WP_HOME uses runtime env vars instead of hardcoded URL
+		if apptype == nodeps.AppTypeWordPress {
+			envVarFound, err := fileutil.FgrepStringInFile(expectedSettingsFile, "DDEV_PRIMARY_URL")
+			require.NoError(t, err)
+			require.True(t, envVarFound, "Expected DDEV_PRIMARY_URL in %s for dynamic WP_HOME", expectedSettingsFile)
+		}
+
 		_ = os.Remove(expectedSettingsFile)
 	}
 
@@ -89,7 +94,7 @@ func TestWriteSettings(t *testing.T) {
 
 // TestWriteDrushConfig test the Drush config we write
 func TestWriteDrushConfig(t *testing.T) {
-	assert := asrt.New(t)
+	testcommon.UsesAllTestSites(t)
 	app := &ddevapp.DdevApp{}
 	origDir, _ := os.Getwd()
 
@@ -103,23 +108,23 @@ func TestWriteDrushConfig(t *testing.T) {
 
 		testcommon.ClearDockerEnv()
 
-		if !nodeps.ArrayContainsString([]string{"drupal7", "drupal8", "drupal9", "drupal10", "drupal", "backdrop"}, site.Type) {
+		if !nodeps.ArrayContainsString([]string{"drupal7", "drupal10", "drupal11", "drupal12", "drupal", "backdrop"}, site.Type) {
 			continue
 		}
 		err := app.Init(site.Dir)
 		if err != nil {
-			assert.NoError(err, "failed init of %s: %v", site.Name, err)
+			require.NoError(t, err, "failed init of %s: %v", site.Name, err)
 			continue
 		}
 		t.Cleanup(func() {
 			err = os.Chdir(origDir)
-			assert.NoError(err)
+			require.NoError(t, err)
 			err = app.Stop(true, false)
-			assert.NoError(err)
+			require.NoError(t, err)
 		})
 
 		_, err = app.CreateSettingsFile()
-		assert.NoError(err)
+		require.NoError(t, err)
 
 		startErr := app.Start()
 		//nolint: errcheck
@@ -134,16 +139,16 @@ func TestWriteDrushConfig(t *testing.T) {
 		switch app.Type {
 		case nodeps.AppTypeDrupal6, nodeps.AppTypeDrupal7, nodeps.AppTypeBackdrop:
 			if !fileutil.FileExists(drushFilePath) {
-				assert.True(fileutil.FileExists(drushFilePath))
+				require.True(t, fileutil.FileExists(drushFilePath))
 				continue
 			}
 			optionFound, err := fileutil.FgrepStringInFile(drushFilePath, "options")
-			assert.NoError(err)
-			assert.True(optionFound)
+			require.NoError(t, err)
+			require.True(t, optionFound)
 
 		default:
 			if fileutil.FileExists(drushFilePath) {
-				assert.False(fileutil.FileExists(drushFilePath), "Drush settings file (%s) should not exist but it does (app.Type=%s)", drushFilePath, app.Type)
+				require.False(t, fileutil.FileExists(drushFilePath), "Drush settings file (%s) should not exist but it does (app.Type=%s)", drushFilePath, app.Type)
 				continue
 			}
 		}
@@ -155,15 +160,13 @@ func TestWriteDrushConfig(t *testing.T) {
 // TestDrupalBackdropIncludeSettingsDdevInNewSettingsFile verifies that when no settings.php file exists,
 // a settings.php file is created that includes settings.ddev.php.
 func TestDrupalBackdropIncludeSettingsDdevInNewSettingsFile(t *testing.T) {
-	assert := asrt.New(t)
-
 	dir := testcommon.CreateTmpDir(t.Name())
 
 	app, err := ddevapp.NewApp(dir, true)
-	assert.NoError(err)
+	require.NoError(t, err)
 
 	err = os.MkdirAll(filepath.Join(dir, app.Docroot, "sites", "default"), 0777)
-	assert.NoError(err)
+	require.NoError(t, err)
 
 	for appType, relativeSettingsLocations := range drupalBackdropSettingsLocations {
 		app.Type = appType
@@ -181,34 +184,32 @@ func TestDrupalBackdropIncludeSettingsDdevInNewSettingsFile(t *testing.T) {
 
 		// Invoke the settings file creation process
 		_, err := app.CreateSettingsFile()
-		assert.NoError(err)
+		require.NoError(t, err)
 
 		// Ensure that a settings.php was created
-		assert.True(fileutil.FileExists(expectedSettingsLocation))
+		require.True(t, fileutil.FileExists(expectedSettingsLocation))
 
 		// Ensure that settings.php references settings.ddev.php
 		settingsDdev := filepath.Base(relativeSettingsDdevLocation)
 		newSettingsIncludesSettingsDdev, err := fileutil.FgrepStringInFile(expectedSettingsLocation, settingsDdev)
-		assert.NoError(err)
-		assert.True(newSettingsIncludesSettingsDdev, "Failed to find %s in %s", settingsDdev, expectedSettingsLocation)
+		require.NoError(t, err)
+		require.True(t, newSettingsIncludesSettingsDdev, "Failed to find %s in %s", settingsDdev, expectedSettingsLocation)
 
 		// Ensure that settings.ddev.php exists
-		assert.True(fileutil.FileExists(expectedSettingsDdevLocation))
+		require.True(t, fileutil.FileExists(expectedSettingsDdevLocation))
 	}
 }
 
 // TestDrupalBackdropIncludeSettingsDdevInExistingSettingsFile verifies that when a settings.php file already exists,
 // it is modified to include settings.ddev.php
 func TestDrupalBackdropIncludeSettingsDdevInExistingSettingsFile(t *testing.T) {
-	assert := asrt.New(t)
-
 	dir := testcommon.CreateTmpDir(t.Name())
 
 	app, err := ddevapp.NewApp(dir, true)
-	assert.NoError(err)
+	require.NoError(t, err)
 
 	err = os.MkdirAll(filepath.Join(dir, app.Docroot, "sites", "default"), 0777)
-	assert.NoError(err)
+	require.NoError(t, err)
 
 	for appType, relativeSettingsLocations := range drupalBackdropSettingsLocations {
 		app.Type = appType
@@ -227,43 +228,41 @@ func TestDrupalBackdropIncludeSettingsDdevInExistingSettingsFile(t *testing.T) {
 		// Create a settings.php that does not include settings.ddev.php
 		originalContents := "// this file is not empty\n"
 		err = os.WriteFile(expectedSettingsLocation, []byte(originalContents), 0644)
-		assert.NoError(err)
+		require.NoError(t, err)
 
 		// Invoke the settings file creation process
 		_, err = app.CreateSettingsFile()
-		assert.NoError(err)
+		require.NoError(t, err)
 
 		// Ensure that settings.php exists
-		assert.True(fileutil.FileExists(expectedSettingsLocation))
+		require.True(t, fileutil.FileExists(expectedSettingsLocation))
 
 		// Ensure that settings.ddev.php exists
-		assert.True(fileutil.FileExists(expectedSettingsDdevLocation))
+		require.True(t, fileutil.FileExists(expectedSettingsDdevLocation))
 
 		// Ensure that settings.php references settings.ddev.php
 		settingsDdev := filepath.Base(relativeSettingsDdevLocation)
 		existingSettingsIncludesSettingsDdev, err := fileutil.FgrepStringInFile(expectedSettingsLocation, settingsDdev)
-		assert.NoError(err)
-		assert.True(existingSettingsIncludesSettingsDdev, "Failed to find %s in %s, apptype=%s", settingsDdev, expectedSettingsLocation, appType)
+		require.NoError(t, err)
+		require.True(t, existingSettingsIncludesSettingsDdev, "Failed to find %s in %s, apptype=%s", settingsDdev, expectedSettingsLocation, appType)
 
 		// Ensure that settings.php includes original contents
 		modifiedSettingsIncludesOriginalContents, err := fileutil.FgrepStringInFile(expectedSettingsLocation, originalContents)
-		assert.NoError(err)
-		assert.True(modifiedSettingsIncludesOriginalContents, "Failed to find %s in %s", originalContents, expectedSettingsLocation)
+		require.NoError(t, err)
+		require.True(t, modifiedSettingsIncludesOriginalContents, "Failed to find %s in %s", originalContents, expectedSettingsLocation)
 	}
 }
 
 // TestDrupalBackdropCreateGitIgnoreIfNoneExists verifies that if no .gitignore file exists in the directory
 // containing settings.php and settings.ddev.php, a .gitignore is created that includes settings.ddev.php.
 func TestDrupalBackdropCreateGitIgnoreIfNoneExists(t *testing.T) {
-	assert := asrt.New(t)
-
 	dir := testcommon.CreateTmpDir(t.Name())
 
 	app, err := ddevapp.NewApp(dir, true)
-	assert.NoError(err)
+	require.NoError(t, err)
 
 	err = os.MkdirAll(filepath.Join(dir, app.Docroot, "sites", "default"), 0777)
-	assert.NoError(err)
+	require.NoError(t, err)
 
 	for appType, relativeSettingsLocations := range drupalBackdropSettingsLocations {
 		app.Type = appType
@@ -278,18 +277,67 @@ func TestDrupalBackdropCreateGitIgnoreIfNoneExists(t *testing.T) {
 
 		// Invoke the settings file creation process
 		_, err = app.CreateSettingsFile()
-		assert.NoError(err)
+		require.NoError(t, err)
 
 		// Ensure that a .gitignore exists (except for Backdrop, which has settings in project root)
 		if app.Type != nodeps.AppTypeBackdrop {
-			assert.True(fileutil.FileExists(expectedGitIgnoreLocation))
+			require.True(t, fileutil.FileExists(expectedGitIgnoreLocation))
 
 			// Ensure that the new .gitignore includes settings.ddev.php
 			settingsDdev := filepath.Base(relativeSettingsDdevLocation)
 			newGitIgnoreIncludesSettingsDdev, err := fileutil.FgrepStringInFile(expectedGitIgnoreLocation, settingsDdev)
-			assert.NoError(err)
-			assert.True(newGitIgnoreIncludesSettingsDdev, "Failed to find %s in %s", settingsDdev, expectedGitIgnoreLocation)
+			require.NoError(t, err)
+			require.True(t, newGitIgnoreIncludesSettingsDdev, "Failed to find %s in %s", settingsDdev, expectedGitIgnoreLocation)
 		}
+	}
+}
+
+// TestDrupalSettingsVersionWithoutCode verifies that when no Drupal codebase is present
+// (e.g., before composer create-project), the settings files written match the configured
+// project type rather than the default fallback version.
+func TestDrupalSettingsVersionWithoutCode(t *testing.T) {
+	type versionStrings struct {
+		settingsPhp     string
+		settingsDdevPhp string
+	}
+	versionExpectations := map[string]versionStrings{
+		nodeps.AppTypeDrupal8:  {"DDEV-created Drupal 8 settings.php", "Drupal 8 settings.ddev.php"},
+		nodeps.AppTypeDrupal9:  {"DDEV-created Drupal 9 settings.php", "Drupal 9 settings.ddev.php"},
+		nodeps.AppTypeDrupal10: {"DDEV-created Drupal 10 settings.php", "Drupal 10 settings.ddev.php"},
+		nodeps.AppTypeDrupal11: {"DDEV-created Drupal 11 settings.php", "Drupal 11 settings.ddev.php"},
+		nodeps.AppTypeDrupal12: {"DDEV-created Drupal 12 settings.php", "Drupal 12 settings.ddev.php"},
+	}
+
+	dir := testcommon.CreateTmpDir(t.Name())
+	app, err := ddevapp.NewApp(dir, true)
+	require.NoError(t, err)
+
+	err = os.MkdirAll(filepath.Join(dir, app.Docroot, "sites", "default"), 0777)
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		err = app.Stop(true, false)
+		require.NoError(t, err)
+		_ = os.RemoveAll(dir)
+	})
+
+	for appType, expected := range versionExpectations {
+		app.Type = appType
+		settingsPath := filepath.Join(dir, app.Docroot, "sites", "default", "settings.php")
+		settingsDdevPath := filepath.Join(dir, app.Docroot, "sites", "default", "settings.ddev.php")
+		_ = os.Remove(settingsPath)
+		_ = os.Remove(settingsDdevPath)
+
+		_, err = app.CreateSettingsFile()
+		require.NoError(t, err, "appType=%s", appType)
+
+		found, err := fileutil.FgrepStringInFile(settingsPath, expected.settingsPhp)
+		require.NoError(t, err, "appType=%s", appType)
+		require.True(t, found, "Expected to find %q in settings.php for appType=%s but did not", expected.settingsPhp, appType)
+
+		found, err = fileutil.FgrepStringInFile(settingsDdevPath, expected.settingsDdevPhp)
+		require.NoError(t, err, "appType=%s", appType)
+		require.True(t, found, "Expected to find %q in settings.ddev.php for appType=%s but did not", expected.settingsDdevPhp, appType)
 	}
 }
 
@@ -367,15 +415,13 @@ func extractSettingsHashSalt(app *ddevapp.DdevApp) (string, error) {
 // TestDrupalBackdropGitIgnoreAlreadyExists verifies that if a .gitignore already exists in the directory
 // containing settings.php and settings.ddev.php, it is not modified.
 func TestDrupalBackdropGitIgnoreAlreadyExists(t *testing.T) {
-	assert := asrt.New(t)
-
 	dir := testcommon.CreateTmpDir(t.Name())
 
 	app, err := ddevapp.NewApp(dir, true)
-	assert.NoError(err)
+	require.NoError(t, err)
 
 	err = os.MkdirAll(filepath.Join(dir, app.Docroot, "sites", "default"), 0777)
-	assert.NoError(err)
+	require.NoError(t, err)
 
 	for appType, relativeSettingsLocations := range drupalBackdropSettingsLocations {
 		app.Type = appType
@@ -388,37 +434,35 @@ func TestDrupalBackdropGitIgnoreAlreadyExists(t *testing.T) {
 		// Ensure that a .gitignore already exists and has some contents
 		originalContents := "not empty"
 		settingsFile, err := os.Create(expectedGitIgnoreLocation)
-		assert.NoError(err)
+		require.NoError(t, err)
 		_, err = settingsFile.Write([]byte(originalContents))
-		assert.NoError(err)
+		require.NoError(t, err)
 
 		// Invoke the settings file creation process
 		_, err = app.CreateSettingsFile()
-		assert.NoError(err)
+		require.NoError(t, err)
 
 		// Ensure that .gitignore still exists
-		assert.True(fileutil.FileExists(expectedGitIgnoreLocation))
+		require.True(t, fileutil.FileExists(expectedGitIgnoreLocation))
 
 		// Ensure that the new .gitignore has not been modified to include settings.ddev.php
 		settingsDdev := relativeSettingsDdevLocation
 		existingGitIgnoreIncludesSettingsDdev, err := fileutil.FgrepStringInFile(expectedGitIgnoreLocation, settingsDdev)
-		assert.NoError(err)
-		assert.False(existingGitIgnoreIncludesSettingsDdev, "Found unexpected %s in %s", settingsDdev, expectedGitIgnoreLocation)
+		require.NoError(t, err)
+		require.False(t, existingGitIgnoreIncludesSettingsDdev, "Found unexpected %s in %s", settingsDdev, expectedGitIgnoreLocation)
 	}
 }
 
 // TestDrupalBackdropOverwriteDdevSettings ensures that if a settings.ddev.php file already exists, it is overwritten by the
 // settings creation process.
 func TestDrupalBackdropOverwriteDdevSettings(t *testing.T) {
-	assert := asrt.New(t)
-
 	dir := testcommon.CreateTmpDir(t.Name())
 
 	app, err := ddevapp.NewApp(dir, true)
-	assert.NoError(err)
+	require.NoError(t, err)
 
 	err = os.MkdirAll(filepath.Join(dir, app.Docroot, "sites", "default"), 0777)
-	assert.NoError(err)
+	require.NoError(t, err)
 
 	for appType, relativeSettingsLocations := range drupalBackdropSettingsLocations {
 		app.Type = appType
@@ -429,35 +473,35 @@ func TestDrupalBackdropOverwriteDdevSettings(t *testing.T) {
 		// Ensure that a settings.ddev.php file exists, WITH the #ddev-generated signature
 		originalContents := "not empty " + nodeps.DdevFileSignature
 		settingsFile, err := os.Create(expectedSettingsDdevLocation)
-		assert.NoError(err)
+		require.NoError(t, err)
 		_, err = settingsFile.Write([]byte(originalContents))
-		assert.NoError(err)
+		require.NoError(t, err)
 
 		// Invoke the settings file creation process
 		_, err = app.CreateSettingsFile()
-		assert.NoError(err)
+		require.NoError(t, err)
 
 		// Ensure settings.ddev.php was overwritten; It had the signature in it
 		// so it was valid to overwrite. The original string should no longer be there.
 		containsOriginalString, err := fileutil.FgrepStringInFile(expectedSettingsDdevLocation, originalContents)
-		assert.NoError(err)
-		assert.False(containsOriginalString, "The file should not have contained the original string %s and it did not.", originalContents)
+		require.NoError(t, err)
+		require.False(t, containsOriginalString, "The file should not have contained the original string %s and it did not.", originalContents)
 
 		// Now do the whole thing again, but this time the settings.ddev.php does *not* have
 		// the #ddev-generated signature, so the file will be respected and not replaced
 		originalContents = "nearly empty "
 		settingsFile, err = os.Create(expectedSettingsDdevLocation)
-		assert.NoError(err)
+		require.NoError(t, err)
 		_, err = settingsFile.Write([]byte(originalContents))
-		assert.NoError(err)
+		require.NoError(t, err)
 
 		// Invoke the settings file creation process
 		_, err = app.CreateSettingsFile()
-		assert.NoError(err)
+		require.NoError(t, err)
 
 		// Ensure settings.ddev.php was overwritten with new contents
 		containsOriginalString, err = fileutil.FgrepStringInFile(expectedSettingsDdevLocation, originalContents)
-		assert.NoError(err)
-		assert.True(containsOriginalString, "Did not find %s in the settings file; it should have still been there", originalContents)
+		require.NoError(t, err)
+		require.True(t, containsOriginalString, "Did not find %s in the settings file; it should have still been there", originalContents)
 	}
 }

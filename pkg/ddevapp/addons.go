@@ -2,11 +2,13 @@ package ddevapp
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	goexec "os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"text/template"
@@ -14,7 +16,9 @@ import (
 
 	"dario.cat/mergo"
 	"github.com/ddev/ddev/pkg/archive"
-	"github.com/ddev/ddev/pkg/docker"
+	"github.com/ddev/ddev/pkg/config/remoteconfig/downloader"
+	"github.com/ddev/ddev/pkg/config/remoteconfig/storage"
+	"github.com/ddev/ddev/pkg/config/remoteconfig/types"
 	"github.com/ddev/ddev/pkg/dockerutil"
 	"github.com/ddev/ddev/pkg/exec"
 	"github.com/ddev/ddev/pkg/fileutil"
@@ -23,10 +27,12 @@ import (
 	"github.com/ddev/ddev/pkg/nodeps"
 	"github.com/ddev/ddev/pkg/output"
 	"github.com/ddev/ddev/pkg/util"
+	"github.com/mattn/go-isatty"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
 	"github.com/otiai10/copy"
-	"go.yaml.in/yaml/v3"
+	"github.com/spf13/cobra"
+	"go.yaml.in/yaml/v4"
 )
 
 const AddonMetadataDir = "addon-metadata"
@@ -144,6 +150,23 @@ func GetInstalledAddonNames(app *DdevApp) []string {
 	return names
 }
 
+// GetInstalledAddonRepositories returns the GitHub "owner/repo" of each
+// installed add-on, index-aligned with GetInstalledAddonNames. Non-GitHub
+// installs (directory, tarball, or URL sources) report an empty string
+// rather than a raw local path.
+func GetInstalledAddonRepositories(app *DdevApp) []string {
+	manifests := GetInstalledAddons(app)
+	repositories := []string{}
+	for _, manifest := range manifests {
+		if IsGithubRef(manifest.Repository) {
+			repositories = append(repositories, manifest.Repository)
+		} else {
+			repositories = append(repositories, "")
+		}
+	}
+	return repositories
+}
+
 // GetInstalledAddonProjectFiles returns a list of project files installed by add-ons
 func GetInstalledAddonProjectFiles(app *DdevApp) []string {
 	manifests := GetInstalledAddons(app)
@@ -188,7 +211,7 @@ func processBashHostAction(action string, installDesc InstallDesc, app *DdevApp,
 		return fmt.Errorf("could not parse action '%s': %v", action, err)
 	}
 
-	yamlMap := make(map[string]interface{})
+	yamlMap := make(map[string]any)
 	yamlMap["DdevGlobalConfig"], err = util.YamlFileToMap(globalconfig.GetGlobalConfigPath())
 	if err != nil {
 		util.Warning("Unable to read file %s: %v", globalconfig.GetGlobalConfigPath(), err)
@@ -202,7 +225,7 @@ func processBashHostAction(action string, installDesc InstallDesc, app *DdevApp,
 		}
 	}
 	// Get project config with overrides
-	var projectConfigMap map[string]interface{}
+	var projectConfigMap map[string]any
 	if b, err := yaml.Marshal(app); err != nil {
 		util.Warning("Unable to marshal app: %v", err)
 	} else if err = yaml.Unmarshal(b, &projectConfigMap); err != nil {
@@ -227,12 +250,22 @@ func processBashHostAction(action string, installDesc InstallDesc, app *DdevApp,
 	if verbose {
 		action = "set -x; " + action
 	}
-	out, err := exec.RunHostCommand(util.FindBashPath(), "-c", action)
+
+	out := ""
+	interactiveAction := GetAddonDdevInteractive(action)
+	interactiveTerminal := isatty.IsTerminal(os.Stdin.Fd()) && !output.JSONOutput
+	if interactiveAction && interactiveTerminal {
+		if desc != "" {
+			output.UserOut.Infof("%s  %s (bash)", "\u2699\ufe0f", desc)
+		}
+		err = exec.RunInteractiveCommand(util.FindBashPath(), []string{"-c", action})
+	} else {
+		out, err = exec.RunHostCommand(util.FindBashPath(), "-c", action)
+	}
 	if err != nil {
 		warningCode := GetAddonDdevWarningExitCode(action)
 		if warningCode > 0 {
-			var exitErr *goexec.ExitError
-			if errors.As(err, &exitErr) {
+			if exitErr, ok := errors.AsType[*goexec.ExitError](err); ok {
 				// Get the exit code
 				exitCode := exitErr.ExitCode()
 				if exitCode == warningCode {
@@ -266,10 +299,9 @@ func getInjectedEnvForBash(app *DdevApp, installDesc InstallDesc) (string, error
 	if app == nil {
 		return "", nil
 	}
-	envFile := app.GetConfigPath(".env." + installDesc.Name)
-	envMap, _, err := ReadProjectEnvFile(envFile)
-	if err != nil && !os.IsNotExist(err) {
-		return "", fmt.Errorf("unable to read %s file: %v", envFile, err)
+	envMap, err := app.ReadEnvFilesForTarget(installDesc.Name)
+	if err != nil {
+		return "", err
 	}
 	if len(envMap) == 0 {
 		return "", nil
@@ -294,7 +326,7 @@ func processPHPAction(action string, installDesc InstallDesc, app *DdevApp, verb
 	image := installDesc.Image
 	// Use the default ddev-webserver as the image if none is specified
 	if image == "" {
-		image = docker.GetWebImage()
+		image = app.WebImage
 	}
 
 	// Validate included/required files on the host (since we need to read from filesystem)
@@ -310,6 +342,13 @@ func processPHPAction(action string, installDesc InstallDesc, app *DdevApp, verb
 	err = createConfigurationFiles(app)
 	if err != nil {
 		return fmt.Errorf("failed to create configuration files for PHP action: %w", err)
+	}
+
+	// On Lima/Colima/Rancher Desktop, VirtioFS bind mounts can have a brief propagation
+	// delay for newly created files. Add-on installation is infrequent so a short sleep
+	// is acceptable to avoid an intermittent "file not found" race.
+	if dockerutil.IsColima() || dockerutil.IsLima() || dockerutil.IsRancherDesktop() {
+		time.Sleep(500 * time.Millisecond)
 	}
 
 	// Create a shell script that validates original PHP syntax first, then executes with strict mode
@@ -347,7 +386,7 @@ func processPHPAction(action string, installDesc InstallDesc, app *DdevApp, verb
 		},
 	}
 
-	_, out, err := dockerutil.RunSimpleContainerExtended("php-action-"+util.RandString(6), config, hostConfig, true, false)
+	_, out, err := dockerutil.RunSimpleContainerExtended("php-action-"+util.RandString(6), config, hostConfig, true, 30*time.Minute)
 	out = strings.TrimSpace(out)
 
 	if err != nil {
@@ -428,11 +467,10 @@ func buildPHPActionEnvironment(app *DdevApp, installDesc InstallDesc, verbose bo
 		envMap["DDEV_VERBOSE"] = "true"
 	}
 
-	// Add all environment variables from the .ddev/.env.<addon-name>
-	envFile := app.GetConfigPath(".env." + installDesc.Name)
-	addonEnvMap, _, err := ReadProjectEnvFile(envFile)
-	if err != nil && !os.IsNotExist(err) {
-		return nil, fmt.Errorf("unable to read %s file: %v", envFile, err)
+	// Add all environment variables from the env files targeting the add-on
+	addonEnvMap, err := app.ReadEnvFilesForTarget(installDesc.Name)
+	if err != nil {
+		return nil, err
 	}
 
 	// Merge addon-specific environment variables using mergo
@@ -480,10 +518,10 @@ func injectPHPStrictMode(action string) string {
 
 // validatePHPSyntax validates PHP syntax by running php -l in a container
 // This is used only for validating included/required files
-func validatePHPSyntax(phpCode string, image string) error {
+func validatePHPSyntax(phpCode string, app *DdevApp, image string) error {
 	// Use the provided image or default
 	if image == "" {
-		image = docker.GetWebImage()
+		image = app.WebImage
 	}
 
 	// Create a shell script that writes the PHP code and validates it
@@ -504,7 +542,7 @@ if [ $exit_code -ne 0 ]; then
 fi
 `, phpCode)
 
-	_, out, err := dockerutil.RunSimpleContainer(image, "php-validate-"+util.RandString(6), []string{"sh", "-c", shellScript}, []string{}, []string{}, []string{}, "", true, false, map[string]string{"com.ddev.site-name": ""}, nil, nil)
+	_, out, err := dockerutil.RunSimpleContainer(image, "php-validate-"+util.RandString(6), []string{"sh", "-c", shellScript}, []string{}, []string{}, []string{}, "", true, false, nil, nil, nil)
 	out = strings.TrimSpace(out)
 
 	if err != nil {
@@ -646,7 +684,7 @@ func validateIncludedFile(filePath string, app *DdevApp, image string) error {
 	// Only validate files that appear to contain PHP code
 	content := string(includedContent)
 	if strings.Contains(content, "<?php") || filepath.Ext(fullPath) == ".php" {
-		err = validatePHPSyntax(content, image)
+		err = validatePHPSyntax(content, app, image)
 		if err != nil {
 			return fmt.Errorf("PHP syntax error in included file: %w", err)
 		}
@@ -665,6 +703,11 @@ func GetAddonDdevDescription(action string) string {
 		}
 	}
 	return ""
+}
+
+// GetAddonDdevInteractive returns whether the action is marked for interactive execution
+func GetAddonDdevInteractive(action string) bool {
+	return len(nodeps.GrepStringInBuffer(action, `[\r\n]*#ddev-interactive[\r\n]+`)) > 0
 }
 
 // GetAddonDdevWarningExitCode returns the integer following #ddev-warning-exit-code in the last match in action
@@ -686,55 +729,214 @@ func GetAddonDdevWarningExitCode(action string) int {
 	return 0
 }
 
-// ListAvailableAddons lists the add-ons that are listed on github
-func ListAvailableAddons() ([]*github.Repository, error) {
-	ctx, client := github.GetGitHubClient(true)
-	q := "topic:ddev-get fork:true archived:false"
+// ListAvailableAddonsFromRegistry returns the list of addons from the registry
+func ListAvailableAddonsFromRegistry() ([]types.Addon, error) {
+	addonData, err := getAddonRegistryWithFallback()
+	if err != nil {
+		return nil, err
+	}
+	return addonData.Addons, nil
+}
 
-	opts := &github.SearchOptions{Sort: "updated", Order: "desc", ListOptions: github.ListOptions{PerPage: 200}}
-	var allRepos []*github.Repository
-	for {
-		repos, resp, err := client.Search.Repositories(ctx, q, opts)
-		var tokenErr error
+// getAddonRegistryWithFallback retrieves addon data from cache or downloads if stale
+// It respects the UpdateInterval setting from global config
+func getAddonRegistryWithFallback() (*types.AddonData, error) {
+	globalDir := globalconfig.GetGlobalDdevDir()
+	cacheFile := filepath.Join(globalDir, ".addon-data")
+	addonStorage := storage.NewAddonFileStorage(cacheFile)
+
+	// Try to read from cache first
+	cachedData, err := addonStorage.Read()
+
+	// Check if cache is stale
+	cacheIsStale := true
+	if err == nil && len(cachedData.Addons) > 0 {
+		// Get file modification time to check staleness
+		fileInfo, statErr := os.Stat(cacheFile)
+		if statErr == nil {
+			updateInterval := globalconfig.DdevGlobalConfig.RemoteConfig.UpdateInterval
+			if updateInterval == 0 {
+				updateInterval = 24 // Default to 24 hours if not set
+			}
+			staleTime := time.Duration(updateInterval) * time.Hour
+			cacheIsStale = fileInfo.ModTime().Add(staleTime).Before(time.Now())
+		}
+	}
+
+	// If cache is fresh, return it
+	if !cacheIsStale {
+		return cachedData, nil
+	}
+
+	// Cache is stale or missing, try to download fresh data
+	freshData, downloadErr := downloadAddonRegistry()
+	if downloadErr == nil {
+		return freshData, nil
+	}
+
+	// Download failed, return cached data if we have it
+	if err == nil && len(cachedData.Addons) > 0 {
+		// Return stale cache as fallback
+		return cachedData, nil
+	}
+
+	// Both download and cache failed
+	return nil, fmt.Errorf("failed to download add-on registry and no cache available: %w", downloadErr)
+}
+
+// downloadAddonRegistry downloads the add-on registry from the configured URL
+// and caches it in the global config directory
+func downloadAddonRegistry() (*types.AddonData, error) {
+	// Get the addon data URL from global config, or use default
+	addonDataURL := globalconfig.DdevGlobalConfig.RemoteConfig.AddonDataURL
+	if addonDataURL == "" {
+		addonDataURL = globalconfig.DefaultAddonDataURL
+	}
+
+	// Create downloader
+	d := downloader.NewURLJSONCDownloader(addonDataURL)
+
+	// Download the data with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var addonData types.AddonData
+	err := d.Download(ctx, &addonData)
+	if err != nil {
+		return nil, fmt.Errorf("downloading add-on registry from %s: %w", addonDataURL, err)
+	}
+
+	// Validate downloaded data
+	if len(addonData.Addons) == 0 {
+		return nil, fmt.Errorf("downloaded add-on registry from %s is empty", addonDataURL)
+	}
+
+	// Store in global config directory
+	globalDir := globalconfig.GetGlobalDdevDir()
+	addonStorage := storage.NewAddonFileStorage(filepath.Join(globalDir, ".addon-data"))
+	err = addonStorage.Write(&addonData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to write add-on registry to cache: %w", err)
+	}
+
+	return &addonData, nil
+}
+
+// GetAddonTarballURL retrieves the tarball URL for an addon from the add-on registry
+// based on the provided owner/repo and flags.
+//
+// Parameters:
+//   - ownerRepo: The owner/repo string (e.g., "ddev/ddev-redis")
+//   - gitRef: Specific git reference to install - can be a tag (v1.2.3), branch name (main), or commit SHA
+//   - defaultBranch: If true, use the default_branch from registry instead of latest release tag
+//   - prNumber: If non-zero, use refs/pull/{prNumber}/head
+//
+// Returns:
+//   - tarballURL: The GitHub tarball URL to download
+//   - version: The version string (tag, branch, or PR reference)
+//   - error: Any error encountered
+func GetAddonTarballURL(ownerRepo, gitRef string, defaultBranch bool, prNumber int) (tarballURL, version string, err error) {
+	// Parse owner/repo
+	parts := strings.Split(ownerRepo, "/")
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("invalid add-on format '%s', expected owner/repo", ownerRepo)
+	}
+	owner, repo := parts[0], parts[1]
+	baseURL := fmt.Sprintf("https://github.com/%s/%s/tarball", owner, repo)
+
+	// If specific git ref is requested, use it directly
+	if gitRef != "" {
+		tarballURL = fmt.Sprintf("%s/%s", baseURL, gitRef)
+		return tarballURL, gitRef, nil
+	}
+
+	// If PR number is specified, use it
+	if prNumber > 0 {
+		tarballURL = fmt.Sprintf("%s/refs/pull/%d/head", baseURL, prNumber)
+		version = fmt.Sprintf("pr-%d", prNumber)
+		return tarballURL, version, nil
+	}
+
+	// Use cached registry to get latest commit from default_branch
+	if defaultBranch {
+		addonData, err := getAddonRegistryWithFallback()
 		if err != nil {
-			if tokenErr = github.HasInvalidGitHubToken(resp); tokenErr != nil {
-				util.WarningOnce("Warning: %v, retrying without token", tokenErr)
-				ctx, client = github.GetGitHubClient(false)
-				reposNoAuth, respNoAuth, errNoAuth := client.Search.Repositories(ctx, q, opts)
-				if errNoAuth == nil {
-					repos = reposNoAuth
-					resp = respNoAuth
-					err = errNoAuth
-				}
+			return "", "", fmt.Errorf("failed to get add-on registry: %w", err)
+		}
+
+		addon := addonData.FindAddon(ownerRepo)
+		if addon == nil {
+			return "", "", fmt.Errorf("add-on '%s' not found in registry", ownerRepo)
+		}
+
+		if !addon.DefaultBranch.IsSet || addon.DefaultBranch.Value == "" {
+			return "", "", fmt.Errorf("add-on '%s' has no default_branch specified in registry", ownerRepo)
+		}
+		tarballURL = fmt.Sprintf("%s/%s", baseURL, addon.DefaultBranch.Value)
+		version = addon.DefaultBranch.Value
+		return tarballURL, version, nil
+	}
+
+	// For default behavior (no flags), try GitHub API first for fresh release info
+	// This ensures users get the latest release, falling back to registry if API fails
+	tarballURL, version, err = github.GetGitHubRelease(owner, repo, "")
+	if err == nil {
+		// Successfully got fresh release from GitHub
+		return tarballURL, version, nil
+	}
+
+	// GitHub API failed (rate limit, network, etc.), fall back to cached registry
+	util.Warning("Warning: %v\nFalling back to cached add-on registry...", err)
+	addonData, cacheErr := getAddonRegistryWithFallback()
+	if cacheErr != nil {
+		// Both GitHub and cache failed, return the GitHub error
+		return "", "", err
+	}
+
+	addon := addonData.FindAddon(ownerRepo)
+	if addon == nil {
+		return "", "", fmt.Errorf("add-on '%s' not found in cached add-on registry", ownerRepo)
+	}
+
+	// Use cached tag_name
+	if !addon.TagName.IsSet || addon.TagName.Value == "" {
+		return "", "", fmt.Errorf("add-on '%s' has no releases in cached add-on registry", ownerRepo)
+	}
+
+	tarballURL = fmt.Sprintf("%s/%s", baseURL, addon.TagName.Value)
+	version = addon.TagName.Value
+	return tarballURL, version, nil
+}
+
+// GetAddonNamesFunc returns a function for autocomplete that provides addon names
+// from the cached add-on registry.
+// If numArgs is 0, completion will be provided for infinite arguments,
+// otherwise it will only be provided for the numArgs number of arguments.
+func GetAddonNamesFunc(numArgs int) func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+	return func(_ *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {
+		// Don't provide completions if the user keeps hitting space after
+		// exhausting all the valid arguments.
+		if numArgs > 0 && len(args)+1 > numArgs {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+
+		addons, err := ListAvailableAddonsFromRegistry()
+		if err != nil {
+			// If we can't get add-ons, fall back to file completion
+			return nil, cobra.ShellCompDirectiveDefault
+		}
+
+		// Extract addon names in owner/repo format
+		// Don't show arguments that are already written on the command line
+		var addonNames []string
+		for _, addon := range addons {
+			addonName := fmt.Sprintf("%s/%s", addon.User, addon.Repo)
+			if !slices.Contains(args, addonName) {
+				addonNames = append(addonNames, addonName)
 			}
 		}
-		if err != nil {
-			msg := err.Error()
-			if resp != nil {
-				rate := resp.Rate
-				if rate.Limit != 0 {
-					resetIn := time.Until(rate.Reset.Time).Round(time.Second)
-					msg += fmt.Sprintf("\nGitHub API Rate Limit: %d/%d remaining (resets in %s)", rate.Remaining, rate.Limit, resetIn)
-				}
-			}
-			return nil, fmt.Errorf("%s", msg)
-		}
-		allRepos = append(allRepos, repos.Repositories...)
-		if resp.NextPage == 0 {
-			break
-		}
 
-		// Set the next page number for the next request
-		opts.Page = resp.NextPage
+		return addonNames, cobra.ShellCompDirectiveDefault
 	}
-	out := ""
-	for _, r := range allRepos {
-		out = out + fmt.Sprintf("%s: %s\n", r.GetFullName(), r.GetDescription())
-	}
-	if len(allRepos) == 0 {
-		return nil, fmt.Errorf("no add-ons found")
-	}
-	return allRepos, nil
 }
 
 // RemoveAddon removes an addon, taking care to respect #ddev-generated
@@ -864,8 +1066,8 @@ func ParseRuntimeDependencies(runtimeDepsFile string) ([]string, error) {
 	}
 
 	var dependencies []string
-	lines := strings.Split(content, "\n")
-	for _, line := range lines {
+	lines := strings.SplitSeq(content, "\n")
+	for line := range lines {
 		line = strings.TrimSpace(line)
 		// Skip empty lines and comments
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -898,8 +1100,8 @@ func NormalizeAddonIdentifier(addonIdentifier string) string {
 	base := filepath.Base(addonIdentifier)
 	// Remove common archive extensions
 	for _, ext := range []string{".tar.gz", ".tgz", ".tar", ".zip"} {
-		if strings.HasSuffix(base, ext) {
-			base = strings.TrimSuffix(base, ext)
+		if before, ok := strings.CutSuffix(base, ext); ok {
+			base = before
 			break
 		}
 	}
@@ -1079,8 +1281,8 @@ func InstallAddonFromGitHub(app *DdevApp, addonName, requestedVersion string, ve
 		}
 	}
 
-	// Get GitHub release
-	tarballURL, downloadedRelease, err := github.GetGitHubRelease(owner, repo, requestedVersion)
+	// Get tarball URL with registry fallback
+	tarballURL, downloadedRelease, err := GetAddonTarballURL(addonName, requestedVersion, false, 0)
 	if err != nil {
 		return err
 	}

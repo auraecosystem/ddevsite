@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path"
 	"strings"
@@ -31,7 +33,11 @@ project directory to start that project, or you can start stopped projects in
 any directory by running 'ddev start projectname [projectname ...]'`,
 	Example: `ddev start
 ddev start <project1> <project2>
-ddev start --all`,
+ddev start --all
+ddev start --seed-snapshot=mysnapshot
+ddev start --seed-snapshot=$HOME/tmp/mysnapshot-mariadb_11.8.zst --reset-database -y
+ddev start --reset-database
+ddev start --reset-database -y`,
 	PreRun: func(_ *cobra.Command, _ []string) {
 		dockerutil.EnsureDdevNetwork()
 	},
@@ -72,16 +78,10 @@ ddev start --all`,
 			rc.ShowSponsorshipAppreciation()
 		}
 
-		skip, err := cmd.Flags().GetBool("skip-confirmation")
-		if err != nil {
-			util.Failed(err.Error())
-		}
-
 		// Look for version change and opt-in to instrumentation if it has changed.
-		err = checkDdevVersionAndOptInInstrumentation(skip)
-		if err != nil {
-			util.Failed(err.Error())
-		}
+		// Do it here rather than waiting for app.Start() so the poweroff prompt
+		// comes before any of the start output.
+		ddevapp.RunUpgradeCheck()
 
 		selectFlag, err := cmd.Flags().GetBool("select")
 
@@ -124,7 +124,12 @@ ddev start --all`,
 			args = append(args, projectName)
 		}
 
+		skipConfirmation, _ := cmd.Flags().GetBool("skip-confirmation")
 		projects, err := getRequestedProjects(args, startAll)
+		if len(args) == 0 && !startAll && errors.Is(err, ddevapp.ErrNoProjectConfig) {
+			configureProjectHere(skipConfirmation)
+			projects, err = getRequestedProjects(args, startAll)
+		}
 		if err != nil {
 			util.Failed("Failed to start project(s): %v", err)
 		}
@@ -132,30 +137,50 @@ ddev start --all`,
 			instrumentationApp = projects[0]
 		}
 
+		noCache, _ := cmd.Flags().GetBool("no-cache")
+		profilesFlag, _ := cmd.Flags().GetString("profiles")
+		startOptions := ddevapp.StartOptions{Profiles: splitProfiles(profilesFlag), NoCache: noCache}
+		seedSnapshot, _ := cmd.Flags().GetString("seed-snapshot")
+		resetDatabase, _ := cmd.Flags().GetBool("reset-database")
+		omitSnapshot, _ := cmd.Flags().GetBool("omit-snapshot")
+		checkResetDatabaseFlags(resetDatabase, omitSnapshot, startAll)
+
 		for _, project := range projects {
 			if err := ddevapp.CheckForMissingProjectFiles(project); err != nil {
 				util.Failed("Failed to start %s: %v", project.GetName(), err)
 			}
+			project.SeedSnapshot = seedSnapshot
+
+			if resetDatabase {
+				if err := resetProjectDatabase(project, omitSnapshot, skipConfirmation); err != nil {
+					util.Failed("Failed to reset the database of %s: %v", project.GetName(), err)
+				}
+			}
 
 			output.UserOut.Printf("Starting %s...", project.GetName())
 
-			// If --profiles, start the optional services, which also starts project
-			if optionalProfiles, err := cmd.Flags().GetString("profiles"); err == nil && optionalProfiles != "" {
-				if err := project.StartOptionalProfiles(strings.Split(optionalProfiles, ",")); err != nil {
-					util.Failed("Failed to start optional profiles '%s': %v", optionalProfiles, err)
-				}
-			} else {
-				// otherwise just start the project
-				if err := project.Start(); err != nil {
-					util.Failed("Failed to start %s: %v", project.GetName(), err)
-				}
+			if err := project.StartWith(startOptions); err != nil {
+				util.Failed("Failed to start %s: %v", project.GetName(), err)
 			}
 
 			util.Success("Successfully started %s", project.GetName())
 			emitReachProjectMessage(project)
 		}
+		util.WarnAboutMultipleGlobalDdevDirs()
 		amplitude.CheckSetUp()
 	},
+}
+
+// splitProfiles turns a --profiles value into a profile list, or nil when it
+// names none, so that COMPOSE_PROFILES applies.
+func splitProfiles(flag string) []string {
+	var profiles []string
+	for profile := range strings.SplitSeq(flag, ",") {
+		if profile = strings.TrimSpace(profile); profile != "" {
+			profiles = append(profiles, profile)
+		}
+	}
+	return profiles
 }
 
 func emitReachProjectMessage(project *ddevapp.DdevApp) {
@@ -164,9 +189,48 @@ func emitReachProjectMessage(project *ddevapp.DdevApp) {
 	}
 }
 
-func init() {
+// checkResetDatabaseFlags rejects flag combinations that don't make sense with
+// --reset-database, which throws a database away.
+func checkResetDatabaseFlags(resetDatabase bool, omitSnapshot bool, allProjects bool) {
+	if !resetDatabase {
+		if omitSnapshot {
+			util.Failed("--omit-snapshot only means something together with --reset-database")
+		}
+		return
+	}
+	if allProjects {
+		util.Failed("--reset-database removes a project's database, so it can't be combined with --all")
+	}
+}
+
+// resetProjectDatabase removes a project's database volume so the next start
+// creates a new one, after confirming with the user.
+func resetProjectDatabase(project *ddevapp.DdevApp, omitSnapshot bool, skipConfirmation bool) error {
+	if !skipConfirmation {
+		prompt := fmt.Sprintf("OK to remove the database of project %s and start over with a new one?\nA database snapshot will be made first.\n", project.GetName())
+		if omitSnapshot {
+			prompt = fmt.Sprintf("OK to remove the database of project %s and start over with a new one?\nNo snapshot will be made, so the existing database will be gone for good.\n", project.GetName())
+		}
+		if !util.Confirm(prompt + "Continue?") {
+			return fmt.Errorf("database reset cancelled")
+		}
+	}
+	return project.ResetDatabaseVolume(omitSnapshot)
+}
+
+// addResetDatabaseFlags adds the flags that seed or throw away a project's
+// database, shared by `ddev start` and `ddev restart`.
+func addResetDatabaseFlags(cmd *cobra.Command) {
+	cmd.Flags().String("seed-snapshot", "", "Seed a brand-new database volume from this snapshot name or file, instead of the stock starter database")
+	cmd.Flags().Bool("reset-database", false, "Remove the project's existing database and start over with a new one")
+	cmd.Flags().BoolP("omit-snapshot", "O", false, "With --reset-database, skip the snapshot of the database being removed")
+}
+
+func registerStartCmd() {
 	StartCmd.Flags().BoolVarP(&startAll, "all", "a", false, "Start all projects")
 	StartCmd.Flags().BoolP("skip-confirmation", "y", false, "Skip any confirmation steps")
+	StartCmd.Flags().BoolP("no-cache", "", false, "Rebuild custom Docker image layers without cache")
+	addResetDatabaseFlags(StartCmd)
 	StartCmd.Flags().String("profiles", "", "Start optional comma-separated docker compose profiles")
 	StartCmd.Flags().BoolP("select", "s", false, "Interactively select a project to start")
 	err := StartCmd.Flags().MarkHidden("select")

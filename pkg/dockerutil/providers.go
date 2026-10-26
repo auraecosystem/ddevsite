@@ -1,6 +1,7 @@
 package dockerutil
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/ddev/ddev/pkg/nodeps"
@@ -19,6 +20,13 @@ func IsDockerDesktop() bool {
 		return true
 	}
 	return false
+}
+
+// CanCheckHostPortsLocally reports whether a bind test in DDEV's own network
+// namespace sees the host ports the engine publishes. A remote Docker host
+// publishes elsewhere, and Docker Desktop on WSL2 publishes on the Windows side.
+func CanCheckHostPortsLocally() bool {
+	return !IsRemoteDockerHost() && !(nodeps.IsWSL2() && IsDockerDesktop())
 }
 
 // IsColima detects if running on Colima
@@ -99,17 +107,31 @@ func IsRootless() bool {
 	if err != nil {
 		return false
 	}
-	for _, opt := range info.SecurityOptions {
-		if opt == "name=rootless" {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(info.SecurityOptions, "name=rootless")
 }
 
 // IsPodmanRootless detects if Podman is running in rootless mode
 func IsPodmanRootless() bool {
 	return IsRootless() && IsPodman()
+}
+
+func IsPodmanRootlessmacOS() bool {
+	return nodeps.IsMacOS() && IsRootless() && IsPodman()
+}
+
+// UseKeepID reports whether containers and volume operations should use Podman's
+// "keep-id" user-namespace mode. This is the single source of truth for the
+// decision: every container we create and every volume copy/chown must agree,
+// because they share volumes (notably ddev-global-cache) and a uid written
+// under one userns mapping is unreadable under another.
+//
+// keep-id is correct only on Linux rootless Podman, where it maps the host
+// uid/gid into the container so bind-mounted files have the host's ownership.
+// On macOS/Windows, Podman runs in a Linux VM whose subuid/subgid range cannot
+// map host GIDs (e.g. macOS GID 20/staff), so keep-id must not be used; all
+// containers run under Podman's default rootless userns instead.
+func UseKeepID() bool {
+	return IsPodmanRootless() && nodeps.IsLinux()
 }
 
 // IsDockerRootless detects if Docker is running in rootless mode on Linux
@@ -124,10 +146,5 @@ func IsSELinux() bool {
 	if err != nil {
 		return false
 	}
-	for _, opt := range info.SecurityOptions {
-		if opt == "name=selinux" {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(info.SecurityOptions, "name=selinux")
 }

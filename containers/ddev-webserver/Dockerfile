@@ -1,9 +1,190 @@
+### ---------------------------base-----------------------------------------
+### Build the base Debian image that will be used in every other stage
+FROM debian:trixie-slim AS base
+ARG TARGETPLATFORM
+ARG BUILDPLATFORM
+# Bump to rebuild against updated external package repositories.
+ARG EXTERNAL_DEPENDENCIES_REFRESH=2026-09-25
+SHELL ["/bin/bash", "-eu","-o", "pipefail",  "-c"]
+
+RUN ls -l $(which dpkg-split) && ls -l $(which dpkg-deb)
+RUN for item in dpkg-split dpkg-deb; do \
+    if [ ! -f /usr/sbin/$item ]; then \
+        ln -sf /usr/bin/$item /usr/sbin/$item; \
+    fi; \
+done
+RUN for item in tar rm; do \
+    if [ ! -f /usr/sbin/$item ]; then \
+        ln -sf /bin/$item /usr/sbin/$item; \
+    fi; \
+done
+
+RUN ls -l /usr/sbin/dpkg-split /usr/sbin/dpkg-deb /usr/sbin/tar /usr/sbin/rm
+
+# tzdata-legacy - to avoid issues with deprecated timezones
+RUN echo "External dependency refresh: ${EXTERNAL_DEPENDENCIES_REFRESH}" && apt-get -qq update && apt-get -qq install --no-install-recommends --no-install-suggests -y \
+    apt-transport-https \
+    ca-certificates \
+    bzip2 \
+    curl \
+    git \
+    gnupg \
+    lsb-release \
+    procps \
+    tzdata-legacy \
+    wget
+RUN url="https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${TARGETPLATFORM#linux/}"; wget ${url} -q -O /usr/bin/yq && chmod +x /usr/bin/yq
+
+# Install Xdebug dbgpClient and xdebugctl tools
+# dbgpClient - Command-line DBGp client for testing Xdebug connections
+# xdebugctl - Tool to control Xdebug settings at runtime
+RUN ARCH="${TARGETPLATFORM#linux/}"; \
+    if [ "$ARCH" = "amd64" ]; then ARCH=""; else ARCH="-${ARCH}"; fi; \
+    wget -q https://xdebug.org/files/binaries/xdebugctl${ARCH} -O /usr/local/bin/xdebugctl && \
+    chmod +x /usr/local/bin/xdebugctl
+
+ADD generic-files /
+
+# Retry curl on transient network errors
+RUN printf 'retry = 5\nretry-delay = 2\nretry-connrefused\nretry-all-errors\n' > /root/.curlrc
+
+# This curl -I is debugging for intermittent failures on https://github.com/oerdnj/deb.sury.org/issues/2046
+RUN curl -s -I https://packages.sury.org/php/
+
+RUN curl -sSLo /tmp/debsuryorg-archive-keyring.deb https://packages.sury.org/debsuryorg-archive-keyring.deb && \
+    dpkg -i /tmp/debsuryorg-archive-keyring.deb
+RUN rm -f /tmp/debsuryorg-archive-keyring.deb && \
+    printf "Types: deb\nURIs: https://packages.sury.org/php/\nSuites: $(lsb_release -sc)\nComponents: main\nSigned-By: /usr/share/keyrings/deb.sury.org-php.gpg\n" > /etc/apt/sources.list.d/php.sources
+RUN apt-get -qq update
+### -------------------------------END base---------------------------------------
+
+### --------------------------ddev-keep-root-build--------------------------------
+### Build the ddev-keep-root.so shim in a separate stage so gcc is not added to
+### the shipped images. The shim lets a process keep running as root; see
+### ddev-keep-root.c for details.
+FROM base AS ddev-keep-root-build
+SHELL ["/bin/bash", "-eu","-o", "pipefail",  "-c"]
+RUN apt-get -qq update && \
+    apt-get -qq install --no-install-recommends --no-install-suggests -y gcc libc6-dev && \
+    gcc -shared -fPIC -O2 -Wall -o /ddev-keep-root.so /usr/local/src/ddev/ddev-keep-root.c -ldl
+### ------------------------END ddev-keep-root-build------------------------------
+
+### ------------------------ddev-php-extension-build------------------------------
+### Uncomment the lines below to enable custom PHP extension builds:
+#FROM base AS ddev-php-extension-build
+#SHELL ["/bin/bash", "-eu","-o", "pipefail",  "-c"]
+### Use this section to add PHP extensions that need to be built manually.
+### Example: The following line installs Xdebug version 3.2.2 for PHP 8.1:
+#RUN /usr/local/bin/build_php_extension.sh "php8.1" "xdebug" "3.2.2" "/usr/lib/php/20210902/xdebug.so"
+### See more examples in the /usr/local/bin/build_php_extension.sh script
+### -----------------------END ddev-php-extension-build---------------------------
+
+### ---------------------------ddev-php-base--------------------------------------
+### Build ddev-php-base, which is the base for ddev-webserver-*
+### This combines the packages and features of DDEV's ddev-webserver and PHP image
+FROM base AS ddev-php-base
+SHELL ["/bin/bash", "-eu","-o", "pipefail",  "-c"]
+ARG PHP_DEFAULT_VERSION="8.4"
+ARG XDEBUG_MODE=off
+ENV DDEV_PHP_VERSION=$PHP_DEFAULT_VERSION
+ARG PHP_VERSIONS="php8.2 php8.3 php8.4 php8.5 php8.6"
+ENV PHP_INI=/etc/php/$PHP_DEFAULT_VERSION/fpm/php.ini
+ARG NODE_VERSION=24
+ENV PATH=$PATH:/usr/local/n/bin
+# composer normally screams about running as root, we don't need that.
+ENV COMPOSER_ALLOW_SUPERUSER=1
+ENV COMPOSER_PROCESS_TIMEOUT=2000
+
+# TARGETPLATFORM is Docker buildx's target platform (e.g. linux/arm64), while
+# BUILDPLATFORM is the platform of the build host (e.g. linux/amd64)
+ARG TARGETPLATFORM
+ARG BUILDPLATFORM
+
+RUN apt-get -qq update && apt-get -qq install --no-install-recommends --no-install-suggests -y \
+    apache2 \
+    file \
+    ghostscript \
+    imagemagick \
+    graphicsmagick \
+    jq \
+    msmtp \
+    nginx \
+    sqlite3
+
+# Add the ddev-keep-root.so shim (see ddev-keep-root.c). It does nothing unless
+# DDEV_KEEP_ROOT is set, and DDEV deletes it from the web image unless it is
+# needed (apache-fpm on Docker rootless + bind mounts); see WriteBuildDockerfile.
+COPY --from=ddev-keep-root-build /ddev-keep-root.so /usr/local/lib/ddev/ddev-keep-root.so
+
+RUN curl -L --fail -o /usr/local/bin/n -sSL https://raw.githubusercontent.com/tj/n/master/bin/n && chmod +x /usr/local/bin/n
+# Install system Node.js, `--cleanup` is important, it removes downloaded files.
+RUN N_PREFIX=/usr/local/n n install --cleanup "${NODE_VERSION}"
+RUN npm install --unsafe-perm=true --global gulp-cli yarn
+
+# Make /usr/local/n writable here, once, for any container user, instead of
+# recursively chgrp/chmod'ing it on every project's web image build (which was
+# slow, see https://github.com/ddev/ddev/issues/8600): use the "arbitrary UID"
+# technique of owning it by the root group (gid 0) and making it group-writable,
+# so any per-project user just needs to be a member of group 0 (added in
+# WriteBuildDockerfile in pkg/ddevapp/config.go) to get write access, with no
+# per-project recursive walk of this directory needed. See
+# https://developers.redhat.com/blog/2020/10/26/adapting-docker-and-kubernetes-containers-to-run-on-red-hat-openshift-container-platform
+RUN chgrp -R 0 /usr/local/n && chmod -R g+rwX,o-w /usr/local/n
+
+# Loop through $PHP_VERSIONS, selecting packages for the target architecture.
+RUN for v in ${PHP_VERSIONS}; do \
+    /usr/local/bin/install_php_extensions.sh "$v" "${TARGETPLATFORM#linux/}"; \
+done
+RUN update-alternatives --set php /usr/bin/php${PHP_DEFAULT_VERSION}
+
+# Same "arbitrary UID" technique for /var/log itself: some setups (custom
+# supervisord daemons, app loggers) write files directly into /var/log, which
+# relied on /var/log being world-writable before #8379 hardened it. Rather
+# than reverting to world-writable, make the top-level directory group-0
+# writable so any per-project user (a group-0 member) can create files there,
+# without loosening perms on subdirectories that already have narrower,
+# explicit permissions (e.g. /var/log/nginx, /var/log/apache2 below).
+# This must run after the PHP-FPM installs above: installing php-fpm pulls in
+# the `systemd` package for the first time, and systemd's postinst runs a
+# global `systemd-tmpfiles --create`, which resets /var/log back to its
+# packaged 0755 root:root default (see /usr/lib/tmpfiles.d/var.conf) and
+# would silently undo this fix if applied any earlier.
+# See https://github.com/ddev/ddev/issues/8574
+RUN chgrp 0 /var/log && chmod g+rwX,o-w /var/log
+RUN mkdir -p /etc/nginx/sites-enabled /var/lock/apache2 /var/log/apache2 /var/run/apache2 /var/lib/apache2/module/enabled_by_admin /var/lib/apache2/module/disabled_by_admin && \
+    touch /var/log/php-fpm.log && \
+    chmod ugo+rw /var/log/php-fpm.log && \
+    touch /var/log/nginx/access.log && \
+    touch /var/log/nginx/error.log && \
+    chmod -R ugo+rw /var/log/nginx/ && \
+    chmod ugo+rx /usr/local/bin/* && \
+    ln -sf /usr/sbin/php-fpm${PHP_DEFAULT_VERSION} /usr/sbin/php-fpm
+
+### ------------------------ddev-php-extension-build------------------------------
+### Remove any existing PHP extensions that will be replaced by custom-built versions:
+#RUN apt-get -qq remove -y php8.1-xdebug
+### After building the custom extensions, copy them from the multi-stage build:
+### Note: The dates in /usr/lib/php/YYYYMMDD/ represent PHP API versions.
+### For more info, see: https://unix.stackexchange.com/a/591771
+#COPY --from=ddev-php-extension-build /usr/lib/php/20210902/xdebug.so /usr/lib/php/20210902/xdebug.so
+### See more examples in the /usr/local/bin/build_php_extension.sh script
+### -----------------------END ddev-php-extension-build---------------------------
+
+RUN phpdismod xhprof xdebug
+RUN apt-get -qq autoremove -y
+RUN curl -L --fail -o /usr/local/bin/composer -sSL https://getcomposer.org/composer-stable.phar && chmod ugo+wx /usr/local/bin/composer
+ADD ddev-php-files /
+RUN apt-get -qq autoremove && apt-get -qq clean -y && rm -rf /var/lib/apt/lists/* /tmp/*
+RUN ln -sf /usr/sbin/php-fpm${DDEV_PHP_VERSION} /usr/sbin/php-fpm
+RUN mkdir -p /run/php && \
+    chown www-data:www-data /run/php && chmod 755 /run/php && \
+    ln -sf /run/php/php-fpm.sock /run/php-fpm.sock
+RUN chmod 777 /var/lib/php/sessions
+### -------------------------END ddev-php-base------------------------------------
+
 ### ---------------------------ddev-webserver-base--------------------------------
-### Build ddev-php-base from ddev-webserver-base
-### ddev-php-base is the basic of ddev-php-prod
-### and ddev-webserver-* (For DDEV local Usage)
-ARG DOCKER_ORG=ddev
-FROM ${DOCKER_ORG}/ddev-php-base:20251208_stasadev_php85 AS ddev-webserver-base
+### Build ddev-webserver-base from ddev-php-base
+FROM ddev-php-base AS ddev-webserver-base
 SHELL ["/bin/bash", "-eu","-o", "pipefail", "-c"]
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -12,32 +193,21 @@ ENV APACHE_SITE_TEMPLATE=/etc/apache2/apache-site.conf
 ENV TERMINUS_CACHE_DIR=/mnt/ddev-global-cache/terminus/cache
 ENV CAROOT=/mnt/ddev-global-cache/mkcert
 
-# TARGETPLATFORM is Docker buildx's target platform (e.g. linux/arm64), while
-# BUILDPLATFORM is the platform of the build host (e.g. linux/amd64)
+# TARGETPLATFORM is Docker buildx's target platform (e.g. linux/arm64)
+# TARGETARCH is the target architecture (e.g. arm64, amd64)
 ARG TARGETPLATFORM
 ARG TARGETARCH
-ARG BUILDPLATFORM
-ARG DEFAULT_LOCALES="en_CA.UTF-8 UTF-8\nen_US.UTF-8 UTF-8\nen_GB.UTF-8 UTF-8\nes_ES.UTF-8 UTF-8\nes_MX.UTF-8 UTF-8\nde_DE.UTF-8 UTF-8\nde_AT.UTF-8 UTF-8\nfr_CA.UTF-8 UTF-8\nfr_FR.UTF-8 UTF-8\nja_JP.UTF-8 UTF-8\npt_PT.UTF-8 UTF-8\npt_BR.UTF-8 UTF-8\nru_RU.UTF-8 UTF-8\n"
 
-ADD ddev-webserver-etc-skel /
+COPY ddev-webserver-etc-skel /
 RUN /sbin/mkhomedir_helper www-data
-
-# This curl is here to catch diagnostic information for sury.org
-# failures, see https://github.com/oerdnj/deb.sury.org/issues/2046
-RUN curl -I https://packages.sury.org/php/dists/bookworm/InRelease
-
-# symfony cli
-RUN curl -1sLf 'https://dl.cloudsmith.io/public/symfony/stable/setup.deb.sh' | bash
-
-# Convert symfony-stable.list to modern deb822 .sources format
-RUN rm -f /etc/apt/sources.list.d/symfony-stable.list && \
-    printf "Types: deb deb-src\nURIs: https://dl.cloudsmith.io/public/symfony/stable/deb/debian/\nSuites: trixie\nComponents: main\nSigned-By: /usr/share/keyrings/symfony-stable-archive-keyring.gpg\n" > /etc/apt/sources.list.d/symfony-stable.sources
 
 # Set up MariaDB apt repository
 # The key is from https://mariadb.com/docs/server/server-management/install-and-upgrade-mariadb/installing-mariadb/binary-packages/gpg#mariadb-community-server-debian-ubuntu-key
 # Search for CHANGE_MARIADB_CLIENT to update related code.
-RUN KEYRING_URL="https://supplychain.mariadb.com/mariadb-keyring-2019.gpg" && \
-    KEYRING_FILE="mariadb-keyring-2019.gpg" && \
+RUN KEYRING_URL="https://supplychain.mariadb.com/mariadb-keyring-2025.gpg" && \
+    SCRIPT=$(curl -fsSL https://r.mariadb.com/downloads/mariadb_repo_setup) && \
+    echo "${SCRIPT}" | grep -q "${KEYRING_URL}" || (echo "ERROR: KEYRING_URL does not match mariadb_repo_setup script" >&2 && exit 1) && \
+    KEYRING_FILE="${KEYRING_URL##*/}" && \
     KEYRING_PATH="/usr/share/keyrings/${KEYRING_FILE}" && \
     curl -fsSL -O "${KEYRING_URL}" && \
     curl -fsSL -O "${KEYRING_URL}.sha256" && \
@@ -48,20 +218,34 @@ RUN KEYRING_URL="https://supplychain.mariadb.com/mariadb-keyring-2019.gpg" && \
     printf "Types: deb\nURIs: https://archive.mariadb.org/mariadb-11.8/repo/debian\nSuites: trixie\nComponents: main\nSigned-By: ${KEYRING_PATH}\n" > /etc/apt/sources.list.d/mariadb-archive.sources
 
 # Set up Postgresql apt repository
-RUN install -d /usr/share/postgresql-common/pgdg && curl -s -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc --fail https://www.postgresql.org/media/keys/ACCC4CF8.asc
+RUN <<EOF
+    set -eu -o pipefail
+    install -d /usr/share/postgresql-common/pgdg
+    curl -s -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc --fail https://www.postgresql.org/media/keys/ACCC4CF8.asc
+    apt-get -qq update
+    apt-get -qq install -y -o Dpkg::Options::="--force-confold" --no-install-recommends --no-install-suggests postgresql-common
+    /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+EOF
 
-RUN apt-get -qq update
-RUN apt-get install -y postgresql-common && /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
-
-RUN DEBIAN_FRONTEND=noninteractive apt-get -qq install -y -o Dpkg::Options::="--force-confold" --no-install-recommends --no-install-suggests -y \
+RUN apt-get -qq update && \
+    DEBIAN_FRONTEND=noninteractive apt-get -qq install -y -o Dpkg::Options::="--force-confold" --no-install-recommends --no-install-suggests \
     bash-completion \
+    cron \
     gettext \
     git \
     gpgv \
     graphviz \
+    jq \
     less \
     libcap2-bin \
+    # AVIF write support for ImageMagick \
+    libheif-plugin-aomdec \
+    libheif-plugin-aomenc \
+    # HEIC write support for ImageMagick \
+    libheif-plugin-libde265 \
+    libheif-plugin-x265 \
     libldap-common \
+    # SVG support for ImageMagick \
     libmagickcore-7.q16-10-extra \
     locales \
     mariadb-client \
@@ -70,10 +254,11 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get -qq install -y -o Dpkg::Options::="--
     postgresql-client \
     pv \
     python-is-python3 \
+    # For QR codes in `ddev share` \
+    qrencode \
     rsync \
     sqlite3 \
     supervisor \
-    symfony-cli \
     unzip \
     vim-tiny \
     xz-utils \
@@ -84,36 +269,116 @@ RUN update-alternatives --install /usr/bin/vim vim /usr/bin/vim.tiny 10
 # Configure APT to use gpgv for signature verification to avoid SHA1 deprecation issues
 RUN echo 'APT::Key::gpgvcommand "/usr/bin/gpgv";' > /etc/apt/apt.conf.d/99-use-gpgv
 
-RUN printf "${DEFAULT_LOCALES}" > /etc/locale.gen && locale-gen
-
 # Arbitrary user needs to be able to bind to privileged ports (for nginx and apache2)
-RUN setcap CAP_NET_BIND_SERVICE=+eip /usr/sbin/nginx
-RUN setcap CAP_NET_BIND_SERVICE=+eip /usr/sbin/apache2
-
-# magerun and magerun2 for magento
-RUN curl --fail -sSL https://files.magerun.net/n98-magerun-latest.phar -o /usr/local/bin/magerun && chmod 777 /usr/local/bin/magerun
-RUN curl --fail -sSL https://raw.githubusercontent.com/netz98/n98-magerun/master/res/autocompletion/bash/n98-magerun.phar.bash -o /etc/bash_completion.d/n98-magerun.phar
-RUN curl --fail -sSL https://files.magerun.net/n98-magerun2-latest.phar -o /usr/local/bin/magerun2 && chmod 777 /usr/local/bin/magerun2
-RUN curl --fail -sSL https://raw.githubusercontent.com/netz98/n98-magerun2/master/res/autocompletion/bash/n98-magerun2.phar.bash -o /etc/bash_completion.d/n98-magerun2.phar
+RUN setcap CAP_NET_BIND_SERVICE=+eip /usr/sbin/nginx && \
+    setcap CAP_NET_BIND_SERVICE=+eip /usr/sbin/apache2
 
 RUN apt-get -qq autoremove && apt-get -qq clean -y && rm -rf /var/lib/apt/lists/* /tmp/*
 
-ADD ddev-webserver-base-files /
-ADD ddev-webserver-base-scripts /
+COPY ddev-webserver-base-files /
+COPY ddev-webserver-base-scripts /
+# Compatibility for user and add-on supervisor configs that still log to the old FIFO
+RUN ln -sf /proc/1/fd/1 /var/tmp/logpipe
+RUN sed -i 's#listen = /run/php-fpm.sock#listen = /run/php/php-fpm.sock#' /etc/php/*/fpm/pool.d/www.conf
+# Debian's nginx (since 1.26.3-3+deb13u4, a workaround for Debian bug #1126960)
+# passes the host to backends as the port-stripped $host nginx variable instead of
+# the client's Host header, so PHP sees HTTP_HOST without the port and apps
+# build wrong absolute URLs whenever router_http(s)_port is not 80/443.
+# Rewrite the *_params files to use $http_host (the Host header as sent by the
+# client, port included):
+#   fastcgi_param HTTP_HOST $host;  -> fastcgi_param HTTP_HOST $http_host;
+#     (same for scgi_param and uwsgi_param, matched by \w+_param)
+#   proxy_set_header Host $host;    -> proxy_set_header Host $http_host;
+# If Debian ever drops these lines, the seds are no-ops and nginx's default
+# pass-through of the Host header is correct again. Debian's own comment says
+# nginx 1.30.0+ will preserve the port via $host$is_request_port$request_port;
+# once that lands, our "$host;" match no longer fires and we inherit the correct
+# upstream behavior automatically (see ddev/ddev#8555).
+# The last two seds rewrite Debian's now-contradictory "Do not use $http_host"
+# comment so `cat`ing the file in the container is not misleading.
+RUN sed -i 's#^\(\w\+_param\s\+HTTP_HOST\s\+\)$host;#\1$http_host;#' /etc/nginx/fastcgi_params /etc/nginx/scgi_params /etc/nginx/uwsgi_params && \
+    sed -i 's#^\(proxy_set_header\s\+Host\s\+\)$host;#\1$http_host;#' /etc/nginx/proxy_params && \
+    sed -i 's@^# Do not use HTTP_HOST as "$http_host"\.@# DDEV: the HTTP_HOST line below intentionally uses $http_host to preserve a nonstandard router port (ddev/ddev#8555); Debian set $host as a workaround for bug #1126960, which strips the port.@' /etc/nginx/fastcgi_params /etc/nginx/scgi_params /etc/nginx/uwsgi_params && \
+    sed -i 's@^# Do not set the `Host` header as "$http_host"\.@# DDEV: the Host line below intentionally uses $http_host to preserve a nonstandard router port (ddev/ddev#8555); Debian set $host as a workaround for bug #1126960, which strips the port.@' /etc/nginx/proxy_params
+# Guard: fail the build if the HTTP_HOST/Host rewrite above did not land as
+# $http_host. This deliberately breaks the build in two cases, both of which a
+# maintainer must look at:
+#   - the sed silently failed to match because Debian reformatted its $host
+#     workaround while still stripping the port -> our fix has regressed; or
+#   - Debian shipped the proper fix (nginx 1.30.0+ builds HTTP_HOST from
+#     $host$is_request_port$request_port) -> our workaround is now dead code and
+#     should be removed.
+# Without this guard the second case is invisible: the functional test stays
+# green because the port is preserved upstream, and the dead seds linger. See
+# ddev/ddev#8555.
+RUN <<'EOF'
+set -eu -o pipefail
+for f in /etc/nginx/fastcgi_params /etc/nginx/scgi_params /etc/nginx/uwsgi_params; do
+  if ! grep -Eq '^[a-z]+_param[[:space:]]+HTTP_HOST[[:space:]]+\$http_host;' "$f"; then
+    echo "ERROR: ${f}: HTTP_HOST is not set to \$http_host after the rewrite." >&2
+    echo "Debian's nginx-common line changed (bug #1126960 / ddev/ddev#8555)." >&2
+    echo "If upstream now preserves the port (nginx 1.30.0 \$host\$is_request_port\$request_port), remove this workaround; otherwise fix the seds above." >&2
+    exit 1
+  fi
+done
+if ! grep -Eq '^proxy_set_header[[:space:]]+Host[[:space:]]+\$http_host;' /etc/nginx/proxy_params; then
+  echo "ERROR: /etc/nginx/proxy_params: Host is not set to \$http_host after the rewrite (bug #1126960 / ddev/ddev#8555)." >&2
+  exit 1
+fi
+EOF
+RUN locale-gen
 
-# /usr/local/bin may need to be updated by start.sh, etc
-RUN chmod -f ugo+rwx /usr/local/bin /usr/local/bin/composer
+# Composer may need to be updated by composer self-update
+RUN chmod -f ugo+rx /usr/local/bin && \
+    chgrp www-data /usr/local/bin/composer && \
+    chmod g+rwx,o-w /usr/local/bin/composer
 
 # Install older mariadb client and mariadb-dump into /usr/local/mariadb-old/bin
 # to solve variety of problems with newer mariadb-dump.
-RUN if [ "$(dpkg --print-architecture)" = "arm64" ]; then cd /tmp && curl -L -s --fail -O "https://dlm.mariadb.com/3607865/MariaDB/mariadb-10.11.6/repo/debian/pool/main/m/mariadb/mariadb-client_10.11.6+maria~deb12_arm64.deb" -O "https://dlm.mariadb.com/3607494/MariaDB/mariadb-10.11.6/repo/debian/pool/main/m/mariadb/mariadb-client-core_10.11.6+maria~deb12_arm64.deb"; fi
-RUN if [ "$(dpkg --print-architecture)" = "amd64" ]; then cd /tmp && curl -L -s --fail -O "https://dlm.mariadb.com/3607675/MariaDB/mariadb-10.11.6/repo/debian/pool/main/m/mariadb/mariadb-client_10.11.6+maria~deb12_amd64.deb" -O "https://dlm.mariadb.com/3607123/MariaDB/mariadb-10.11.6/repo/debian/pool/main/m/mariadb/mariadb-client-core_10.11.6+maria~deb12_amd64.deb"; fi
-RUN set -x && cd /tmp && for item in *.deb; do dpkg-deb -x ${item} extracted; done
-RUN mkdir -p /usr/local/mariadb-old/bin && cp -ap /tmp/extracted/usr/bin/{mariadb,mariadb-dump,mysql,mysqldump} /usr/local/mariadb-old/bin
+RUN <<EOF
+    set -eu -o pipefail
+    cd /tmp
+    if [ "$(dpkg --print-architecture)" = "arm64" ]; then
+        curl -L -s --fail \
+            -O "https://dlm.mariadb.com/3607865/MariaDB/mariadb-10.11.6/repo/debian/pool/main/m/mariadb/mariadb-client_10.11.6+maria~deb12_arm64.deb" \
+            -O "https://dlm.mariadb.com/3607494/MariaDB/mariadb-10.11.6/repo/debian/pool/main/m/mariadb/mariadb-client-core_10.11.6+maria~deb12_arm64.deb"
+    elif [ "$(dpkg --print-architecture)" = "amd64" ]; then
+        curl -L -s --fail \
+            -O "https://dlm.mariadb.com/3607675/MariaDB/mariadb-10.11.6/repo/debian/pool/main/m/mariadb/mariadb-client_10.11.6+maria~deb12_amd64.deb" \
+            -O "https://dlm.mariadb.com/3607123/MariaDB/mariadb-10.11.6/repo/debian/pool/main/m/mariadb/mariadb-client-core_10.11.6+maria~deb12_amd64.deb"
+    fi
+    for item in *.deb; do dpkg-deb -x "${item}" extracted; done
+    mkdir -p /usr/local/mariadb-old/bin
+    cp -ap /tmp/extracted/usr/bin/{mariadb,mariadb-dump,mysql,mysqldump} /usr/local/mariadb-old/bin
+EOF
 
 # Install mariadb wrappers
 # Search for CHANGE_MARIADB_CLIENT to update related code.
-RUN DDEV_DATABASE="mariadb:11.8" mariadb-compat-install.sh
+# Install MariaDB SSL skip wrappers to disable one-way TLS verification (enabled by default in MariaDB 11.4+)
+RUN DDEV_DATABASE="mariadb:11.8" mariadb-compat-install.sh && \
+    DDEV_DATABASE="mariadb:11.8" mariadb-skip-ssl-wrapper-install.sh
+
+# Register php-fpm as an alternative so versions can be switched at runtime
+RUN for v in /usr/sbin/php-fpm[0-9]*; do \
+      ver="${v#/usr/sbin/php-fpm}"; \
+      prio="${ver//./}"; \
+      update-alternatives --install /usr/sbin/php-fpm php-fpm "$v" "$prio"; \
+    done
+
+RUN <<EOF
+    set -eu -o pipefail
+    gh_tag() { curl -L --fail --silent "https://api.github.com/repos/$1/releases/latest" | jq -r .tag_name; }
+
+    # Install mkcert
+    tag=$(gh_tag FiloSottile/mkcert)
+    curl --fail -sSL "https://github.com/FiloSottile/mkcert/releases/download/${tag}/mkcert-${tag}-linux-${TARGETARCH}" --output /usr/local/bin/mkcert
+    chmod +x /usr/local/bin/mkcert
+
+EOF
+
+# Set up Blackfire apt repository
+RUN curl -s --fail https://packages.blackfire.io/gpg.key > /usr/share/keyrings/blackfire-archive-keyring.asc && \
+    printf "Types: deb\nURIs: http://packages.blackfire.io/debian/\nSuites: any\nComponents: main\nSigned-By: /usr/share/keyrings/blackfire-archive-keyring.asc\n" > /etc/apt/sources.list.d/blackfire.sources
 
 ### -------------------------END ddev-webserver-base------------------------------
 
@@ -122,88 +387,109 @@ RUN DDEV_DATABASE="mariadb:11.8" mariadb-compat-install.sh
 FROM ddev-webserver-base AS ddev-webserver-dev-base
 SHELL ["/bin/bash", "-eu", "-o", "pipefail", "-c"]
 
-ENV CAROOT=/mnt/ddev-global-cache/mkcert
 ENV PHP_DEFAULT_VERSION="8.4"
 
-RUN curl -s --fail https://packages.blackfire.io/gpg.key > /usr/share/keyrings/blackfire-archive-keyring.asc
-# Create blackfire.sources in modern deb822 format
-RUN printf "Types: deb\nURIs: http://packages.blackfire.io/debian/\nSuites: any\nComponents: main\nSigned-By: /usr/share/keyrings/blackfire-archive-keyring.asc\n" > /etc/apt/sources.list.d/blackfire.sources
-RUN apt-get -qq update
+RUN apt-get -qq update && \
+    DEBIAN_FRONTEND=noninteractive apt-get -qq install -o Dpkg::Options::="--force-confold" --no-install-recommends --no-install-suggests -y \
+        blackfire \
+        blackfire-php \
+        fontconfig \
+        iproute2 \
+        iputils-ping \
+        libpcre3 \
+        nano \
+        ncurses-bin \
+        netcat-traditional \
+        sudo \
+        telnet \
+        tree
 
-RUN DEBIAN_FRONTEND=noninteractive apt-get -qq install -o Dpkg::Options::="--force-confold" --no-install-recommends --no-install-suggests -y \
-    blackfire \
-    blackfire-php \
-    fontconfig \
-    iproute2 \
-    iputils-ping \
-    jq \
-    libpcre3 \
-    nano \
-    ncurses-bin \
-    netcat-traditional \
-    sudo \
-    telnet \
-    tree
-
-RUN curl --fail -JL -s -o /usr/local/bin/mkcert "https://dl.filippo.io/mkcert/latest?for=${TARGETPLATFORM}" && chmod +x /usr/local/bin/mkcert
+# ping needs more privileges on lima-rootless
+RUN setcap cap_net_raw+p /usr/bin/ping
 
 # blackfire user by default is set up with /dev/null as homedir, and 999 as uid, which
 # can break people. Use a real homedir
 RUN mkdir -p /home/blackfire && chown blackfire:blackfire /home/blackfire && usermod -d /home/blackfire blackfire
 
-ADD ddev-webserver-dev-base-files /
-RUN phpdismod blackfire xdebug
-RUN phpdismod xhprof
+COPY ddev-webserver-dev-base-files /
+RUN phpdismod blackfire xdebug xhprof
 
-RUN set -x && set -o pipefail && tag=$(curl -L --fail --silent "https://api.github.com/repos/axllent/mailpit/releases/latest" | jq -r .tag_name) && curl --fail -sSL "https://github.com/axllent/mailpit/releases/download/${tag}/mailpit-linux-${TARGETARCH}.tar.gz" -o /tmp/mailpit.tar.gz && tar -zx -C /usr/local/bin -f /tmp/mailpit.tar.gz mailpit && rm /tmp/mailpit.tar.gz
+RUN <<EOF
+    set -eu -o pipefail
+    gh_tag() { curl -L --fail --silent "https://api.github.com/repos/$1/releases/latest" | jq -r .tag_name; }
 
-RUN curl -sSL --fail --output /usr/local/bin/phive "https://phar.io/releases/phive.phar" && chmod 777 /usr/local/bin/phive
-# Install terminus cli
-RUN set -o pipefail && curl --fail -sSL https://github.com/pantheon-systems/terminus/releases/download/$(curl -L --fail --silent "https://api.github.com/repos/pantheon-systems/terminus/releases/latest" | perl -nle'print $& while m{"tag_name": "\K.*?(?=")}g')/terminus.phar --output /usr/local/bin/terminus && chmod 777 /usr/local/bin/terminus
-# Install platform cli
-RUN set -o pipefail && curl -fsSL https://raw.githubusercontent.com/platformsh/cli/main/installer.sh | bash
+    # Install mailpit
+    tag=$(gh_tag axllent/mailpit)
+    curl --fail -sSL "https://github.com/axllent/mailpit/releases/download/${tag}/mailpit-linux-${TARGETARCH}.tar.gz" -o /tmp/mailpit.tar.gz
+    tar -zx -C /usr/local/bin -f /tmp/mailpit.tar.gz mailpit
+    rm /tmp/mailpit.tar.gz
 
-# Convert platformsh-cli.list to modern deb822 .sources format
-RUN rm -f /etc/apt/sources.list.d/platformsh-cli.list && \
-    printf "Types: deb deb-src\nURIs: https://dl.cloudsmith.io/public/platformsh/cli/deb/debian/\nSuites: trixie\nComponents: main\nSigned-By: /usr/share/keyrings/platformsh-cli-archive-keyring.gpg\n" > /etc/apt/sources.list.d/platformsh-cli.sources
+    # Install phive
+    tag=$(gh_tag phar-io/phive)
+    curl --fail -sSL "https://github.com/phar-io/phive/releases/download/${tag}/phive-${tag}.phar" --output /usr/local/bin/phive
+    chmod 755 /usr/local/bin/phive
 
-# Install upsun cli
-RUN set -o pipefail && curl -fsSL https://raw.githubusercontent.com/platformsh/cli/main/installer.sh | VENDOR=upsun bash
+    # Install terminus cli
+    tag=$(gh_tag pantheon-systems/terminus)
+    curl --fail -sSL "https://github.com/pantheon-systems/terminus/releases/download/${tag}/terminus.phar" --output /usr/local/bin/terminus
+    chmod 755 /usr/local/bin/terminus
 
-# Convert platformsh-upsun-cli.list to modern deb822 .sources format
-RUN rm -f /etc/apt/sources.list.d/platformsh-upsun-cli.list && \
-    printf "Types: deb deb-src\nURIs: https://dl.cloudsmith.io/public/platformsh/upsun-cli/deb/debian/\nSuites: trixie\nComponents: main\nSigned-By: /usr/share/keyrings/platformsh-upsun-cli-archive-keyring.gpg\n" > /etc/apt/sources.list.d/platformsh-upsun-cli.sources
+    # Install platform cli
+    curl -fsSL https://raw.githubusercontent.com/platformsh/cli/main/installer.sh | bash
+    # Modernize only after installing upsun cli to avoid duplicate sources
+    #apt modernize-sources --assume-yes
 
-# Install lagoon cli
-RUN set -o pipefail && tag=$(curl -L --fail --silent "https://api.github.com/repos/uselagoon/lagoon-cli/releases/latest" | jq -r .tag_name) && curl --fail -sSL "https://github.com/uselagoon/lagoon-cli/releases/download/$tag/lagoon-cli-$tag-linux-${TARGETARCH}" --output /usr/local/bin/lagoon && chmod 777 /usr/local/bin/lagoon
-# Install lagoon-sync
-RUN set -x && set -o pipefail && tag=$(curl -L --fail --silent "https://api.github.com/repos/uselagoon/lagoon-sync/releases/latest" | jq -r .tag_name) && curl --fail -sSL "https://github.com/uselagoon/lagoon-sync/releases/download/${tag}/lagoon-sync_${tag:1}_linux_${TARGETARCH}" --output /usr/local/bin/lagoon-sync && chmod 777 /usr/local/bin/lagoon-sync
+    # Install upsun cli
+    curl -fsSL https://raw.githubusercontent.com/platformsh/cli/main/installer.sh | VENDOR=upsun bash
+    apt modernize-sources --assume-yes
+    rm -f /etc/apt/sources.list.d/*.list.bak
 
-RUN mkdir -p "/opt/phpstorm-coverage" && \
-    chmod a+rw "/opt/phpstorm-coverage"
+    # Install lagoon cli
+    tag=$(gh_tag uselagoon/lagoon-cli)
+    curl --fail -sSL "https://github.com/uselagoon/lagoon-cli/releases/download/$tag/lagoon-cli-$tag-linux-${TARGETARCH}" --output /usr/local/bin/lagoon
+    chmod 755 /usr/local/bin/lagoon
 
-RUN curl --fail -sSL --output /usr/local/bin/acli https://github.com/acquia/cli/releases/latest/download/acli.phar && chmod 777 /usr/local/bin/acli
+    # Install lagoon-sync
+    tag=$(gh_tag uselagoon/lagoon-sync)
+    curl --fail -sSL "https://github.com/uselagoon/lagoon-sync/releases/download/${tag}/lagoon-sync_${tag:1}_linux_${TARGETARCH}" --output /usr/local/bin/lagoon-sync
+    chmod 755 /usr/local/bin/lagoon-sync
 
-RUN set -o pipefail && tag=$(curl -L --fail --silent "https://api.github.com/repos/backdrop-contrib/drush/releases/latest" | jq -r .tag_name) && curl --fail -sSL "https://github.com/backdrop-contrib/drush/releases/download/${tag}/backdrop-drush-extension.zip" -o /tmp/backdrop-drush-extension.zip && unzip -o /tmp/backdrop-drush-extension.zip -d /var/tmp/backdrop_drush_commands && chmod -R ugo+w /var/tmp/backdrop_drush_commands && rm /tmp/backdrop-drush-extension.zip
+    # Install acli (Acquia CLI)
+    curl --fail -sSL --output /usr/local/bin/acli https://github.com/acquia/cli/releases/latest/download/acli.phar
+    chmod 755 /usr/local/bin/acli
+EOF
 
-RUN mkdir -p /etc/nginx/sites-enabled /var/log/apache2 /var/run/apache2 /var/lib/apache2/module/enabled_by_admin /var/lib/apache2/module/disabled_by_admin && \
+RUN mkdir -p /etc/nginx/sites-enabled /var/log/apache2 /var/run/apache2 /var/lib/apache2/module/enabled_by_admin /var/lib/apache2/module/disabled_by_admin /opt/phpstorm-coverage && \
+    chmod a+rw /opt/phpstorm-coverage && \
     touch /var/log/php-fpm.log && \
     chmod ugo+rw /var/log/php-fpm.log && \
-    chmod ugo+rwx /var/run && \
+    touch /var/log/supervisord.log && \
+    chmod ugo+rw /var/log/supervisord.log && \
     touch /var/log/nginx/access.log && \
     touch /var/log/nginx/error.log && \
-    chmod -R ugo+rw /var/log/nginx/ && \
-    chmod ugo+rwx /usr/local/bin/* && \
-    ln -sf /usr/sbin/php-fpm${PHP_DEFAULT_VERSION} /usr/sbin/php-fpm
+    chmod -R ugo+rwX /var/log/apache2 /var/log/nginx && \
+    chmod ugo+rx /usr/local/bin && \
+    chmod ugo+rx /usr/local/bin/* && \
+    update-alternatives --set php-fpm /usr/sbin/php-fpm${PHP_DEFAULT_VERSION}
 
-RUN chmod -R 777 /var/log
+# we need to create the /var/cache/nginx and /var/lib/nginx manually for the arm64 image and chmod them, please don't remove them!
+RUN mkdir -p /mnt/ddev-global-cache/mkcert /run/php /run/blackfire /var/run/nginx /var/run/supervisor /var/run/apache2 /var/lock/apache2 /var/cache/nginx /var/lib/nginx && \
+    chown www-data:www-data /run/php /run/blackfire /var/run/nginx /var/run/supervisor /var/run/apache2 /var/lock/apache2 && \
+    chmod 755 /run/php /run/blackfire /var/run/nginx /var/run/supervisor /var/run/apache2 /var/lock/apache2 && \
+    ln -sf /run/php/php-fpm.sock /run/php-fpm.sock && \
+    chmod -R ugo+rw /mnt/ddev-global-cache/
 
-# we need to create the /var/cache/linux and /var/lib/nginx manually for the arm64 image and chmod them, please don't remove them!
-RUN mkdir -p /mnt/ddev-global-cache/mkcert /run/{php,blackfire} /var/cache/nginx /var/lib/nginx && chmod -R ugo+rw /mnt/ddev-global-cache/
+RUN chgrp -R www-data /etc/alternatives /var/lib/dpkg/alternatives && \
+    chmod -R g+rwX,o-w /etc/alternatives /var/lib/dpkg/alternatives
 
-RUN chmod -fR ugo+w /usr/sbin /usr/bin /etc/nginx /var/cache/nginx /var/lib/nginx /run /var/www /etc/php/*/*/conf.d/ /var/lib/php/modules /etc/alternatives /usr/local/lib/node_modules /etc/php /etc/apache2 /var/log/apache2/ /var/run/apache2 /var/lib/apache2 /mnt/ddev-global-cache/*
+# Reapply the /var/log group-0-writable fix (see the comment near its first
+# application in the ddev-php-base stage above): further package installs in
+# this stage may pull in `systemd` for the first time and reset it again.
+RUN chgrp 0 /var/log && chmod g+rwX,o-w /var/log
 
-RUN mkdir -p /var/xhprof && curl --fail  -o /tmp/xhprof.tgz -sSL https://pecl.php.net/get/xhprof && tar -zxf /tmp/xhprof.tgz --strip-components=1 -C /var/xhprof && chmod 777 /var/xhprof/xhprof_html && rm /tmp/xhprof.tgz
+RUN chmod -fR ugo+w /etc/nginx /var/cache/nginx /var/lib/nginx /var/www /etc/php/*/*/conf.d/ /var/lib/php/modules /etc/php /etc/apache2 /var/lib/apache2 /mnt/ddev-global-cache/*
+
+RUN mkdir -p /var/xhprof && curl --fail -o /tmp/xhprof.tgz -sSL https://pecl.php.net/get/xhprof && tar -zxf /tmp/xhprof.tgz --strip-components=1 -C /var/xhprof && chmod ugo+rwX /var/xhprof/xhprof_html && rm /tmp/xhprof.tgz
 
 # Install https://github.com/perftools/php-profiler for XHGui
 RUN COMPOSER_HOME=/tmp/composer composer global require perftools/php-profiler --dev && \
@@ -212,17 +498,19 @@ RUN COMPOSER_HOME=/tmp/composer composer global require perftools/php-profiler -
     chmod -R ugo+rw /usr/local/xhgui.collector
 
 RUN touch /var/log/nginx/error.log /var/log/nginx/access.log /var/log/php-fpm.log && \
-    chmod 666 /var/log/nginx/error.log /var/log/nginx/access.log /var/log/php-fpm.log
+    chmod ugo+rw /var/log/php-fpm.log && \
+    chmod -R ugo+rwX /var/log/apache2 /var/log/nginx
 
-RUN a2dismod mpm_event
-RUN a2enmod ssl headers expires
+RUN a2dismod mpm_event && a2enmod ssl headers expires
 
 # scripts added last because they're most likely place to make changes, speeds up build
-ADD ddev-webserver-base-scripts /
+COPY ddev-webserver-base-scripts /
 RUN chmod ugo+x /start.sh /healthcheck.sh
 
 # Composer, etc may need to be updated by composer self-update
-RUN chmod -f ugo+rwx /usr/local/bin /usr/local/bin/*
+RUN chmod -f ugo+rx /usr/local/bin /usr/local/bin/* && \
+    chgrp www-data /usr/local/bin/composer && \
+    chmod g+rwx,o-w /usr/local/bin/composer
 
 RUN chmod ugo+w /etc/ssl/certs /usr/local/share/ca-certificates
 
@@ -254,6 +542,7 @@ ENV BASH_ENV=/etc/bash.nointeractive.bashrc
 ENV LANG=C.UTF-8
 ENV XHPROF_OUTPUT_DIR=/tmp/xhprof
 ENV PLATFORMSH_CLI_UPDATES_CHECK=0
+ENV PATH=$PATH:/usr/local/n/bin
 
 COPY --from=ddev-webserver-dev-base / /
 HEALTHCHECK --interval=1s --retries=120 --timeout=120s --start-period=120s CMD ["/healthcheck.sh"]
@@ -266,53 +555,52 @@ CMD ["/start.sh"]
 FROM ddev-webserver-base AS ddev-webserver-prod-base
 SHELL ["/bin/bash", "-eu", "-o", "pipefail", "-c"]
 
-ENV CAROOT=/mnt/ddev-global-cache/mkcert
 ENV PHP_DEFAULT_VERSION="8.4"
-ARG TARGETPLATFORM
-ARG TARGETARCH
-
-RUN curl -s --fail https://packages.blackfire.io/gpg.key > /usr/share/keyrings/blackfire-archive-keyring.asc
-# Create blackfire.sources in modern deb822 format
-RUN printf "Types: deb\nURIs: http://packages.blackfire.io/debian/\nSuites: any\nComponents: main\nSigned-By: /usr/share/keyrings/blackfire-archive-keyring.asc\n" > /etc/apt/sources.list.d/blackfire.sources
-RUN apt-get -qq update
 
 # Blackfire outputs errors about not having systemd, but they do no harm to our usage
-RUN DEBIAN_FRONTEND=noninteractive apt-get -qq install -o Dpkg::Options::="--force-confold" --no-install-recommends --no-install-suggests -y \
-    blackfire-php 2>/dev/null
+RUN apt-get -qq update && \
+    DEBIAN_FRONTEND=noninteractive apt-get -qq install -o Dpkg::Options::="--force-confold" --no-install-recommends --no-install-suggests -y \
+        blackfire-php 2>/dev/null
 
-RUN curl --fail -JL -s -o /usr/local/bin/mkcert "https://dl.filippo.io/mkcert/latest?for=${TARGETPLATFORM}" && chmod +x /usr/local/bin/mkcert
-
-ADD ddev-webserver-prod-files /
-RUN phpdismod blackfire
-RUN phpdismod xhprof
-
-RUN set -o pipefail && tag=$(curl -L --fail --silent "https://api.github.com/repos/backdrop-contrib/drush/releases/latest" | jq -r .tag_name) && curl --fail -sSL "https://github.com/backdrop-contrib/drush/releases/download/${tag}/backdrop-drush-extension.zip" -o /tmp/backdrop-drush-extension.zip && unzip -o /tmp/backdrop-drush-extension.zip -d /var/tmp/backdrop_drush_commands && chmod -R ugo+w /var/tmp/backdrop_drush_commands && rm /tmp/backdrop-drush-extension.zip
+COPY ddev-webserver-prod-files /
+RUN phpdismod blackfire xhprof
 
 RUN mkdir -p /etc/nginx/sites-enabled /var/lock/apache2 /var/log/apache2 /var/run/apache2 /var/lib/apache2/module/enabled_by_admin /var/lib/apache2/module/disabled_by_admin && \
     touch /var/log/php-fpm.log && \
     chmod ugo+rw /var/log/php-fpm.log && \
-    chmod ugo+rwx /var/run && \
+    touch /var/log/supervisord.log && \
+    chmod ugo+rw /var/log/supervisord.log && \
     touch /var/log/nginx/access.log && \
     touch /var/log/nginx/error.log && \
-    chmod -R ugo+rw /var/log/nginx/ && \
+    chmod -R ugo+rwX /var/log/apache2 /var/log/nginx && \
     chmod ugo+rx /usr/local/bin/* && \
-    ln -sf /usr/sbin/php-fpm${PHP_DEFAULT_VERSION} /usr/sbin/php-fpm
-
-RUN chmod -R 777 /var/log
+    update-alternatives --set php-fpm /usr/sbin/php-fpm${PHP_DEFAULT_VERSION}
 
 # we need to create the /var/cache/linux and /var/lib/nginx manually for the arm64 image and chmod them, please don't remove them!
-RUN mkdir -p /mnt/ddev-global-cache/mkcert /run/php /var/cache/nginx /var/lib/nginx && chmod -R ugo+rw /home /mnt/ddev-global-cache/
+RUN mkdir -p /mnt/ddev-global-cache/mkcert /run/php /var/run/nginx /var/run/supervisor /var/run/apache2 /var/lock/apache2 /var/cache/nginx /var/lib/nginx && \
+    chown www-data:www-data /run/php /var/run/nginx /var/run/supervisor /var/run/apache2 /var/lock/apache2 && \
+    chmod 755 /run/php /var/run/nginx /var/run/supervisor /var/run/apache2 /var/lock/apache2 && \
+    ln -sf /run/php/php-fpm.sock /run/php-fpm.sock && \
+    chmod -R ugo+rw /home /mnt/ddev-global-cache/
 
-RUN chmod -fR ugo+w /usr/sbin /usr/bin /etc/nginx /var/cache/nginx /var/lib/nginx /run /var/www /etc/php/*/*/conf.d/ /var/lib/php/modules /etc/alternatives /usr/local/lib/node_modules /etc/php /etc/apache2 /var/lock/apache2 /var/log/apache2/ /var/run/apache2 /var/lib/apache2 /mnt/ddev-global-cache/*
+RUN chgrp -R www-data /etc/alternatives /var/lib/dpkg/alternatives && \
+    chmod -R g+rwX,o-w /etc/alternatives /var/lib/dpkg/alternatives
+
+# Reapply the /var/log group-0-writable fix (see the comment near its first
+# application in the ddev-php-base stage above): further package installs in
+# this stage may pull in `systemd` for the first time and reset it again.
+RUN chgrp 0 /var/log && chmod g+rwX,o-w /var/log
+
+RUN chmod -fR ugo+w /etc/nginx /var/cache/nginx /var/lib/nginx /var/www /etc/php/*/*/conf.d/ /var/lib/php/modules /etc/php /etc/apache2 /var/lib/apache2 /mnt/ddev-global-cache/*
 
 RUN touch /var/log/nginx/error.log /var/log/nginx/access.log /var/log/php-fpm.log && \
-    chmod 666 /var/log/nginx/error.log /var/log/nginx/access.log /var/log/php-fpm.log
+    chmod ugo+rw /var/log/php-fpm.log && \
+    chmod -R ugo+rwX /var/log/apache2 /var/log/nginx
 
-RUN a2dismod mpm_event
-RUN a2enmod ssl headers expires
+RUN a2dismod mpm_event && a2enmod ssl headers expires
 
 # scripts added last because they're most likely place to make changes, speeds up build
-ADD ddev-webserver-prod-scripts /
+COPY ddev-webserver-prod-scripts /
 RUN chmod ugo+x /start.sh /healthcheck.sh
 
 RUN /sbin/mkhomedir_helper www-data
@@ -344,8 +632,10 @@ ENV LANG=C.UTF-8
 ENV TERM=xterm
 ENV BASH_ENV=/etc/bash.nointeractive.bashrc
 ENV PLATFORMSH_CLI_UPDATES_CHECK=0
+ENV PATH=$PATH:/usr/local/n/bin
 
 COPY --from=ddev-webserver-prod-base / /
 HEALTHCHECK --interval=1s --retries=120 --timeout=120s --start-period=120s CMD ["/healthcheck.sh"]
 CMD ["/start.sh"]
 ### -------------------------END ddev-webserver-prod------------------------------
+# ddev-release-marker: v1.25.5

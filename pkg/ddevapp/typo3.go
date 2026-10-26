@@ -12,7 +12,6 @@ import (
 	"github.com/ddev/ddev/pkg/composer"
 	"github.com/ddev/ddev/pkg/fileutil"
 	"github.com/ddev/ddev/pkg/nodeps"
-	"github.com/ddev/ddev/pkg/output"
 	"github.com/ddev/ddev/pkg/util"
 	copy2 "github.com/otiai10/copy"
 )
@@ -46,7 +45,7 @@ func createTypo3SettingsFile(app *DdevApp) (string, error) {
 		}
 	}
 
-	output.UserOut.Printf("Generating %s file for database connection.", filepath.Base(app.SiteDdevSettingsFile))
+	util.Debug("Generating %s file for database connection.", filepath.Base(app.SiteDdevSettingsFile))
 	if err := writeTypo3SettingsFile(app); err != nil {
 		return "", fmt.Errorf("failed to write TYPO3 %s file: %v", app.SiteDdevSettingsFile, err.Error())
 	}
@@ -79,7 +78,14 @@ func writeTypo3SettingsFile(app *DdevApp) error {
 	if app.Database.Type == nodeps.Postgres {
 		dbDriver = "pdo_pgsql"
 	}
-	settings := map[string]interface{}{"DBHostname": "db", "DBDriver": dbDriver, "DBPort": GetInternalPort(app, "db")}
+	settings := map[string]any{
+		"DBHostname": "db",
+		"DBDriver":   dbDriver,
+		"DBPort":     GetInternalPort(app, "db"),
+		// When the db container is omitted there is nothing to connect to,
+		// so no DB connection is written at all.
+		"HasDBContainer": !app.IsDBOmitted(),
+	}
 
 	// Ensure target directory exists and is writable
 	if err := util.Chmod(dir, 0755); os.IsNotExist(err) {
@@ -94,6 +100,7 @@ func writeTypo3SettingsFile(app *DdevApp) error {
 	if err != nil {
 		return err
 	}
+	defer util.CheckClose(f)
 
 	t, err := template.New("AdditionalConfiguration.php").ParseFS(bundledAssets, "typo3/AdditionalConfiguration.php")
 	if err != nil {

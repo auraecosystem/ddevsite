@@ -142,7 +142,22 @@
     },
     "composer_version": {
       "description": "Composer version for the web container and the ddev composer command.",
-      "type": "string"
+      "type": "string",
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "2",
+            "2.2",
+            "stable",
+            "preview",
+            "snapshot"
+          ]
+        },
+        {
+          "type": "string"
+        }
+      ]
     },
     "corepack_enable": {
       "description": "Whether to run \"corepack enable\" on Node.js configuration.",
@@ -189,7 +204,8 @@
               "10.8",
               "10.11",
               "11.4",
-              "11.8"
+              "11.8",
+              "12.3"
             ]
           }
         }
@@ -210,7 +226,8 @@
                 "5.6",
                 "5.7",
                 "8.0",
-                "8.4"
+                "8.4",
+                "9.7"
               ]
             }
           }
@@ -251,6 +268,10 @@
         }
       }
     },
+    "dbimage": {
+      "description": "Set the db container image.",
+      "type": "string"
+    },
     "dbimage_extra_packages": {
       "description": "List of Debian packages that should be added to db container when the project is started.",
       "type": "array",
@@ -268,6 +289,24 @@
       "type": [
         "integer",
         "string"
+      ],
+      "anyOf": [
+        {
+          "type": [
+            "integer",
+            "string"
+          ],
+          "enum": [
+            120,
+            "120"
+          ]
+        },
+        {
+          "type": [
+            "integer",
+            "string"
+          ]
+        }
       ]
     },
     "disable_settings_management": {
@@ -323,6 +362,12 @@
         "post-config": {
           "$ref": "#/definitions/DdevTask"
         },
+        "pre-describe": {
+          "$ref": "#/definitions/DdevTask"
+        },
+        "post-describe": {
+          "$ref": "#/definitions/DdevTask"
+        },
         "pre-exec": {
           "$ref": "#/definitions/DdevTask"
         },
@@ -373,6 +418,12 @@
         },
         "post-stop": {
           "$ref": "#/definitions/DdevTask"
+        },
+        "pre-delete": {
+          "$ref": "#/definitions/DdevTask"
+        },
+        "post-delete": {
+          "$ref": "#/definitions/DdevTask"
         }
       }
     },
@@ -398,27 +449,81 @@
     },
     "mailpit_http_port": {
       "description": "Router port to be used for Mailpit HTTP access.",
-      "type": "string"
+      "type": "string",
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "8025"
+          ]
+        },
+        {
+          "type": "string"
+        }
+      ]
     },
     "mailpit_https_port": {
       "description": "Router port to be used for Mailpit HTTPS access.",
-      "type": "string"
+      "type": "string",
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "8026"
+          ]
+        },
+        {
+          "type": "string"
+        }
+      ]
     },
     "name": {
       "description": "Provide the name of the project to configure (normally the same as the last part of directory name).",
       "type": "string"
     },
     "ngrok_args": {
-      "description": "Provide extra args to ngrok in \"ddev share\".",
+      "description": "(Deprecated) Use share_provider_args instead, provide extra args to ngrok in \"ddev share\".",
       "type": "string"
     },
     "no_project_mount": {
       "description": "Whether to skip mounting project into web container.",
       "type": "boolean"
     },
+    "nodejs_root": {
+      "description": "The relative path, from the project root, to the directory containing the Node.js version file. (Requires nodejs_version auto or engine.)",
+      "type": "string"
+    },
     "nodejs_version": {
       "description": "Node.js version for the web container's \"system\" version.",
-      "type": "string"
+      "type": "string",
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "",
+            "6",
+            "8",
+            "10",
+            "12",
+            "14",
+            "16",
+            "18",
+            "20",
+            "22",
+            "24",
+            "26",
+            "auto",
+            "lts",
+            "latest",
+            "current",
+            "engine",
+            "nightly"
+          ]
+        },
+        {
+          "type": "string"
+        }
+      ]
     },
     "omit_containers": {
       "description": "A list of container types that should not be started when the project is started.",
@@ -460,20 +565,78 @@
         "8.2",
         "8.3",
         "8.4",
-        "8.5"
+        "8.5",
+        "8.6"
       ]
     },
     "project_tld": {
       "description": "Set the top-level domain to be used for projects, defaults to ddev.site (default \"ddev.site\").",
-      "type": "string"
+      "type": "string",
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "ddev.site"
+          ]
+        },
+        {
+          "type": "string"
+        }
+      ]
     },
     "router_http_port": {
       "description": "Router HTTP port for this project.",
-      "type": "string"
+      "type": "string",
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "80"
+          ]
+        },
+        {
+          "type": "string"
+        }
+      ]
     },
     "router_https_port": {
       "description": "Router HTTPS port for this project.",
+      "type": "string",
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "443"
+          ]
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "share_default_provider": {
+      "description": "Default share provider for the project. Overrides global configuration.",
+      "type": "string",
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "ngrok",
+            "cloudflared"
+          ]
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "share_provider_args": {
+      "description": "Arguments to pass to the share provider when starting a share session.",
       "type": "string"
+    },
+    "skip_global_hooks": {
+      "description": "Whether to skip the hooks defined in the global config for this project.",
+      "type": "boolean"
     },
     "timezone": {
       "description": "Specify timezone for containers and PHP. If unset, DDEV will attempt to derive it from the host system timezone.",
@@ -483,8 +646,10 @@
       "description": "Provide the project type.",
       "type": "string",
       "enum": [
+        "asterios",
         "backdrop",
         "cakephp",
+        "codeigniter",
         "craftcms",
         "drupal",
         "drupal6",
@@ -493,16 +658,21 @@
         "drupal9",
         "drupal10",
         "drupal11",
+        "drupal12",
         "generic",
+        "joomla",
         "laravel",
         "magento",
         "magento2",
+        "maho",
+        "modx",
         "php",
         "shopware6",
         "silverstripe",
         "symfony",
         "typo3",
-        "wordpress"
+        "wordpress",
+        "wp-bedrock"
       ]
     },
     "upload_dirs": {
@@ -510,7 +680,8 @@
       "type": "array",
       "items": {
         "type": "string"
-      }
+      },
+      "uniqueItems": true
     },
     "use_dns_when_possible": {
       "description": "Use DNS for hostname resolution instead of /etc/hosts when possible.",
@@ -521,7 +692,8 @@
       "type": "array",
       "items": {
         "type": "string"
-      }
+      },
+      "uniqueItems": true
     },
     "web_extra_daemons": {
       "description": "Additional daemons that should automatically be started in the web container.",
@@ -573,7 +745,8 @@
       "type": "array",
       "items": {
         "type": "string"
-      }
+      },
+      "uniqueItems": true
     },
     "webserver_type": {
       "description": "Set the project's desired webserver type.",
@@ -604,11 +777,33 @@
     },
     "xhgui_http_port": {
       "description": "Router port to be used for XHGui HTTP access.",
-      "type": "string"
+      "type": "string",
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "8143"
+          ]
+        },
+        {
+          "type": "string"
+        }
+      ]
     },
     "xhgui_https_port": {
       "description": "Router port to be used for XHGui HTTPS access.",
-      "type": "string"
+      "type": "string",
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "8142"
+          ]
+        },
+        {
+          "type": "string"
+        }
+      ]
     },
     "xhprof_mode": {
       "description": "Define the XHProf usage mode used by the project.",

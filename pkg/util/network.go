@@ -15,6 +15,7 @@ import (
 
 	"github.com/cheggaaa/pb/v3"
 	"github.com/ddev/ddev/pkg/github"
+	"github.com/ddev/ddev/pkg/nodeps"
 	"github.com/ddev/ddev/pkg/output"
 	"github.com/hashicorp/go-retryablehttp"
 	"golang.org/x/term"
@@ -50,10 +51,7 @@ func DownloadFileExtended(destPath string, fileURL string, progressBar bool, sha
 		// 1st attempt = clientTimeout * 2^0
 		// 2nd attempt = clientTimeout * 2^1
 		// 3rd attempt = clientTimeout * 2^2
-		clientTimeout = clientTimeout * time.Duration(1<<attempt)
-		if clientTimeout > timeoutMax {
-			clientTimeout = timeoutMax
-		}
+		clientTimeout = min(clientTimeout*time.Duration(1<<attempt), timeoutMax)
 		// Timeout for the entire request
 		client.HTTPClient.Timeout = clientTimeout
 		client.RequestLogHook = func(_ retryablehttp.Logger, req *http.Request, attempt int) {
@@ -181,7 +179,11 @@ func DownloadFileExtended(destPath string, fileURL string, progressBar bool, sha
 		reader := io.Reader(resp.Body)
 		var bar *pb.ProgressBar
 		if progressBar {
-			bar = pb.Full.Start64(resp.ContentLength)
+			// pb looks up the width with `tput cols` when MINGW_PREFIX is set, and in Git Bash
+			// under Windows Terminal that makes bash stop waiting for ddev. Setting the width
+			// avoids the lookup; the -1 keeps the bar out of the last column so it can't wrap.
+			width, _ := nodeps.GetTerminalWidthHeight(os.Stderr)
+			bar = pb.New64(resp.ContentLength).SetTemplate(pb.Full).SetWidth(width - 1).Start()
 			reader = bar.NewProxyReader(resp.Body)
 		}
 
@@ -215,7 +217,7 @@ func DownloadFileExtended(destPath string, fileURL string, progressBar bool, sha
 	if expectedSHA != "" {
 		baseName := filepath.Base(fileURL)
 		var matchedSHA string
-		for _, line := range strings.Split(expectedSHA, "\n") {
+		for line := range strings.SplitSeq(expectedSHA, "\n") {
 			fields := strings.Fields(line)
 			if len(fields) != 2 {
 				continue

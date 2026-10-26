@@ -26,6 +26,8 @@ for service in php-fpm nginx apache2; do
   if supervisorctl status "${service}" 2>/dev/null | grep -q FATAL; then
     printf "%s:FATAL " "${service}"
     supervisorctl shutdown
+    # PID 1 doesn't exit when supervisord does, so stop the container to fail fast
+    kill 1
   fi
 done
 
@@ -52,7 +54,7 @@ if [ "${DDEV_WEBSERVER_TYPE}" = "generic" ] ; then
 fi
 
 if [ "${DDEV_WEBSERVER_TYPE#*-}" = "fpm" ]; then
-  if curl --fail -s 127.0.0.1/phpstatus >/dev/null; then
+  if curl -q --fail -s 127.0.0.1/phpstatus >/dev/null; then
     phpstatus="true"
     printf "phpstatus:OK "
   else

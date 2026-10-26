@@ -1,12 +1,23 @@
+name: ddev-router
+
 services:
   ddev-router:
     image: {{ .router_image }}
+    container_name: ddev-router
+    hostname: ddev-router
 
     # Prevent zombie container
     init: true
     user: {{ .UID }}:{{ .GID }}
 
-    {{ if and .IsPodman .IsRootless }}
+    {{ if .PortSubstitutions }}
+    labels:
+      # Which substitute host port stands in for each standard router port,
+      # see RouterPortSubstitutionsLabel in pkg/ddevapp/router.go
+      {{ .PortSubstitutionsLabel }}: "{{ .PortSubstitutions }}"
+    {{ end }}
+
+    {{ if .UseKeepID }}
     userns_mode: keep-id
     {{ end }}
 
@@ -24,26 +35,17 @@ services:
           {{ end }}
         {{ end }}
 
-    container_name: ddev-router
     ports: {{ $dockerIP := .dockerIP }}{{ if not .router_bind_all_interfaces }}{{ range $port := .ports }}
       - "{{ $dockerIP }}:{{ $port }}:{{ $port }}"{{ end }}{{ else }}{{ range $port := .ports }}
       - "{{ $port }}:{{ $port }}"{{ end }}{{ end }}
-      # Traefik router; configured in static config as entrypoint
-      - "{{ if not .router_bind_all_interfaces }}{{ $dockerIP }}:{{ end }}{{.TraefikMonitorPort}}:{{.TraefikMonitorPort}}"
-    labels:
-      # For cleanup on ddev poweroff
-      com.ddev.site-name: ""
+      # Traefik monitor port: Always bind to 127.0.0.1 only for security
+      # Use hardcoded 127.0.0.1 instead of $dockerIP because on remote Docker
+      # hosts, $dockerIP is the remote IP which cannot be used as a bind address
+      - "127.0.0.1:{{.TraefikMonitorPort}}:{{.TraefikMonitorPort}}"
     volumes:
       - ddev-global-cache:/mnt/ddev-global-cache:rw
-      {{ if .letsencrypt }}
-      - ddev-router-letsencrypt:/etc/letsencrypt:rw
-      {{ end }} {{/* end if .letsencrypt */}}
     environment:
       - TRAEFIK_MONITOR_PORT={{ .TraefikMonitorPort }}
-        {{ if .letsencrypt }}
-      - LETSENCRYPT_EMAIL={{ .letsencrypt_email }}
-      - USE_LETSENCRYPT={{ .letsencrypt }}
-        {{ end }}{{/* end if .letsencrypt */}}
       - TZ={{ .Timezone }}
       # Bypass proxies to allow internal container connections
       - NO_PROXY=*
@@ -54,6 +56,9 @@ services:
       interval: 1s
       retries: 120
       start_period: 120s
+      {{- if templateCanUse "healthcheck.start_interval" }}
+      start_interval: "500ms"
+      {{- end }}
       timeout: 120s
 
 networks:
@@ -64,7 +69,3 @@ volumes:
   ddev-global-cache:
     name: ddev-global-cache
     external: true
-  {{ if .letsencrypt }}
-  ddev-router-letsencrypt:
-    name: ddev-router-letsencrypt
-  {{ end }}

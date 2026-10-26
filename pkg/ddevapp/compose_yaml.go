@@ -3,16 +3,18 @@ package ddevapp
 import (
 	"bytes"
 	"fmt"
+	"maps"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 
 	composeTypes "github.com/compose-spec/compose-go/v2/types"
 	"github.com/ddev/ddev/pkg/dockerutil"
 	"github.com/ddev/ddev/pkg/fileutil"
+	"github.com/ddev/ddev/pkg/globalconfig"
 	"github.com/ddev/ddev/pkg/output"
 	"github.com/ddev/ddev/pkg/util"
+	"github.com/docker/compose/v5/pkg/api"
 )
 
 // WriteDockerComposeYAML writes a .ddev-docker-compose-base.yaml and related to the .ddev directory.
@@ -68,20 +70,19 @@ func (app *DdevApp) WriteDockerComposeYAML() error {
 	if err != nil {
 		return err
 	}
-	var action []string
-	for _, envFile := range envFiles {
-		action = append(action, "--env-file", envFile)
-	}
-	fullContents, _, err := dockerutil.ComposeCmd(&dockerutil.ComposeCmdOpts{
-		ComposeFiles: files,
-		Profiles:     []string{`*`},
-		Action:       append(action, "config"),
+	project, err := dockerutil.LoadComposeProject(files, api.ProjectLoadOptions{
+		ProjectName: app.GetComposeProjectName(),
+		Profiles:    []string{`*`},
+		EnvFiles:    envFiles,
 	})
 	if err != nil {
 		return err
 	}
+	if err = project.CheckContainerNameUnicity(); err != nil {
+		return err
+	}
 
-	app.ComposeYaml, err = fixupComposeYaml(fullContents, app)
+	app.ComposeYaml, err = fixupComposeYaml(project, app)
 	if err != nil {
 		return err
 	}
@@ -136,9 +137,12 @@ func (app *DdevApp) ReadDockerComposeYAML() error {
 
 // XDdevExtension represents the x-ddev extension data in docker-compose files
 type XDdevExtension struct {
-	DescribeURLPort string `mapstructure:"describe-url-port"`
-	DescribeInfo    string `mapstructure:"describe-info"`
-	SSHShell        string `mapstructure:"ssh-shell"`
+	ContainerUser   string   `mapstructure:"container-user"`
+	DescribeInfo    string   `mapstructure:"describe-info"`
+	DescribeURLPort string   `mapstructure:"describe-url-port"`
+	OmitDdevLabels  bool     `mapstructure:"omit-ddev-labels"`
+	PullImages      []string `mapstructure:"pull-images"`
+	SSHShell        string   `mapstructure:"ssh-shell"`
 }
 
 // GetXDdevExtension retrieves the x-ddev extension for a given service from the ComposeYaml
@@ -151,10 +155,18 @@ func (app *DdevApp) GetXDdevExtension(serviceName string) XDdevExtension {
 	// And check for user overrides
 	if app.ComposeYaml != nil && app.ComposeYaml.Services != nil {
 		if composeService, ok := app.ComposeYaml.Services[serviceName]; ok {
-			if found, err := composeService.Extensions.Get("x-ddev", &xDdev); err == nil && found {
+			found, err := composeService.Extensions.Get("x-ddev", &xDdev)
+			if err != nil {
+				util.WarningOnce("Invalid x-ddev in service %s: %v", serviceName, err)
+			}
+			if found {
 				// Trim whitespace from all string fields
+				xDdev.ContainerUser = strings.TrimSpace(xDdev.ContainerUser)
 				xDdev.DescribeInfo = strings.TrimSpace(xDdev.DescribeInfo)
 				xDdev.DescribeURLPort = strings.TrimSpace(xDdev.DescribeURLPort)
+				for i, image := range xDdev.PullImages {
+					xDdev.PullImages[i] = strings.TrimSpace(image)
+				}
 				xDdev.SSHShell = strings.TrimSpace(xDdev.SSHShell)
 			}
 		}
@@ -173,17 +185,66 @@ func (app *DdevApp) GetXDdevExtension(serviceName string) XDdevExtension {
 	if hasCustomShell {
 		xDdev.DescribeInfo = strings.TrimSpace(fmt.Sprintf("%s\nShell: %s", xDdev.DescribeInfo, xDdev.SSHShell))
 	}
+	if xDdev.ContainerUser != "" {
+		xDdev.DescribeInfo = strings.TrimSpace(fmt.Sprintf("%s\nUser: %s", xDdev.DescribeInfo, xDdev.ContainerUser))
+	}
 	return xDdev
+}
+
+// GetDdevLabels returns labels for DDEV resources. If app is nil, only global
+// labels are returned. If app is provided, project-specific labels are added.
+func GetDdevLabels(app *DdevApp) map[string]string {
+	labels := dockerutil.GlobalDdevLabels()
+	if app != nil {
+		// Overrides the empty global value; used by poweroff, router, and db
+		// to find containers belonging to this project.
+		labels["com.ddev.site-name"] = app.GetName()
+		// Used by GetActiveProjects to restore app.Type when NewApp() fails.
+		labels["com.ddev.app-type"] = app.GetType()
+		// Used to verify the running container matches the current project root
+		// and to recover the project directory from a container's labels.
+		labels["com.ddev.approot"] = app.GetAppRoot()
+	}
+	return labels
+}
+
+// injectDdevLabels stamps DDEV labels onto all services, build sections, and
+// non-external networks in the project. If app is nil, global labels are used.
+func injectDdevLabels(project *composeTypes.Project, app *DdevApp) {
+	labels := GetDdevLabels(app)
+	for name, service := range project.Services {
+		var x XDdevExtension
+		// The error is ignored because omit-ddev-labels still decodes when another field doesn't
+		if found, _ := service.Extensions.Get("x-ddev", &x); found && x.OmitDdevLabels {
+			continue // user opted this service out of DDEV labels
+		}
+		if service.Labels == nil {
+			service.Labels = composeTypes.Labels{}
+		}
+		maps.Copy(service.Labels, labels)
+		if service.Build != nil {
+			if service.Build.Labels == nil {
+				service.Build.Labels = composeTypes.Labels{}
+			}
+			maps.Copy(service.Build.Labels, labels)
+		}
+		project.Services[name] = service
+	}
+	for name, network := range project.Networks {
+		if network.External {
+			continue
+		}
+		if network.Labels == nil {
+			network.Labels = composeTypes.Labels{}
+		}
+		maps.Copy(network.Labels, labels)
+		project.Networks[name] = network
+	}
 }
 
 // fixupComposeYaml makes minor changes to the `docker-compose config` output
 // to make sure extra services are always compatible with ddev.
-func fixupComposeYaml(yamlStr string, app *DdevApp) (*composeTypes.Project, error) {
-	project, err := dockerutil.CreateComposeProject(yamlStr)
-	if err != nil {
-		return project, err
-	}
-
+func fixupComposeYaml(project *composeTypes.Project, app *DdevApp) (*composeTypes.Project, error) {
 	envFiles, err := app.EnvFiles()
 	if err != nil {
 		return project, err
@@ -204,42 +265,63 @@ func fixupComposeYaml(yamlStr string, app *DdevApp) (*composeTypes.Project, erro
 			network.Name = app.GetDefaultNetworkName()
 			network.External = false
 		}
-		if !network.External {
-			if network.Labels == nil {
-				network.Labels = composeTypes.Labels{}
-			}
-			network.Labels["com.ddev.platform"] = "ddev"
-		}
 		project.Networks[name] = network
 	}
+
+	injectDdevLabels(project, app)
 
 	bindIP, err := dockerutil.GetDockerIP()
 	if err != nil {
 		return project, err
 	}
-	if app.BindAllInterfaces {
+	// On remote Docker hosts, the Docker IP (e.g. a cloud provider's public IP)
+	// is not a valid bind address on the Docker host itself, so bind to all interfaces.
+	if app.BindAllInterfaces || dockerutil.IsRemoteDockerHost() {
 		bindIP = "0.0.0.0"
 	}
 
 	isPodman := dockerutil.IsPodman()
 	isRootless := dockerutil.IsRootless()
+	isDockerRootless := dockerutil.IsDockerRootless()
+	isMutagenEnabled := app.IsMutagenEnabled()
+	isNoBindMounts := globalconfig.DdevGlobalConfig.NoBindMounts
 	isSELinux := dockerutil.IsSELinux()
 	uid, gid, _ := dockerutil.GetContainerUser()
 	userGroup := uid + ":" + gid
 
 	hostDockerInternal := dockerutil.GetHostDockerInternal()
+	hostPorts := newHostPortAllocator(app)
 
 	// Ensure all services have required networks and environment variables
 	for name, service := range project.Services {
-		if _, ok := service.Networks[dockerutil.NetName]; !ok {
-			service.Networks[dockerutil.NetName] = nil
+		// Compose rejects networks combined with network_mode, and Docker
+		// rejects extra_hosts on a container sharing another's network namespace.
+		sharesNetNS := strings.HasPrefix(service.NetworkMode, "service:") || strings.HasPrefix(service.NetworkMode, "container:")
+		if service.NetworkMode == "" {
+			if _, ok := service.Networks[dockerutil.NetName]; !ok {
+				service.Networks[dockerutil.NetName] = nil
+			}
+			if _, ok := service.Networks["default"]; !ok {
+				service.Networks["default"] = nil
+			}
 		}
-		if _, ok := service.Networks["default"]; !ok {
-			service.Networks["default"] = nil
+
+		// `ddev exec -s`, the router and `ddev describe` find containers by this name.
+		// Compose rejects a fixed container_name on a scaled service.
+		if containerName := GetContainerName(app, name); service.GetScale() <= 1 && service.ContainerName != containerName {
+			if service.ContainerName != "" {
+				util.WarningOnce("Service '%s' in project '%s' sets container_name '%s'; DDEV uses '%s' instead. Remove container_name, or set it to 'ddev-${DDEV_SITENAME}-%s' for older DDEV versions.", name, app.Name, service.ContainerName, containerName, name)
+			}
+			service.ContainerName = containerName
+		}
+		// Docker rejects hostname with container:/service: network modes, and
+		// a container whose hostname exceeds 63 characters fails to start.
+		if hostname := app.Name + "-" + name; service.Hostname == "" && service.NetworkMode == "" && len(hostname) <= 63 {
+			service.Hostname = hostname
 		}
 
 		// Set up host.docker.internal based on DDEV's standard approach
-		if hostDockerInternal.ExtraHost != "" {
+		if hostDockerInternal.ExtraHost != "" && !sharesNetNS {
 			if service.ExtraHosts == nil {
 				service.ExtraHosts = composeTypes.HostsList{}
 			}
@@ -253,19 +335,14 @@ func fixupComposeYaml(yamlStr string, app *DdevApp) (*composeTypes.Project, erro
 		service.Environment["HOST_DOCKER_INTERNAL_IP"] = &hostDockerInternal.IPAddress
 
 		// Add environment variables from .env files to services
-		for _, envFile := range envFiles {
-			filename := filepath.Base(envFile)
-			// Variables from .ddev/.env should be available in all containers,
-			// and variables from .ddev/.env.* should only be available in a specific container.
-			if filename == ".env" || filename == ".env."+name {
-				envMap, _, err := ReadProjectEnvFile(envFile)
-				if err != nil && !os.IsNotExist(err) {
-					util.Failed("Unable to read %s file: %v", envFile, err)
-				}
-				for envKey, envValue := range envMap {
-					val := envValue
-					service.Environment[envKey] = &val
-				}
+		for _, envFile := range filterEnvFilesForTarget(envFiles, name) {
+			envMap, _, err := ReadProjectEnvFile(envFile)
+			if err != nil && !os.IsNotExist(err) {
+				util.Failed("Unable to read %s file: %v", envFile, err)
+			}
+			for envKey, envValue := range envMap {
+				val := envValue
+				service.Environment[envKey] = &val
 			}
 		}
 		// Pass NO_COLOR to containers
@@ -285,13 +362,24 @@ func fixupComposeYaml(yamlStr string, app *DdevApp) (*composeTypes.Project, erro
 			if port.HostIP == "" {
 				port.HostIP = bindIP
 			}
+			if hasUnspecifiedHostPort(port.Published) {
+				port.Published = hostPorts.assignHostPort(name, port)
+			}
 			service.Ports[i] = port
 		}
 
-		// Podman: set the user namespace mode for the container
-		// https://docs.podman.io/en/v4.6.1/markdown/options/userns.container.html#userns-mode
-		if isPodman && isRootless && service.User == userGroup {
-			service.UserNSMode = "keep-id"
+		if isRootless && service.User == userGroup {
+			if dockerutil.UseKeepID() {
+				// Podman: set the user namespace mode for the container
+				// https://docs.podman.io/en/v4.6.1/markdown/options/userns.container.html#userns-mode
+				service.UserNSMode = "keep-id"
+			} else if isDockerRootless {
+				// Docker rootless maps the host user to container UID 0, so
+				// bind-mounted files (including .git) appear root-owned. Run as root for consistency.
+				if name == "web" && !isNoBindMounts {
+					service.User = "0:0"
+				}
+			}
 		}
 
 		if isPodman {
@@ -319,10 +407,29 @@ func fixupComposeYaml(yamlStr string, app *DdevApp) (*composeTypes.Project, erro
 			}
 		}
 
+		// Mutagen uses `docker cp` to install its agent; under rootless Docker this triggers
+		// `remount-ro ... operation not permitted` when restoring RO bind mounts (user-namespace
+		// mount flags are locked by the kernel). Drop read_only on bind mounts to avoid this.
+		if isDockerRootless && isMutagenEnabled && name == "web" {
+			for i, vol := range service.Volumes {
+				if vol.Type == composeTypes.VolumeTypeBind && vol.ReadOnly {
+					vol.ReadOnly = false
+					service.Volumes[i] = vol
+				}
+			}
+		}
+
+		// compose-go doesn't derive `build.platforms` from the service-level
+		// `platform`, so add it here to build an image matching the requested
+		// architecture. See https://github.com/ddev/ddev/issues/8578.
+		if service.Platform != "" && service.Build != nil && !slices.Contains(service.Build.Platforms, service.Platform) {
+			service.Build.Platforms = append(service.Build.Platforms, service.Platform)
+		}
+
 		// Add SELinux labels to bind mounts when SELinux is enabled
 		if isSELinux {
 			for i, vol := range service.Volumes {
-				if vol.Type == "bind" {
+				if vol.Type == composeTypes.VolumeTypeBind {
 					// Initialize Bind struct if needed
 					if vol.Bind == nil {
 						vol.Bind = &composeTypes.ServiceVolumeBind{}
@@ -344,4 +451,11 @@ func fixupComposeYaml(yamlStr string, app *DdevApp) (*composeTypes.Project, erro
 	}
 
 	return project, nil
+}
+
+// hasUnspecifiedHostPort reports whether a published port leaves the host side to
+// the engine. Compose renders an omitted published port as "0" after the first
+// start, so a project's second render carries "0" instead of "".
+func hasUnspecifiedHostPort(published string) bool {
+	return published == "" || published == "0"
 }

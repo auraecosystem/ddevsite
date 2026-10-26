@@ -7,9 +7,11 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ddev/ddev/pkg/config/types"
 	"github.com/ddev/ddev/pkg/ddevapp"
+	"github.com/ddev/ddev/pkg/dockerutil"
 	"github.com/ddev/ddev/pkg/exec"
 	"github.com/ddev/ddev/pkg/fileutil"
 	"github.com/ddev/ddev/pkg/globalconfig"
@@ -22,6 +24,10 @@ import (
 
 // TestDdevXhprofPrependEnabled tests running with xhprof_mode=prepend
 func TestDdevXhprofPrependEnabled(t *testing.T) {
+	if nodeps.IsAppleSilicon() && dockerutil.IsDockerDesktop() && nodeps.IsEnvFalse("DDEV_RUN_TEST_ANYWAY") {
+		t.Skip("Skipping on Docker Desktop/Apple Silicon to ignore problems with 'connection reset by peer'")
+	}
+
 	origDir, _ := os.Getwd()
 
 	testcommon.ClearDockerEnv()
@@ -53,7 +59,7 @@ func TestDdevXhprofPrependEnabled(t *testing.T) {
 	sort.Strings(phpKeys)
 
 	// If GOTESt_SHORT is set, we'll just use the default version instead
-	if os.Getenv("GOTEST_SHORT") != "" {
+	if testcommon.IsGotestShort(t) {
 		phpKeys = []string{nodeps.PHPDefault}
 	}
 
@@ -75,20 +81,20 @@ func TestDdevXhprofPrependEnabled(t *testing.T) {
 
 	webserverKeys := nodeps.GetPHPWebserverTypes()
 	// Most of the time we can just test with the default webserver_type
-	if os.Getenv("GOTEST_SHORT") != "" {
+	if testcommon.IsGotestShort(t) {
 		webserverKeys = []string{nodeps.WebserverDefault}
-	}
-
-	// Use more retries as it may fail on macOS at first
-	opts := testcommon.HTTPRequestOpts{
-		TimeoutSeconds: 2,
-		MaxRetries:     5,
 	}
 
 	for _, webserverKey := range webserverKeys {
 		app.WebserverType = webserverKey
 
 		for _, v := range phpKeys {
+			//TODO: php8.6: Remove exclusion when xhprof lands in PHP8.6
+			if v == nodeps.PHP86 {
+				t.Log("Skipping tests for PHP8.6 until xhprof lands in PHP8.6")
+				continue
+			}
+
 			t.Logf("Beginning XHProf checks with XHProf webserver_type=%s php%s\n", webserverKey, v)
 			fmt.Printf("Attempting XHProf checks with XHProf PHP%s\n", v)
 			app.PHPVersion = v
@@ -116,14 +122,20 @@ func TestDdevXhprofPrependEnabled(t *testing.T) {
 			require.NoError(t, err)
 			require.Contains(t, stdout, "xhprof.output_dir", "xhprof should be enabled but is not enabled for %s", v)
 
-			out, _, err := testcommon.GetLocalHTTPResponse(t, app.GetPrimaryURL(), opts)
-			require.NoError(t, err, "Failed to get base URL webserver_type=%s, php_version=%s", webserverKey, v)
-			require.Contains(t, out, "module_xhprof")
+			testcommon.RequireLocalHTTPContent(t, app.GetPrimaryURL(), "module_xhprof",
+				testcommon.WithMessagef("failed to get base URL webserver_type=%s, php_version=%s", webserverKey, v),
+				testcommon.WithTimeout(2*time.Second),
+				testcommon.WithMaxAttempts(5),
+				testcommon.WithBackoff(500*time.Millisecond),
+			)
 
-			out, _, err = testcommon.GetLocalHTTPResponse(t, app.GetPrimaryURL()+"/xhprof/", opts)
-			require.NoError(t, err)
 			// Output should contain at least one run
-			require.Contains(t, out, ".ddev.xhprof</a><small>")
+			testcommon.RequireLocalHTTPContent(t, app.GetPrimaryURL()+"/xhprof/", ".ddev.xhprof</a><small>",
+				testcommon.WithMessagef("xhprof output page should list a captured run for this project"),
+				testcommon.WithTimeout(2*time.Second),
+				testcommon.WithMaxAttempts(5),
+				testcommon.WithBackoff(500*time.Millisecond),
+			)
 
 			// Disable all to avoid confusion
 			_, _, err = app.Exec(&ddevapp.ExecOpts{
@@ -137,6 +149,10 @@ func TestDdevXhprofPrependEnabled(t *testing.T) {
 
 // TestDdevXhprofXhguiEnabled tests running with xhprof_mode=xhgui
 func TestDdevXhprofXhguiEnabled(t *testing.T) {
+	if nodeps.IsAppleSilicon() && dockerutil.IsDockerDesktop() && nodeps.IsEnvFalse("DDEV_RUN_TEST_ANYWAY") {
+		t.Skip("Skipping on Docker Desktop/Apple Silicon to ignore problems with 'connection reset by peer'")
+	}
+
 	assert := assert2.New(t)
 	origDir, _ := os.Getwd()
 
@@ -171,7 +187,7 @@ func TestDdevXhprofXhguiEnabled(t *testing.T) {
 	sort.Strings(phpKeys)
 
 	// If GOTESt_SHORT is set, we'll just use the default version instead
-	if os.Getenv("GOTEST_SHORT") != "" {
+	if testcommon.IsGotestShort(t) {
 		phpKeys = []string{nodeps.PHPDefault}
 	}
 
@@ -188,20 +204,20 @@ func TestDdevXhprofXhguiEnabled(t *testing.T) {
 
 	webserverKeys := nodeps.GetPHPWebserverTypes()
 	// Most of the time we can just test with the default webserver_type
-	if os.Getenv("GOTEST_SHORT") != "" {
+	if testcommon.IsGotestShort(t) {
 		webserverKeys = []string{nodeps.WebserverDefault}
-	}
-
-	// Use more retries as it may fail on macOS at first
-	opts := testcommon.HTTPRequestOpts{
-		TimeoutSeconds: 2,
-		MaxRetries:     5,
 	}
 
 	for _, webserverKey := range webserverKeys {
 		app.WebserverType = webserverKey
 
 		for _, v := range phpKeys {
+			//TODO: php8.6: Remove exclusion when xhprof lands in PHP8.6
+			if v == nodeps.PHP86 {
+				t.Log("Skipping tests for PHP8.6 until xhprof lands in PHP8.6")
+				continue
+			}
+
 			t.Logf("Beginning XHProf checks with XHProf webserver_type=%s php%s\n", webserverKey, v)
 			fmt.Printf("Attempting XHProf checks with XHProf PHP%s\n", v)
 			app.PHPVersion = v
@@ -235,18 +251,21 @@ func TestDdevXhprofXhguiEnabled(t *testing.T) {
 			require.NoError(t, err)
 			assert.Contains(stdout, "xhprof.output_dir", "xhprof should be enabled but is not enabled for %s", v)
 
-			out, _, err := testcommon.GetLocalHTTPResponse(t, app.GetPrimaryURL(), opts)
-			require.NoError(t, err, "Failed to get base URL webserver_type=%s, php_version=%s", webserverKey, v)
-			require.Contains(t, out, "module_xhprof")
+			testcommon.RequireLocalHTTPContent(t, app.GetPrimaryURL(), "module_xhprof",
+				testcommon.WithMessagef("failed to get base URL webserver_type=%s, php_version=%s", webserverKey, v),
+				testcommon.WithTimeout(2*time.Second),
+				testcommon.WithMaxAttempts(5),
+				testcommon.WithBackoff(500*time.Millisecond),
+			)
 
-			// NOW try using xhgui
-
-			xhguiURL := app.GetXHGuiURL()
-			out, _, err = testcommon.GetLocalHTTPResponse(t, xhguiURL, opts)
-			require.NoError(t, err)
 			// Output should contain at least one run
-			require.Contains(t, out, strings.ToLower(t.Name()+"."+nodeps.DdevDefaultTLD))
-			require.Contains(t, out, "Recent runs")
+			testcommon.RequireLocalHTTPContent(t, app.GetXHGuiURL(), strings.ToLower(t.Name()+"."+nodeps.DdevDefaultTLD),
+				testcommon.WithAlsoContains("Recent runs"),
+				testcommon.WithMessagef("xhgui should list a profiling run for this project"),
+				testcommon.WithTimeout(2*time.Second),
+				testcommon.WithMaxAttempts(5),
+				testcommon.WithBackoff(500*time.Millisecond),
+			)
 
 			// Disable all to avoid confusion
 			_, _, err = app.Exec(&ddevapp.ExecOpts{

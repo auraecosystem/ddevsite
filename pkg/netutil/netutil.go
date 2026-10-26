@@ -1,11 +1,13 @@
 package netutil
 
 import (
+	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net"
 	"net/url"
-	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -17,15 +19,22 @@ import (
 
 // IsPortActive checks to see if the given port on Docker IP is answering.
 func IsPortActive(port string) bool {
-	dialTimeout := 0 * time.Millisecond
-	if nodeps.IsWSL2() {
-		dialTimeout = 200 * time.Millisecond
-	}
+	dialTimeout := 1 * time.Second
 
 	dockerIP, err := dockerutil.GetDockerIP()
 	if err != nil {
 		util.Warning("Failed to get Docker IP address: %v", err)
 		return false
+	}
+
+	// Skip port check for remote Docker hosts (non-local IPs)
+	// Remote IPs may cause timeouts and false positives
+	if parsedIP := net.ParseIP(dockerIP); parsedIP != nil && !parsedIP.IsLoopback() {
+		localIPs, _ := GetLocalIPs()
+		if !slices.Contains(localIPs, dockerIP) {
+			util.Verbose("Skipping port check for remote Docker host %s:%s", dockerIP, port)
+			return false
+		}
 	}
 
 	util.Verbose("Checking if port %s is active", port)
@@ -49,22 +58,35 @@ func IsPortActive(port string) bool {
 		}
 	}
 
-	// If we get ECONNREFUSED the port is not active.
-	oe, ok := err.(*net.OpError)
-	if ok {
-		syscallErr, ok := oe.Err.(*os.SyscallError)
-
-		// On Windows, WSAECONNREFUSED (10061) results instead of ECONNREFUSED. And golang doesn't seem to have it.
-		var WSAECONNREFUSED syscall.Errno = 10061
-
-		if ok && (syscallErr.Err == syscall.ECONNREFUSED || syscallErr.Err == WSAECONNREFUSED) {
-			util.Verbose("port %s shows connection refused so not active", port)
-			return false
-		}
+	if isConnRefused(err) {
+		util.Verbose("port %s shows connection refused so not active", port)
+		return false
 	}
 	// Otherwise, hmm, something else happened. It's not a fatal but can be reported.
 	util.Warning("Unable to properly check port status for %s:%s: err=%v", dockerIP, port, err)
 	return false
+}
+
+// IsPortRefused reports whether a connection to the port on a loopback Docker
+// IP is refused, meaning nothing listens there. It returns false for anything
+// less certain, such as a timeout or a Docker host that isn't on loopback.
+func IsPortRefused(port string) bool {
+	dockerIP, err := dockerutil.GetDockerIP()
+	if parsedIP := net.ParseIP(dockerIP); err != nil || parsedIP == nil || !parsedIP.IsLoopback() {
+		return false
+	}
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(dockerIP, port), time.Second)
+	if err == nil {
+		_ = conn.Close()
+		return false
+	}
+	return isConnRefused(err)
+}
+
+// isConnRefused reports whether err is a refused connection.
+func isConnRefused(err error) bool {
+	// Windows reports WSAECONNREFUSED (10061) rather than ECONNREFUSED.
+	return errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.Errno(10061))
 }
 
 // HasLocalIP returns true if at least one of the provided IP addresses is
@@ -149,4 +171,40 @@ func NormalizeURL(rawURL string) string {
 	}
 
 	return parsedURL.String()
+}
+
+// IsHostPortFree reports whether a TCP listener can bind ip:port right now.
+// It binds instead of dialing, so on Linux it also catches a port held by a
+// socket that isn't listening, such as the local end of an outgoing connection.
+func IsHostPortFree(ip string, port int) bool {
+	l, err := net.Listen("tcp", net.JoinHostPort(ip, strconv.Itoa(port)))
+	if err != nil {
+		return false
+	}
+	_ = l.Close()
+	return true
+}
+
+// AllocateHostPort returns a port in [minPort, maxPort] that is free on ip and
+// not rejected by skip, scanning from a random offset so concurrent callers are
+// unlikely to try the same port first. It returns "" when ip can't be bound
+// locally (for example a remote Docker host), or when no port qualifies.
+func AllocateHostPort(ip string, minPort, maxPort int, skip func(port string) bool) string {
+	if !IsHostPortFree(ip, 0) {
+		util.Debug("AllocateHostPort: unable to bind %s locally, not choosing a host port", ip)
+		return ""
+	}
+	size := maxPort - minPort + 1
+	start := rand.IntN(size)
+	for i := range size {
+		port := minPort + (start+i)%size
+		portStr := strconv.Itoa(port)
+		if skip != nil && skip(portStr) {
+			continue
+		}
+		if IsHostPortFree(ip, port) {
+			return portStr
+		}
+	}
+	return ""
 }

@@ -70,6 +70,14 @@ func (f *TextFormatter) init(entry *log.Entry) {
 	}
 }
 
+// isErrorTerminal reports whether w is the stderr writer and stderr is a terminal.
+func isErrorTerminal(w io.Writer) bool {
+	if _, ok := w.(*ErrorWriter); !ok {
+		return false
+	}
+	return term.IsTerminal(int(os.Stderr.Fd()))
+}
+
 func (f *TextFormatter) checkIfTerminal(w io.Writer) bool {
 	switch v := w.(type) {
 	case *os.File:
@@ -102,6 +110,11 @@ func (f *TextFormatter) Format(entry *log.Entry) ([]byte, error) {
 	prefixFieldClashes(entry.Data)
 
 	f.Do(func() { f.init(entry) })
+
+	// The formatter is shared by stdout and stderr loggers, so decide per entry.
+	if entry.Logger != nil && (f.checkIfTerminal(entry.Logger.Out) || isErrorTerminal(entry.Logger.Out)) {
+		entry.Message = LinkifyURLs(entry.Message)
+	}
 
 	isColored := (f.ForceColors || f.isTerminal) && !f.DisableColors
 
@@ -165,7 +178,7 @@ func (f *TextFormatter) needsQuoting(text string) bool {
 	return false
 }
 
-func (f *TextFormatter) appendKeyValue(b *bytes.Buffer, key string, value interface{}) {
+func (f *TextFormatter) appendKeyValue(b *bytes.Buffer, key string, value any) {
 	if b.Len() > 0 {
 		b.WriteByte(' ')
 	}
@@ -174,7 +187,7 @@ func (f *TextFormatter) appendKeyValue(b *bytes.Buffer, key string, value interf
 	f.appendValue(b, value)
 }
 
-func (f *TextFormatter) appendValue(b *bytes.Buffer, value interface{}) {
+func (f *TextFormatter) appendValue(b *bytes.Buffer, value any) {
 	stringVal, ok := value.(string)
 	if !ok {
 		stringVal = fmt.Sprint(value)

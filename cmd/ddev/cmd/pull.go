@@ -18,14 +18,14 @@ var PullCmd = &cobra.Command{
 	Long: `Pull files and database using a configured provider plugin.
 	Running pull will connect to the configured provider and download + import the
 	database and files.`,
-	Example: `ddev pull pantheon
-ddev pull platform
+	Example: `ddev pull upsun
 ddev pull pantheon -y
-ddev pull upsun -y
-ddev pull platform --skip-files -y
-ddev pull localfile --skip-db -y
-ddev pull lagoon --environment=LAGOON_PROJECT=amazeeio-ddev,LAGOON_ENVIRONMENT=pull
-ddev pull platform --environment=PLATFORM_ENVIRONMENT=main,PLATFORMSH_CLI_TOKEN=abcdef
+ddev pull upsun --skip-files -y
+ddev pull acquia --skip-db -y
+ddev pull upsun --skip-import
+ddev pull upsun --environment="PLATFORM_ENVIRONMENT=main,UPSUN_CLI_TOKEN=abcdeyourtoken"
+ddev pull pantheon --environment="DDEV_PANTHEON_ENVIRONMENT=dev,TERMINUS_MACHINE_TOKEN=abcdeyourtoken"
+ddev pull lagoon --environment="LAGOON_PROJECT=your-project,LAGOON_ENVIRONMENT=main"
 `,
 
 	Args: cobra.ExactArgs(1),
@@ -36,6 +36,23 @@ ddev pull platform --environment=PLATFORM_ENVIRONMENT=main,PLATFORMSH_CLI_TOKEN=
 
 // appPull() does the work of pull
 func appPull(providerType string, app *ddevapp.DdevApp, skipConfirmation bool, skipImportArg bool, skipDBArg bool, skipFilesArg bool, env string) {
+	provider, err := app.GetProvider(providerType)
+	if err != nil {
+		util.Failed("Failed to get provider: %v", err)
+	}
+
+	// Add or override the command-line provided environment variables
+	if env != "" {
+		envVars := strings.SplitSeq(env, ",")
+		for v := range envVars {
+			split := strings.Split(v, "=")
+			if len(split) != 2 {
+				util.Failed("Unable to parse command-line environment variable setting: '%v'", v)
+			}
+			provider.EnvironmentVariables[split[0]] = split[1]
+		}
+	}
+
 	// If we're not performing the import step, we won't be deleting the existing db or files.
 	if !skipConfirmation && !skipImportArg && globalconfig.IsInteractive() {
 		// Only warn the user about relevant risks.
@@ -51,26 +68,14 @@ func appPull(providerType string, app *ddevapp.DdevApp, skipConfirmation bool, s
 			message = "database and files"
 		}
 
-		util.Warning("You're about to delete the current %s and replace with the results of a fresh pull.", message)
+		targetInfo := provider.GetInfo()
+		if targetInfo != "" {
+			util.Warning("You're about to delete the current %s and replace with the results of a fresh pull from %s.", message, targetInfo)
+		} else {
+			util.Warning("You're about to delete the current %s and replace with the results of a fresh pull.", message)
+		}
 		if !util.Confirm("Would you like to continue?") {
 			util.Failed("Pull cancelled")
-		}
-	}
-
-	provider, err := app.GetProvider(providerType)
-	if err != nil {
-		util.Failed("Failed to get provider: %v", err)
-	}
-
-	// Add or override the command-line provided environment variables
-	if env != "" {
-		envVars := strings.Split(env, ",")
-		for _, v := range envVars {
-			split := strings.Split(v, "=")
-			if len(split) != 2 {
-				util.Failed("Unable to parse command-line environment variable setting: '%v'", v)
-			}
-			provider.EnvironmentVariables[split[0]] = split[1]
 		}
 	}
 
@@ -81,11 +86,14 @@ func appPull(providerType string, app *ddevapp.DdevApp, skipConfirmation bool, s
 	util.Success("Pull succeeded.")
 }
 
-func init() {
+func registerPullCmd() {
 	RootCmd.AddCommand(PullCmd)
+}
 
-	appRoot, err := ddevapp.GetActiveAppRoot("")
-	if err != nil {
+// addPullProviderSubcommands adds a `ddev pull <provider>` subcommand for
+// each provider valid in the active project, if any.
+func addPullProviderSubcommands(appRoot string, appRootErr error) {
+	if appRootErr != nil {
 		return
 	}
 
@@ -107,6 +115,9 @@ ddev pull %s --skip-files -y`, subCommandName, subCommandName, subCommandName),
 				app, err := ddevapp.GetActiveApp("")
 				if err != nil {
 					util.Failed("Pull failed: %v", err)
+				}
+				if err = app.StartAppIfNotRunning(); err != nil {
+					util.Failed("Failed to start app %s: %v", app.Name, err)
 				}
 				providerName := subCommandName
 				p, err := app.GetProvider(subCommandName)

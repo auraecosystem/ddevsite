@@ -64,15 +64,21 @@ func TestConfigOverrideAction(t *testing.T) {
 	origDir, _ := os.Getwd()
 
 	appTypes := map[string]string{
+		nodeps.AppTypeAsterios:     nodeps.PHPDefault,
 		nodeps.AppTypeBackdrop:     nodeps.PHPDefault,
+		nodeps.AppTypeWPBedrock:    nodeps.PHPDefault,
 		nodeps.AppTypeCakePHP:      nodeps.PHPDefault,
 		nodeps.AppTypeCraftCms:     nodeps.PHPDefault,
 		nodeps.AppTypeDrupal6:      nodeps.PHP56,
 		nodeps.AppTypeDrupal7:      nodeps.PHP82,
 		nodeps.AppTypeDrupal11:     nodeps.PHPDefault,
+		nodeps.AppTypeDrupal12:     nodeps.PHP85,
+		nodeps.AppTypeJoomla:       nodeps.PHPDefault,
 		nodeps.AppTypeLaravel:      nodeps.PHPDefault,
 		nodeps.AppTypeMagento:      nodeps.PHPDefault,
 		nodeps.AppTypeMagento2:     nodeps.PHPDefault,
+		nodeps.AppTypeMaho:         nodeps.PHPDefault,
+		nodeps.AppTypeMODX:         nodeps.PHPDefault,
 		nodeps.AppTypeSilverstripe: nodeps.PHPDefault,
 		nodeps.AppTypeSymfony:      nodeps.PHPDefault,
 		nodeps.AppTypeWordPress:    nodeps.PHPDefault,

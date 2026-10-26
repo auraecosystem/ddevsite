@@ -32,18 +32,36 @@ import (
 const mutagenSignatureLabelName = `com.ddev.volume-signature`
 const mutagenConfigFileHashLabelName = `com.ddev.config-hash`
 
+// mutagenChownScript chowns the Mutagen volume at /var/www to $OWNER,
+// pruning every mount point beneath it. upload_dirs, .git and custom compose
+// mounts are bind mounts of host files there, and find -xdev cannot skip them
+// because on native Linux they often share the volume's device.
+const mutagenChownScript = `prune=()
+while read -r mp; do
+  prune+=(-path "$(printf '%b' "$mp" | sed 's/[][*?\\]/\\&/g')" -prune -o)
+done < <(awk '$5 ~ "^/var/www/" {print $5}' /proc/self/mountinfo)
+find /var/www "${prune[@]}" -exec chown -hf "$OWNER" {} + 2>/dev/null || true`
+
 // SetMutagenVolumeOwnership chowns the volume in use to the current user.
-// The Mutagen volume is mounted both in /var/www (where it gets used) and
-// also on /tmp/project_mutagen (where it can be chowned without accidentally hitting
-// lots of bind-mounted files).
+// It runs in the web container after it starts, because Docker creates any
+// missing working_dir and bind-mount parent directories in the volume as root.
 func SetMutagenVolumeOwnership(app *DdevApp) error {
 	// Make sure that if we have a volume mount it's got proper ownership
 	uidStr, gidStr, _ := dockerutil.GetContainerUser()
+	// Docker rootless runs the web container as root (see fixupComposeYaml);
+	// chown to root so Mutagen-synced files and bind-mounted .git share the same owner.
+	if dockerutil.IsDockerRootless() && !globalconfig.DdevGlobalConfig.NoBindMounts {
+		uidStr, gidStr = "0", "0"
+	}
 	util.Verbose("Chowning Mutagen Docker volume for user %s", uidStr)
+	// The script discards errors and exits 0 because transient
+	// .mutagen-temporary-staging-* files can vanish mid-walk during an active sync,
+	// and the Exec wrapper adds set -eu.
 	_, _, err := app.Exec(
 		&ExecOpts{
-			Dir: "/tmp",
-			Cmd: fmt.Sprintf("sudo chown -R %s:%s /tmp/project_mutagen", uidStr, gidStr),
+			Dir:  "/tmp",
+			Cmd:  fmt.Sprintf("OWNER=%s:%s; %s", uidStr, gidStr, mutagenChownScript),
+			User: "root",
 		})
 	if err != nil {
 		util.Warning("Failed to chown Mutagen volume: %v", err)
@@ -155,9 +173,90 @@ func GetMutagenConfigFile(app *DdevApp) string {
 	return ""
 }
 
+// isLinkLeaf reports whether the last component of path is a link that Mutagen
+// refuses as a sync root. Mutagen also refuses Windows junctions, which Go
+// reports as irregular files, and Readlink tells them apart from other reparse
+// points such as OneDrive placeholders.
+func isLinkLeaf(p string) bool {
+	fi, err := os.Lstat(p)
+	if err != nil {
+		return false
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return true
+	}
+	if nodeps.IsWindows() && fi.Mode()&os.ModeIrregular != 0 {
+		_, err = os.Readlink(p)
+		return err == nil
+	}
+	return false
+}
+
+// mutagenHostRoot returns the host path to use as the Mutagen sync root.
+// Mutagen refuses a root that is itself a link, so that case is resolved
+// to its target; any other path is returned unchanged.
+func mutagenHostRoot(appRoot string) string {
+	resolved := appRoot
+	// Bound the loop so a link cycle falls back to appRoot
+	for range 16 {
+		if !isLinkLeaf(resolved) {
+			return resolved
+		}
+		target, err := os.Readlink(resolved)
+		if err != nil {
+			return appRoot
+		}
+		if !filepath.IsAbs(target) {
+			// The OS resolves a relative target from the parent's real location,
+			// so a symlinked parent has to be resolved before joining
+			dir, err := filepath.EvalSymlinks(filepath.Dir(resolved))
+			if err != nil {
+				return appRoot
+			}
+			target = filepath.Join(dir, target)
+		}
+		resolved = target
+	}
+	return appRoot
+}
+
+// mutagenSessionRootMatches reports whether the project's existing sync session
+// syncs the directory the project is in now. A session can point elsewhere when
+// a symlinked project root is repointed or replaced, or was created before the
+// symlink was resolved for Mutagen.
+func mutagenSessionRootMatches(app *DdevApp) bool {
+	_, _, session, _ := app.MutagenStatus()
+	alpha, _ := session["alpha"].(map[string]any)
+	sessionRoot, _ := alpha["path"].(string)
+	return sessionRootMatches(sessionRoot, app.AppRoot)
+}
+
+// sessionRootMatches compares a sync session's host path with appRoot. It
+// reports a match whenever it can't tell, so a session is only recreated when
+// the project's directory exists and is not the one being synced.
+func sessionRootMatches(sessionRoot string, appRoot string) bool {
+	hostRoot := mutagenHostRoot(appRoot)
+	if sessionRoot == "" || sessionRoot == hostRoot {
+		return true
+	}
+	hostFi, err := os.Stat(hostRoot)
+	if err != nil {
+		return true
+	}
+	if isLinkLeaf(sessionRoot) {
+		return false
+	}
+	sessionFi, err := os.Stat(sessionRoot)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(sessionFi, hostFi)
+}
+
 // CreateOrResumeMutagenSync creates or resumes a sync session
-// It detects problems with the sync and errors if there are problems
-func CreateOrResumeMutagenSync(app *DdevApp) error {
+// It detects problems with the sync and errors if there are problems.
+// lineEnded reports whether the sync monitor's output ended the caller's line.
+func CreateOrResumeMutagenSync(app *DdevApp) (lineEnded bool, err error) {
 	syncName := MutagenSyncName(app.Name)
 	configFile := GetMutagenConfigFile(app)
 	if configFile != "" {
@@ -166,10 +265,10 @@ func CreateOrResumeMutagenSync(app *DdevApp) error {
 
 	container, err := GetContainer(app, "web")
 	if err != nil {
-		return fmt.Errorf("unable to GetContainer() service web, app=%v, err=%v", app, err)
+		return false, fmt.Errorf("unable to GetContainer() service web, app=%v, err=%v", app, err)
 	}
 	if container == nil {
-		return fmt.Errorf("web container for %s not found", app.Name)
+		return false, fmt.Errorf("web container for %s not found", app.Name)
 	}
 	if container.State != "running" {
 		// TODO: Improve or debug this temporary debug usage
@@ -178,31 +277,43 @@ func CreateOrResumeMutagenSync(app *DdevApp) error {
 		if logsErr != nil {
 			util.Warning("Error from getting logs: %v", logsErr)
 		}
-		return fmt.Errorf("cannot start Mutagen sync because web container is not running: %v", container)
+		return false, fmt.Errorf("cannot start Mutagen sync because web container is not running: %v", container)
 	}
 
 	sessionExists, err := mutagenSyncSessionExists(app)
 	if err != nil {
-		return fmt.Errorf("unable to mutagenSyncSessionExists(): %v", err)
+		return false, fmt.Errorf("unable to mutagenSyncSessionExists(): %v", err)
 	}
+	isResumingExistingSession := sessionExists
 	if sessionExists {
 		util.Verbose("Resume Mutagen sync if session already exists")
 		err := ResumeMutagenSync(app)
 		if err != nil {
-			return fmt.Errorf("unable to ResumeMutagenSync(): %v", err)
+			return false, fmt.Errorf("unable to ResumeMutagenSync(): %v", err)
 		}
 	} else {
 		vLabel, err := GetMutagenVolumeLabel(app)
 		if err != nil {
-			return fmt.Errorf("unable to GetMutagenVolumeLabel(): %v", err)
+			return false, fmt.Errorf("unable to GetMutagenVolumeLabel(): %v", err)
 		}
 
 		hLabel, err := GetMutagenConfigFileHash(app)
 		if err != nil {
-			return fmt.Errorf("unable to GetMutagenConfigFileHash(): %v", err)
+			return false, fmt.Errorf("unable to GetMutagenConfigFileHash(): %v", err)
+		}
+		// Mutagen docker protocol expects the container name with leading slash, or ID as fallback
+		// Prefer name if available because the `beta` in mutagen sync list is easier to understand
+		containerRef := container.ID
+		if len(container.Names) > 0 {
+			containerRef = container.Names[0]
+		}
+		// Mutagen uses the docker CLI (not the API) to connect to containers, so
+		// verify it's available before attempting the sync create.
+		if cliErr := dockerutil.CheckDockerCLI(); cliErr != nil {
+			return false, fmt.Errorf("mutagen requires a working docker CLI to connect to containers, but: %v\nInstall docker CLI and ensure it is in PATH, then retry", cliErr)
 		}
 		// TODO: Consider using a function to specify the Docker beta
-		args := []string{"sync", "create", app.AppRoot, fmt.Sprintf("docker:/%s/var/www/html", container.Names[0]), "--no-global-configuration", "--name", syncName, "--label", mutagenSignatureLabelName + "=" + vLabel, "--label", mutagenConfigFileHashLabelName + "=" + hLabel}
+		args := []string{"sync", "create", mutagenHostRoot(app.AppRoot), fmt.Sprintf("docker:/%s/var/www/html", containerRef), "--no-global-configuration", "--name", syncName, "--label", mutagenSignatureLabelName + "=" + vLabel, "--label", mutagenConfigFileHashLabelName + "=" + hLabel}
 		if configFile != "" {
 			args = append(args, fmt.Sprintf(`--configuration-file=%s`, configFile))
 		}
@@ -214,7 +325,7 @@ func CreateOrResumeMutagenSync(app *DdevApp) error {
 		util.Debug("Creating Mutagen sync: mutagen %v", args)
 		out, err := exec.RunHostCommand(globalconfig.GetMutagenPath(), args...)
 		if err != nil {
-			return fmt.Errorf("failed to mutagen %v (%v), output='%s'", args, err, out)
+			return false, fmt.Errorf("failed to mutagen %v (%v), output='%s'", args, err, out)
 		}
 	}
 
@@ -281,18 +392,47 @@ func CreateOrResumeMutagenSync(app *DdevApp) error {
 	}
 
 	outputComing := false
+	secondsWaiting := 0
+	hintShown := false
+
+	// Different thresholds based on whether we're resuming or creating new
+	// Resuming should be fast (30s), creating new can take longer (180s)
+	warningThreshold := 180
+	if isResumingExistingSession {
+		warningThreshold = 30
+	}
+
 	for {
 		select {
 		// Complete when the MutagenSyncFlush() completes
 		case err = <-flushErr:
-			_, _ = fmt.Fprintln(os.Stderr)
-			return err
+			// With no monitor output, the caller's wait line is still open for its timing.
+			if outputComing {
+				_, _ = fmt.Fprintln(os.Stderr)
+			}
+			return outputComing, err
 		case outputComing = <-firstOutputReceived:
 
 		// If we haven't yet received any "Status:" output, do a dot every second
 		case <-time.After(1 * time.Second):
 			if !outputComing {
 				_, _ = fmt.Fprintf(os.Stderr, ".")
+			}
+			secondsWaiting++
+
+			// If sync is taking a long time, suggest running diagnose
+			if !hintShown && secondsWaiting >= warningThreshold {
+				_, _ = fmt.Fprintf(os.Stderr, "\n")
+				if isResumingExistingSession {
+					util.Warning("Mutagen sync is taking longer than expected (%d seconds).", secondsWaiting)
+					util.Warning("Resuming an existing session should be fast - there may be sync problems.")
+				} else {
+					util.Warning("Mutagen sync is taking longer than expected (%d seconds).", secondsWaiting)
+					util.Warning("This may be normal for a large project on first sync.")
+				}
+				util.Warning("After startup completes, run 'ddev utility mutagen-diagnose' to check for issues.")
+				_, _ = fmt.Fprintf(os.Stderr, "Continuing to wait for sync")
+				hintShown = true
 			}
 		}
 	}
@@ -322,14 +462,14 @@ func mutagenSyncSessionExists(app *DdevApp) (bool, error) {
 		}
 		return false, err
 	}
-	session := make(map[string]interface{})
+	session := make(map[string]any)
 	err = json.Unmarshal([]byte(res), &session)
 	if err != nil {
 		return false, fmt.Errorf("failed to unmarshal Mutagen sync list results '%v': %v", res, err)
 	}
 
 	// Find out if Mutagen session labels has label we found in Docker volume
-	if l, ok := session["labels"].(map[string]interface{}); ok {
+	if l, ok := session["labels"].(map[string]any); ok {
 		vLabel, vLabelErr := GetMutagenVolumeLabel(app)
 		if s, ok := l[mutagenSignatureLabelName]; ok && vLabelErr == nil && vLabel != "" && vLabel == s {
 			return true, nil
@@ -345,7 +485,7 @@ func mutagenSyncSessionExists(app *DdevApp) (bool, error) {
 // Note that the available statuses are at https://github.com/mutagen-io/mutagen/blob/master/pkg/synchronization/state.go#L9
 // in func (s Status) Description()
 // Can return any of those or "nosession" (with more info) if we didn't find a session at all
-func (app *DdevApp) MutagenStatus() (status string, shortResult string, mapResult map[string]interface{}, err error) {
+func (app *DdevApp) MutagenStatus() (status string, shortResult string, mapResult map[string]any, err error) {
 	syncName := MutagenSyncName(app.Name)
 
 	fullJSONResult, err := exec.RunHostCommandSeparateStreams(globalconfig.GetMutagenPath(), "sync", "list", "--template", `{{ json (index . 0) }}`, syncName)
@@ -356,7 +496,7 @@ func (app *DdevApp) MutagenStatus() (status string, shortResult string, mapResul
 		}
 		return fmt.Sprintf("nosession for MUTAGEN_DATA_DIRECTORY=%s", globalconfig.GetMutagenDataDirectory()), fullJSONResult, nil, fmt.Errorf("failed to Mutagen sync list %s: stderr='%s', err=%v", syncName, stderr, err)
 	}
-	session := make(map[string]interface{})
+	session := make(map[string]any)
 	err = json.Unmarshal([]byte(fullJSONResult), &session)
 	if err != nil {
 		return fmt.Sprintf("nosession for MUTAGEN_DATA_DIRECTORY=%s; failed to unmarshal Mutagen sync list results '%v'", globalconfig.GetMutagenDataDirectory(), fullJSONResult), fullJSONResult, nil, err
@@ -382,7 +522,7 @@ func (app *DdevApp) MutagenStatus() (status string, shortResult string, mapResul
 	}
 
 	problems := false
-	if alpha, ok := session["alpha"].(map[string]interface{}); ok {
+	if alpha, ok := session["alpha"].(map[string]any); ok {
 		if _, ok = alpha["scanProblems"]; ok {
 			problems = true
 		}
@@ -390,7 +530,7 @@ func (app *DdevApp) MutagenStatus() (status string, shortResult string, mapResul
 			problems = true
 		}
 	}
-	if beta, ok := session["beta"].(map[string]interface{}); ok {
+	if beta, ok := session["beta"].(map[string]any); ok {
 		if _, ok = beta["scanProblems"]; ok {
 			problems = true
 		}
@@ -448,6 +588,10 @@ func (app *DdevApp) GetMutagenSyncID() (id string, err error) {
 // MutagenSyncFlush performs a Mutagen sync flush, waits for result, and checks for errors
 func (app *DdevApp) MutagenSyncFlush() error {
 	if !app.IsMutagenEnabled() {
+		return nil
+	}
+	// Without Docker no container is running to sync with
+	if _, err := dockerutil.GetDockerVersion(); err != nil {
 		return nil
 	}
 	if stat, _ := app.SiteStatus(); stat == SiteStopped {
@@ -567,7 +711,7 @@ func StopMutagenDaemon(mutagenDataDirectory string) {
 		mutagenDataDirectory = globalconfig.GetMutagenDataDirectory()
 	}
 	if fileutil.FileExists(globalconfig.GetMutagenPath()) {
-		env := []string{"MUTAGEN_DATA_DIRECTORY=" + mutagenDataDirectory, "HOME=" + os.Getenv(`HOME`), "PWD=" + os.Getenv(`PWD`)}
+		env := []string{"MUTAGEN_DATA_DIRECTORY=" + mutagenDataDirectory, "HOME=" + os.Getenv("HOME"), "PWD=" + os.Getenv("PWD")}
 		out, err := exec.RunHostCommandWithOptions(globalconfig.GetMutagenPath(), []exec.CmdOption{exec.WithEnv(env)}, "daemon", "stop")
 		if err != nil && !strings.Contains(out, "unable to connect to daemon") {
 			util.Debug("Unable to stop Mutagen daemon: %v; MUTAGEN_DATA_DIRECTORY=%s", err, mutagenDataDirectory)
@@ -687,7 +831,7 @@ func (app *DdevApp) GenerateMutagenYml() error {
 		return err
 	}
 
-	templateMap := map[string]interface{}{
+	templateMap := map[string]any{
 		"SymlinkMode": symlinkMode,
 		"UploadDirs":  app.getUploadDirsRelative(),
 	}
@@ -785,6 +929,8 @@ func CheckMutagenVolumeSyncCompatibility(app *DdevApp) (ok bool, volumeExists bo
 	switch {
 	case configFileHashLabel != calculatedConfigFileHash:
 		return false, volumeExists, "Calculated mutagen.yml hash does not equal session label"
+	case mutagenSyncExists && !mutagenSessionRootMatches(app):
+		return false, volumeExists, "Mutagen sync session does not sync the project's current directory"
 	// If there is no volume, everything is fine, proceed.
 	case !volumeExists:
 		return true, volumeExists, "No Docker volume exists, so compatible"
@@ -810,7 +956,7 @@ func GetMutagenSyncLabel(app *DdevApp) (string, error) {
 	if strings.HasPrefix(status, "nosession") || err != nil {
 		return "", fmt.Errorf("no session %s found: %v", MutagenSyncName(app.Name), status)
 	}
-	if labels, ok := mapResult["labels"].(map[string]interface{}); ok {
+	if labels, ok := mapResult["labels"].(map[string]any); ok {
 		if label, ok := labels[mutagenSignatureLabelName].(string); ok {
 			return label, nil
 		}
@@ -825,7 +971,7 @@ func GetMutagenConfigFileHashLabel(app *DdevApp) (string, error) {
 	if strings.HasPrefix(status, "nosession") || err != nil {
 		return "", fmt.Errorf("no session %s found: %v", MutagenSyncName(app.Name), status)
 	}
-	if labels, ok := mapResult["labels"].(map[string]interface{}); ok {
+	if labels, ok := mapResult["labels"].(map[string]any); ok {
 		if label, ok := labels[mutagenConfigFileHashLabelName].(string); ok {
 			return label, nil
 		}
@@ -864,4 +1010,530 @@ func (app *DdevApp) checkMutagenUploadDirs() {
 		util.Warning("For faster startup and less disk usage, set upload_dirs to where your user-generated files are stored.")
 		util.Warning("If this is intended you can disable this warning with `ddev config --disable-upload-dirs-warning`.")
 	}
+}
+
+// MutagenVolumeInfo holds information about a Mutagen Docker volume
+type MutagenVolumeInfo struct {
+	Name      string
+	SizeBytes int64
+	SizeHuman string
+	Project   string // extracted from <project>_project_mutagen
+}
+
+// GetMutagenVolumeSize returns the size of a Mutagen volume for the given app
+func GetMutagenVolumeSize(app *DdevApp) (int64, string, error) {
+	volumeName := GetMutagenVolumeName(app)
+	return dockerutil.GetVolumeSize(volumeName)
+}
+
+// GetAllMutagenVolumes lists all Mutagen volumes on the system with their sizes
+func GetAllMutagenVolumes() ([]MutagenVolumeInfo, int64, error) {
+	volumeSizes, err := dockerutil.ParseDockerSystemDf()
+	if err != nil {
+		return nil, 0, err
+	}
+
+	var mutagenVolumes []MutagenVolumeInfo
+	var totalSize int64
+
+	// Look for volumes matching pattern *_project_mutagen
+	for volumeName, volSize := range volumeSizes {
+		if before, ok := strings.CutSuffix(volumeName, "_project_mutagen"); ok {
+			// Extract project name from volume name
+			projectName := before
+
+			mutagenVolumes = append(mutagenVolumes, MutagenVolumeInfo{
+				Name:      volumeName,
+				SizeBytes: volSize.SizeBytes,
+				SizeHuman: volSize.SizeHuman,
+				Project:   projectName,
+			})
+
+			totalSize += volSize.SizeBytes
+		}
+	}
+
+	return mutagenVolumes, totalSize, nil
+}
+
+// CheckMutagenIgnorePatterns analyzes mutagen.yml for potential performance issues
+// Returns lists of issues and warnings about ignore patterns
+// IgnorePatternWarning holds information about a directory that should be excluded
+type IgnorePatternWarning struct {
+	Directory      string // Name of the directory (e.g., "node_modules")
+	Reason         string // Why it should be excluded
+	UploadDirsPath string // Path relative to docroot for upload_dirs
+	AbsolutePath   string // Full filesystem path
+}
+
+func CheckMutagenIgnorePatterns(app *DdevApp) (issues []string, warnings []string, patternWarnings []IgnorePatternWarning) {
+	mutagenYmlPath := GetMutagenConfigFilePath(app)
+
+	// Check if file exists
+	if !fileutil.FileExists(mutagenYmlPath) {
+		issues = append(issues, "mutagen.yml file not found")
+		return issues, warnings, patternWarnings
+	}
+
+	// Read the file
+	content, err := fileutil.ReadFileIntoString(mutagenYmlPath)
+	if err != nil {
+		issues = append(issues, fmt.Sprintf("failed to read mutagen.yml: %v", err))
+		return issues, warnings, patternWarnings
+	}
+
+	// Find all node_modules directories in the project
+	appRoot := mutagenHostRoot(app.AppRoot)
+	nodeModulesDirs := findNodeModulesDirectories(appRoot)
+	docrootPath := filepath.Join(appRoot, app.Docroot)
+
+	if len(nodeModulesDirs) > 0 {
+		// Check if any node_modules pattern is in ignore patterns
+		if !strings.Contains(content, "node_modules") {
+			for _, dirPath := range nodeModulesDirs {
+				// Calculate path relative to docroot for upload_dirs
+				relPath, err := filepath.Rel(docrootPath, dirPath)
+				if err != nil {
+					// Fallback to just the directory name
+					relPath = "node_modules"
+				}
+
+				patternWarnings = append(patternWarnings, IgnorePatternWarning{
+					Directory:      "node_modules",
+					Reason:         "Node.js dependencies can be very large and slow to sync",
+					UploadDirsPath: relPath,
+					AbsolutePath:   dirPath,
+				})
+			}
+
+			if len(nodeModulesDirs) == 1 {
+				warnings = append(warnings, "node_modules directory exists but is not excluded from sync (Node.js dependencies can be very large and slow to sync)")
+			} else {
+				warnings = append(warnings, fmt.Sprintf("%d node_modules directories exist but are not excluded from sync (Node.js dependencies can be very large and slow to sync)", len(nodeModulesDirs)))
+			}
+		}
+	}
+
+	// Check for .tarballs directory (single location check)
+	tarballsPath := filepath.Join(appRoot, ".tarballs")
+	if !strings.Contains(content, ".tarballs") && fileutil.FileExists(tarballsPath) {
+		relPath, err := filepath.Rel(docrootPath, tarballsPath)
+		if err != nil {
+			relPath = ".tarballs"
+		}
+
+		warnings = append(warnings, ".tarballs directory exists but is not excluded from sync (Archive files should be excluded from sync)")
+		patternWarnings = append(patternWarnings, IgnorePatternWarning{
+			Directory:      ".tarballs",
+			Reason:         "Archive files should be excluded from sync",
+			UploadDirsPath: relPath,
+			AbsolutePath:   tarballsPath,
+		})
+	}
+
+	return issues, warnings, patternWarnings
+}
+
+// findNodeModulesDirectories finds all node_modules directories in the project
+// Returns a list of absolute paths to node_modules directories
+func findNodeModulesDirectories(appRoot string) []string {
+	var nodeModulesDirs []string
+
+	err := filepath.Walk(appRoot, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil // Skip files we can't access
+		}
+
+		// Skip hidden directories except node_modules itself
+		if info.IsDir() && strings.HasPrefix(info.Name(), ".") && info.Name() != "." {
+			return filepath.SkipDir
+		}
+
+		// If we found a node_modules directory
+		if info.IsDir() && info.Name() == "node_modules" {
+			nodeModulesDirs = append(nodeModulesDirs, path)
+			// Don't recurse into node_modules directories
+			return filepath.SkipDir
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		util.Debug("Error walking project directory for node_modules: %v", err)
+	}
+
+	return nodeModulesDirs
+}
+
+// CheckLargeFilesInSync scans the project directory for large files that might be synced
+// Returns warnings about files larger than thresholds that could impact performance
+func CheckLargeFilesInSync(app *DdevApp) (warnings []string) {
+	const largeSizeThreshold = 50 * 1024 * 1024 // 50MB
+	const hugeSizeThreshold = 100 * 1024 * 1024 // 100MB
+
+	mutagenYmlPath := GetMutagenConfigFilePath(app)
+
+	// Read mutagen.yml to check exclude patterns
+	mutagenContent := ""
+	if fileutil.FileExists(mutagenYmlPath) {
+		content, err := fileutil.ReadFileIntoString(mutagenYmlPath)
+		if err == nil {
+			mutagenContent = content
+		}
+	}
+
+	// Get upload_dirs - files in these directories are not synced to the container
+	// upload_dirs are relative to the docroot, not the project root
+	appRoot := mutagenHostRoot(app.AppRoot)
+	uploadDirs := app.GetUploadDirs()
+	uploadDirPaths := make(map[string]bool)
+	for _, dir := range uploadDirs {
+		// Build full path: AppRoot/Docroot/upload_dir
+		fullPath := filepath.Join(appRoot, app.Docroot, dir)
+		uploadDirPaths[fullPath] = true
+	}
+
+	// Walk the project directory looking for large files
+	largeFiles := []struct {
+		path        string
+		size        int64
+		inUploadDir bool
+	}{}
+
+	err := filepath.Walk(appRoot, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil // Skip files we can't access
+		}
+
+		// Skip directories
+		if info.IsDir() {
+			// Skip .git, .ddev, and other hidden directories
+			if strings.HasPrefix(info.Name(), ".") && info.Name() != "." {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		// Check if file is large
+		if info.Size() >= largeSizeThreshold {
+			// Check if file is in upload_dirs
+			inUploadDir := false
+			for uploadDirPath := range uploadDirPaths {
+				if strings.HasPrefix(path, uploadDirPath) {
+					inUploadDir = true
+					break
+				}
+			}
+
+			largeFiles = append(largeFiles, struct {
+				path        string
+				size        int64
+				inUploadDir bool
+			}{path, info.Size(), inUploadDir})
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		util.Debug("Error walking project directory: %v", err)
+	}
+
+	// Report large files that are being synced (not in upload_dirs)
+	for _, file := range largeFiles {
+		if !file.inUploadDir {
+			relPath, err := filepath.Rel(appRoot, file.path)
+			if err != nil {
+				relPath = file.path
+			}
+
+			// Check if file appears to be excluded by mutagen.yml
+			// This is a basic heuristic check looking for exact patterns in the ignore paths section
+			// It's not a complete Mutagen pattern matcher, but catches common cases
+			isExcluded := false
+			if mutagenContent != "" {
+				// Convert relative path to absolute pattern format used in mutagen.yml
+				// e.g., "web/hugedb.sql.gz" -> "/web/hugedb.sql.gz"
+				pathPattern := "/" + filepath.ToSlash(relPath)
+
+				// Check if the exact path pattern appears as an ignore path
+				// Look for patterns like: - "/web/hugedb.sql.gz"
+				if strings.Contains(mutagenContent, fmt.Sprintf(`- "%s"`, pathPattern)) ||
+					strings.Contains(mutagenContent, fmt.Sprintf(`- '%s'`, pathPattern)) ||
+					strings.Contains(mutagenContent, fmt.Sprintf("- %s\n", pathPattern)) {
+					isExcluded = true
+				}
+			}
+
+			// Format file size
+			sizeStr := util.FormatBytes(file.size)
+
+			if !isExcluded {
+				severity := "Large"
+				if file.size >= hugeSizeThreshold {
+					severity = "Very large"
+				}
+				warnings = append(warnings, fmt.Sprintf("%s file being synced: %s (%s) - consider excluding from sync. See https://docs.ddev.com/en/stable/users/install/performance/#mutagen-troubleshooting", severity, relPath, sizeStr))
+			}
+		}
+	}
+
+	return warnings
+}
+
+// MutagenDiagnosticResult holds comprehensive diagnostic information about Mutagen configuration
+type MutagenDiagnosticResult struct {
+	// Sync Status
+	SyncStatus       string
+	SyncStatusDetail string
+	SessionExists    bool
+	HasProblems      bool
+	Problems         []string
+
+	// Volume Info
+	VolumeSize      int64
+	VolumeSizeHuman string
+	VolumeWarning   bool // true if >5GB
+	VolumeCritical  bool // true if >10GB
+
+	// Upload Dirs
+	UploadDirsConfigured bool
+	UploadDirs           []string
+	UploadDirsSuggestion string
+
+	// Configuration
+	MutagenYmlCustomized bool
+	ConfigHashMatch      bool
+	LabelsMatch          bool
+
+	// Performance
+	IgnoreIssues          []string
+	IgnoreWarnings        []string
+	IgnorePatternWarnings []IgnorePatternWarning
+
+	// Overall
+	IssueCount   int
+	WarningCount int
+}
+
+// formatMutagenProblems parses and formats Mutagen problems for human readability
+// Mutagen problems are typically a slice of maps with "path" and "error" keys
+func formatMutagenProblems(problems any, problemType string) []string {
+	var formatted []string
+
+	// Translate technical terms to user-friendly descriptions
+	contextMap := map[string]string{
+		"Alpha":            "Host filesystem",
+		"Beta":             "Container filesystem",
+		"Alpha transition": "Host filesystem transition",
+		"Beta transition":  "Container filesystem transition",
+		"Sync conflict":    "Sync conflict",
+	}
+
+	userFriendlyType := contextMap[problemType]
+	if userFriendlyType == "" {
+		userFriendlyType = problemType
+	}
+
+	// Problems can be a slice of maps
+	if problemSlice, ok := problems.([]any); ok {
+		for _, problem := range problemSlice {
+			if problemMap, ok := problem.(map[string]any); ok {
+				problemPath := ""
+				errorMsg := ""
+
+				if p, ok := problemMap["path"].(string); ok {
+					problemPath = p
+				}
+				if e, ok := problemMap["error"].(string); ok {
+					errorMsg = e
+				}
+
+				// Format based on what information we have
+				if problemPath != "" && errorMsg != "" {
+					msg := fmt.Sprintf("%s: %s (path: %s)", userFriendlyType, errorMsg, problemPath)
+
+					// Add helpful hints for common errors - different for host vs container
+					isContainerProblem := (problemType == "Beta" || problemType == "Beta transition")
+					if strings.Contains(errorMsg, "permission denied") {
+						if isContainerProblem {
+							msg += "\n      → Fix: Run 'ddev mutagen reset' to recreate the container filesystem from host"
+							msg += "\n      → Or: Use 'ddev exec chmod' to fix permissions inside the container"
+						} else {
+							msg += "\n      → Fix: Check file/directory permissions with 'ls -la " + problemPath + "' and adjust with 'chmod'"
+						}
+					} else if strings.Contains(errorMsg, "no such file") {
+						if isContainerProblem {
+							msg += "\n      → Fix: Run 'ddev mutagen reset' to resync from host filesystem"
+						} else {
+							msg += "\n      → Fix: The file or directory was deleted or moved on the host"
+						}
+					}
+
+					formatted = append(formatted, msg)
+				} else if problemPath != "" {
+					formatted = append(formatted, fmt.Sprintf("%s problem with path: %s", userFriendlyType, problemPath))
+				} else if errorMsg != "" {
+					formatted = append(formatted, fmt.Sprintf("%s: %s", userFriendlyType, errorMsg))
+				} else {
+					// Fallback if structure is unexpected
+					formatted = append(formatted, fmt.Sprintf("%s problem: %v", userFriendlyType, problem))
+				}
+			} else {
+				// Not a map, just use string representation
+				formatted = append(formatted, fmt.Sprintf("%s problem: %v", userFriendlyType, problem))
+			}
+		}
+	} else {
+		// Not a slice, fallback to string representation
+		formatted = append(formatted, fmt.Sprintf("%s problems: %v", userFriendlyType, problems))
+	}
+
+	return formatted
+}
+
+// DiagnoseMutagenConfiguration performs comprehensive diagnostic checks on Mutagen configuration
+func DiagnoseMutagenConfiguration(app *DdevApp) MutagenDiagnosticResult {
+	result := MutagenDiagnosticResult{}
+
+	// Check sync status
+	status, shortResult, mapResult, err := app.MutagenStatus()
+	result.SyncStatus = status
+	result.SyncStatusDetail = shortResult
+	result.SessionExists = (status != "nosession" && err == nil)
+
+	if status == "problems" || status == "failing" {
+		result.HasProblems = true
+
+		// Extract problem details from session map
+		if mapResult != nil {
+			if alpha, ok := mapResult["alpha"].(map[string]any); ok {
+				if scanProblems, ok := alpha["scanProblems"]; ok {
+					formatted := formatMutagenProblems(scanProblems, "Alpha")
+					result.Problems = append(result.Problems, formatted...)
+				}
+				if transProblems, ok := alpha["transitionProblems"]; ok {
+					formatted := formatMutagenProblems(transProblems, "Alpha transition")
+					result.Problems = append(result.Problems, formatted...)
+				}
+			}
+			if beta, ok := mapResult["beta"].(map[string]any); ok {
+				if scanProblems, ok := beta["scanProblems"]; ok {
+					formatted := formatMutagenProblems(scanProblems, "Beta")
+					result.Problems = append(result.Problems, formatted...)
+				}
+				if transProblems, ok := beta["transitionProblems"]; ok {
+					formatted := formatMutagenProblems(transProblems, "Beta transition")
+					result.Problems = append(result.Problems, formatted...)
+				}
+			}
+			if conflicts, ok := mapResult["conflicts"]; ok {
+				formatted := formatMutagenProblems(conflicts, "Sync conflict")
+				result.Problems = append(result.Problems, formatted...)
+			}
+		}
+
+		// Count sync problems as issues so they appear in the summary
+		// If we have problems but couldn't extract details, count at least 1 issue
+		if len(result.Problems) > 0 {
+			result.IssueCount += len(result.Problems)
+		} else {
+			result.IssueCount++
+		}
+	}
+
+	// Check volume size
+	sizeBytes, sizeHuman, err := GetMutagenVolumeSize(app)
+	if err == nil {
+		result.VolumeSize = sizeBytes
+		result.VolumeSizeHuman = sizeHuman
+
+		// Thresholds: 5GB warning, 10GB critical
+		fiveGB := int64(5 * 1024 * 1024 * 1024)
+		tenGB := int64(10 * 1024 * 1024 * 1024)
+
+		if sizeBytes > tenGB {
+			result.VolumeCritical = true
+			result.IssueCount++
+		} else if sizeBytes > fiveGB {
+			result.VolumeWarning = true
+			result.WarningCount++
+		}
+	}
+
+	// Check upload_dirs configuration
+	uploadDirs := app.GetUploadDirs()
+	result.UploadDirs = uploadDirs
+	result.UploadDirsConfigured = len(uploadDirs) > 0
+
+	if !result.UploadDirsConfigured {
+		// Get CMS-specific suggestions
+		result.UploadDirsSuggestion = getCMSDefaultUploadDirsSuggestion(app.Type)
+		if result.UploadDirsSuggestion != "" {
+			result.IssueCount++
+		}
+	}
+
+	// Check if mutagen.yml is customized
+	mutagenYmlPath := GetMutagenConfigFilePath(app)
+	if fileutil.FileExists(mutagenYmlPath) {
+		sigExists, err := fileutil.FgrepStringInFile(mutagenYmlPath, nodeps.DdevFileSignature)
+		if err == nil {
+			result.MutagenYmlCustomized = !sigExists
+		}
+	}
+
+	// Check config hash and label compatibility
+	ok, _, info := CheckMutagenVolumeSyncCompatibility(app)
+	result.LabelsMatch = ok
+	if !ok {
+		result.Problems = append(result.Problems, fmt.Sprintf("Volume/session compatibility issue: %s", info))
+		result.IssueCount++
+	}
+
+	// Check ignore patterns
+	issues, warnings, patternWarnings := CheckMutagenIgnorePatterns(app)
+	result.IgnoreIssues = issues
+	result.IgnoreWarnings = warnings
+	result.IgnorePatternWarnings = patternWarnings
+	result.IssueCount += len(issues)
+	result.WarningCount += len(warnings)
+
+	// Check for large files being synced
+	largeFileWarnings := CheckLargeFilesInSync(app)
+	result.IgnoreWarnings = append(result.IgnoreWarnings, largeFileWarnings...)
+	result.WarningCount += len(largeFileWarnings)
+
+	return result
+}
+
+// getCMSDefaultUploadDirsSuggestion returns a suggestion for upload_dirs based on project type
+func getCMSDefaultUploadDirsSuggestion(projectType string) string {
+	suggestions := map[string]string{
+		"drupal6":      "sites/default/files",
+		"drupal7":      "sites/default/files",
+		"drupal":       "sites/default/files", // Drupal 8+
+		"drupal8":      "sites/default/files",
+		"drupal9":      "sites/default/files",
+		"drupal10":     "sites/default/files",
+		"drupal11":     "sites/default/files",
+		"drupal12":     "sites/default/files",
+		"backdrop":     "files",
+		"wordpress":    "wp-content/uploads",
+		"wp-bedrock":   "app/uploads",
+		"typo3":        "fileadmin",
+		"magento":      "media",
+		"magento2":     "media",
+		"maho":         "media",
+		"shopware6":    "media",
+		"silverstripe": "assets",
+		"craftcms":     "files",
+	}
+
+	if suggestion, ok := suggestions[projectType]; ok {
+		return suggestion
+	}
+
+	return ""
 }

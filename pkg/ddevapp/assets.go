@@ -3,7 +3,9 @@ package ddevapp
 import (
 	"embed"
 	"fmt"
+	"io/fs"
 	"path/filepath"
+	"strings"
 
 	"github.com/ddev/ddev/pkg/fileutil"
 	"github.com/ddev/ddev/pkg/globalconfig"
@@ -25,6 +27,8 @@ import (
 //go:embed traefik_global_config_template.yaml
 //go:embed drupal/*
 //go:embed magento/*
+//go:embed maho/*
+//go:embed modx/*
 //go:embed wordpress/*
 //go:embed typo3/*
 //go:embed postgres/*
@@ -98,4 +102,22 @@ func IsBundledCustomProvider(provider string) bool {
 		}
 	}
 	return false
+}
+
+// GetAssetFiles reads file paths from embedded assets directory and converts them to target file paths.
+func GetAssetFiles(assetPath string, targetDir string) ([]string, error) {
+	var expected []string
+	err := fs.WalkDir(bundledAssets, assetPath, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		// Convert asset path to target path: "dotddev_assets/commands/web/README.txt" -> "{targetDir}/web/README.txt"
+		relPath := strings.TrimPrefix(path, assetPath+"/")
+		expected = append(expected, filepath.Join(targetDir, relPath))
+		return nil
+	})
+	return expected, err
 }

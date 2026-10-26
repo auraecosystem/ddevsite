@@ -130,13 +130,13 @@ func (c *remoteConfig) ShowTicker() {
 		messageOffset = rand.Intn(messageCount)
 	}
 
-	for i := range tickerData.Messages {
+	for range tickerData.Messages {
 		messageOffset++
 		if messageOffset > messageCount {
 			messageOffset = 1
 		}
 
-		message := &tickerData.Messages[i+messageOffset-1]
+		message := &tickerData.Messages[messageOffset-1]
 
 		if c.checkConditions(message.Conditions) && c.checkVersions(message.Versions) {
 			t := table.NewWriter()
@@ -299,7 +299,7 @@ func (c *remoteConfig) ShowSponsorshipAppreciation() {
 	message := sponsorshipData.AppreciationMessage
 	if message == "" {
 		// Fallback if not present
-		message = "💚 DDEV's community sponsorship makes it go! Consider becoming a sponsor at github.com/sponsors/ddev 🤝"
+		message = "💚 DDEV's community sponsorship makes it go! Consider becoming a sponsor at ddev.com/sponsor 🤝"
 	}
 
 	t := table.NewWriter()
@@ -334,7 +334,7 @@ const (
 func applyTableStyle(preset preset, writer table.Writer) {
 	styles.SetGlobalTableStyle(writer, true)
 
-	termWidth, _ := nodeps.GetTerminalWidthHeight()
+	termWidth, _ := nodeps.GetTerminalWidthHeight(os.Stdout)
 	util.Debug("termWidth: %d", termWidth)
 	writer.SetColumnConfigs([]table.ColumnConfig{
 		{

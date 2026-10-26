@@ -1,115 +1,57 @@
-# DDEV Claude Code Configuration
+# Claude Code configuration notes
 
-This directory contains configuration for Claude Code development with DDEV.
+Maintainer notes on the machinery; guidance for agents lives in `AGENTS.md`.
 
-## Directory Structure
+## Where guidance goes
 
-```
-.claude/
-├── settings.json          # Hook configurations
-├── hooks/
-│   └── session-start.sh   # SessionStart hook script
-└── README.md              # This file
-```
+| Mechanism | Loaded | Holds |
+| --- | --- | --- |
+| `settings.json` | Enforced by the client | Rules that must not depend on Claude choosing to follow them |
+| `AGENTS.md` | Every session | Facts that apply to every change |
+| `rules/*.md` | When a file matching `paths:` is read, or always without it | Guidance for one area of the tree |
+| `skills/*/SKILL.md` | When invoked or judged relevant | Procedures used occasionally |
 
-## SessionStart Hook
+`AGENTS.md` costs context in every session, so prefer a rule or a skill unless
+the guidance applies to everything.
 
-The SessionStart hook automatically configures the development environment when starting a Claude Code session. It adapts to both desktop (with Docker) and web (without Docker) environments.
+## Hooks
 
-**Configuration**: Defined in `settings.json` and triggered on session startup.
+Hooks run in Claude's current directory, so each `make` call passes
+`-C "$CLAUDE_PROJECT_DIR"`.
 
-**Script**: `.claude/hooks/session-start.sh` runs automatically at the start of each session.
+The formatters read the edited path from the stdin payload with `jq`, the only
+place a hook is given it: `$CLAUDE_FILE_PATHS` is never populated
+([anthropics/claude-code#9567](https://github.com/anthropics/claude-code/issues/9567)).
+Their output goes to stderr because on a lint error make exits 2, and Claude
+Code shows only stderr to Claude.
 
-### What It Does
+A hook's `if` takes exactly one permission rule. `Edit(...)` does not match
+the Write tool, and `||` or `{a,b}` inside a rule matched nothing in testing,
+so each tool and file type gets its own entry. The leading `/` anchors a
+pattern to the project, so edits outside it are not formatted.
 
-1. **Installs Required Tools**
-   - Installs `markdownlint-cli` via npm (required for `make staticrequired`)
+There is no commit hook. Matching `git commit` in Bash text either misses
+forms like `git -C dir commit` or catches read-only commands, so the commit
+skill runs `make staticrequired` instead.
 
-2. **Detects Docker Availability**
-   - Checks if Docker is installed and running
-   - Adapts environment configuration based on Docker availability
+SessionStart writes PATH to `$CLAUDE_ENV_FILE`, which Claude Code sources
+before each Bash command. PATH cannot go in the `env` block, whose values are
+literal: `$PATH` and `$HOME` arrive unexpanded. `make` does not depend on this
+hook, since the `Makefile` prepends the dev-tools directories itself.
 
-3. **Sets Environment Variables**
-   - `DDEV_NO_INSTRUMENTATION=true` - Disables analytics (all environments)
-   - `GOTEST_SHORT=true` - Only set when Docker is NOT available (web environment)
-   - Go build cache and GOPATH configuration
-   - Uses `CLAUDE_ENV_FILE` to persist variables across tool calls
+## Permissions
 
-4. **Provides Environment Status**
-   - Shows which development tools are available
-   - Displays Docker availability status
-   - Shows context-appropriate usage guidelines based on environment
+Every rule has a space before its `*`: `Bash(tr *)` matches only `tr`, while
+`Bash(tr*)` would also match `truncate`. Fetching is allowed per
+`WebFetch(domain:...)` rather than by `curl` argument patterns, which a
+reordered flag or a URL in a variable defeats.
 
-### Environment Detection
+## Instruction loading
 
-The hook automatically detects your environment and adapts:
+A project or parent `CLAUDE.local.md` can stop Claude from loading `AGENTS.md`
+under the default instruction setting. Use an `@AGENTS.md` import in a
+`CLAUDE.md` or select the setting that reads both instruction files.
 
-**Web Environment (No Docker):**
-- Sets `GOTEST_SHORT=true` to skip Docker-dependent integration tests
-- Shows Docker-free testing guidance
-- Recommends using CI/CD for full integration tests
-
-**Desktop Environment (With Docker):**
-- Does NOT set `GOTEST_SHORT=true` (full tests available)
-- Shows full testing capabilities
-- Allows running complete integration test suite locally
-
-### Tool Availability
-
-**All Environments:**
-- ✅ Go 1.24+ toolchain
-- ✅ golangci-lint (pre-installed)
-- ✅ markdownlint (installed by SessionStart hook)
-- ✅ npm/node for tool installation
-- ✅ Full ability to build DDEV binaries
-
-**Environment-Specific:**
-- ✅ Docker - Available in desktop, not in web
-- ⚠️ mkdocs - Not in web (gracefully skipped by Makefile)
-
-### Recommended Development Workflow
-
-For development in Claude Code for Web:
-
-```bash
-# 1. Make your code changes
-vim pkg/ddevapp/something.go
-
-# 2. Run unit tests (non-Docker)
-go test -short ./pkg/ddevapp
-
-# 3. Run linting (fully supported)
-make staticrequired
-
-# 4. Build and verify
-make
-.gotmp/bin/linux_amd64/ddev --version
-
-# 5. Commit and push
-git add .
-git commit -m "feat: your change description"
-git push
-```
-
-### What Works Without Docker
-
-- ✅ Code editing and formatting
-- ✅ Static analysis with golangci-lint
-- ✅ Markdown linting
-- ✅ Building DDEV binaries for all platforms
-- ✅ Unit tests that don't require Docker
-- ✅ Reading and analyzing code
-
-### What Requires Docker (Skip in Web Environment)
-
-- ❌ Integration tests in `pkg/ddevapp/*_test.go` that start projects
-- ❌ Container image building and testing
-- ❌ Full `make test` suite
-- ❌ Testing actual DDEV commands that manage projects
-
-### CI/CD Strategy
-
-- **Local (Web)**: Make changes, run unit tests, run linting, commit
-- **CI/CD**: Automated integration tests with Docker run on push
-
-This separation allows productive development in the web environment while ensuring full test coverage through CI/CD.
+References: [hooks](https://code.claude.com/docs/en/hooks),
+[file rules](https://code.claude.com/docs/en/permissions#read-and-edit),
+[instruction loading](https://code.claude.com/docs/en/memory#when-claude-code-reads-agentsmd).

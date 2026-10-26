@@ -1,12 +1,94 @@
 {
+  "env": {
+    "GOTEST_SHORT": "true",
+    "DDEV_NO_INSTRUMENTATION": "true",
+    "DDEV_RUN_TEST_ANYWAY": "true",
+    "DDEV_RUN_DOWNLOAD_DDEV_TEST": "true",
+    "DDEV_TEST_SHARE_CMD": "true",
+    "DDEV_TEST_OUTSIDE_HOME": "true"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(make *)",
+      "Bash(go test *)",
+      "Bash(gofmt *)",
+      "Bash(golangci-lint *)",
+      "Bash(markdownlint *)",
+      "Bash(command -v *)",
+      "Bash(printf *)",
+      "Bash(sort *)",
+      "Bash(uniq *)",
+      "Bash(cut *)",
+      "Bash(tr *)",
+      "Bash(jq *)",
+      "Bash(awk *)",
+      "Bash(gh issue list *)",
+      "Bash(gh issue view *)",
+      "Bash(gh issue status *)",
+      "Bash(gh pr list *)",
+      "Bash(gh pr view *)",
+      "Bash(gh pr checks *)",
+      "Bash(gh pr diff *)",
+      "Bash(gh pr status *)",
+      "Bash(gh run list *)",
+      "Bash(gh run view *)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:buildkite.com)",
+      "WebFetch(domain:docs.ddev.com)",
+      "WebFetch(domain:code.claude.com)"
+    ],
+    "deny": [
+      "Bash(git push *)",
+      "Bash(docker push *)",
+      "Bash(go build *)",
+      "Bash(GOTEST_SHORT= *)",
+      "Bash(env -u GOTEST_SHORT *)",
+      "Bash(env --unset=GOTEST_SHORT *)",
+      "Bash(unset GOTEST_SHORT*)",
+      "Bash(find * -delete)",
+      "Bash(find * -delete *)",
+      "Bash(find * -exec rm *)"
+    ]
+  },
   "hooks": {
     "SessionStart": [
       {
-        "matcher": "startup",
         "hooks": [
           {
             "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.sh"
+            "command": "bash",
+            "args": [
+              "-c",
+              "cd \"$CLAUDE_PROJECT_DIR\" && source .envrc && printf 'export PATH=%q\\n' \"$PATH\" >> \"$CLAUDE_ENV_FILE\""
+            ]
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Edit(/**/*.go)",
+            "command": "f=$(jq -er .tool_input.file_path) || exit 1; make -C \"$CLAUDE_PROJECT_DIR\" golangci-lint-fix DDEV_GO_FILES=\"${f%/*}\" >&2"
+          },
+          {
+            "type": "command",
+            "if": "Write(/**/*.go)",
+            "command": "f=$(jq -er .tool_input.file_path) || exit 1; make -C \"$CLAUDE_PROJECT_DIR\" golangci-lint-fix DDEV_GO_FILES=\"${f%/*}\" >&2"
+          },
+          {
+            "type": "command",
+            "if": "Edit(/**/*.md)",
+            "command": "f=$(jq -er .tool_input.file_path) || exit 1; make -C \"$CLAUDE_PROJECT_DIR\" markdownlint-fix DDEV_MD_FILES=\"$f\" >&2"
+          },
+          {
+            "type": "command",
+            "if": "Write(/**/*.md)",
+            "command": "f=$(jq -er .tool_input.file_path) || exit 1; make -C \"$CLAUDE_PROJECT_DIR\" markdownlint-fix DDEV_MD_FILES=\"$f\" >&2"
           }
         ]
       }

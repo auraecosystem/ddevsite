@@ -3,9 +3,9 @@ package cmd
 import (
 	"strings"
 
+	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/ddev/ddev/pkg/ddevapp"
 	"github.com/ddev/ddev/pkg/docker"
-	"github.com/ddev/ddev/pkg/dockerutil"
 	"github.com/ddev/ddev/pkg/globalconfig"
 	"github.com/ddev/ddev/pkg/nodeps"
 	"github.com/ddev/ddev/pkg/util"
@@ -29,18 +29,14 @@ ddev utility download-images --all
 			util.Failed("Cannot specify project name with --all")
 		}
 
-		_, err := dockerutil.DownloadDockerComposeIfNeeded()
-		if err != nil {
-			util.Failed("Unable to download docker-compose: %v", err)
-		}
 		if globalconfig.DdevGlobalConfig.IsMutagenEnabled() {
-			err = ddevapp.DownloadMutagenIfNeeded()
+			err := ddevapp.DownloadMutagenIfNeeded()
 			if err != nil {
 				util.Warning("Unable to download Mutagen: %v", err)
 			}
 		}
 
-		var additionalImages []string
+		var additionalImages []types.ServiceConfig
 
 		// Skip project validation
 		originalRunValidateConfig := ddevapp.RunValidateConfig
@@ -50,9 +46,10 @@ ddev utility download-images --all
 
 		if err != nil {
 			util.Success("Downloading basic images")
-			additionalImages = []string{
-				// Provide at least the default database image
-				docker.GetDBImage(nodeps.MariaDB, nodeps.MariaDBDefaultVersion),
+			additionalImages = []types.ServiceConfig{
+				// Pull the default web and db images
+				{Image: docker.GetWebImage()},
+				{Image: docker.GetDBImage(nodeps.MariaDB, nodeps.MariaDBDefaultVersion)},
 			}
 		} else {
 			var projectNames []string
@@ -81,7 +78,7 @@ ddev utility download-images --all
 	},
 }
 
-func init() {
+func registerDebugDownloadImagesCmd() {
 	DebugDownloadImagesCmd.Flags().BoolVarP(&downloadAll, "all", "a", false, "Download all images for all projects")
 	DebugCmd.AddCommand(DebugDownloadImagesCmd)
 }

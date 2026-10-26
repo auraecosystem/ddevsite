@@ -1,3 +1,5 @@
+name: ddev-ssh-agent
+
 volumes:
   dot_ssh:
     name: "ddev-ssh-agent_dot_ssh"
@@ -6,33 +8,45 @@ volumes:
 
 services:
   ddev-ssh-agent:
-    {{ if .IsPodmanRootless }}
+    {{ if .UseKeepID }}
     userns_mode: keep-id
     {{ end }}
     container_name: ddev-ssh-agent
     hostname: ddev-ssh-agent
-    build:
-      context: '{{ .BuildContext }}'
-      args:
-        BASE_IMAGE: '{{ .ssh_auth_image }}:{{ .ssh_auth_tag }}'
-        username: '{{ .Username }}'
-        uid: '{{ .UID }}'
-        gid: '{{ .GID }}'
-    image: '{{ .ssh_auth_image }}:{{ .ssh_auth_tag }}-built'
+    image: '{{ .SSHAuthImage }}'
     networks:
       - ddev_default
     restart: "no"
-    user: '$DDEV_UID:$DDEV_GID'
+    labels:
+      {{ .UpstreamLabel }}: '{{ .UpstreamSocket }}'
+    {{- if .UpstreamSocket }}
+    # Root, because Docker Desktop's host-services socket is root:root 0660;
+    # with keep-id, root is not the host user, so use the user's UID instead
+    user: '{{ if .UseKeepID }}{{ .UID }}:{{ .GID }}{{ else }}0:0{{ end }}'
+    command: ["socat", "UNIX-LISTEN:/tmp/.ssh-agent/socket,perm=0666,fork,unlink-early", "UNIX-CONNECT:/upstream/{{ .UpstreamName }}"]
+    # SELinux labels the upstream socket as host content, which containers cannot use
+    security_opt:
+      - label=disable
+    {{- else }}
+    user: '{{ .UID }}:{{ .GID }}'
+    {{- end }}
     volumes:
       - "dot_ssh:/tmp/.ssh"
       - "socket_dir:/tmp/.ssh-agent"
+      {{- if .UpstreamSocket }}
+      - '{{ .UpstreamMount }}'
+      {{- end }}
     environment:
       - SSH_AUTH_SOCK=/tmp/.ssh-agent/socket
+      - TZ={{ .Timezone }}
     healthcheck:
-      test: "/healthcheck.sh"
+      test: {{ if .UpstreamSocket }}"killall -0 socat"{{ else }}"/healthcheck.sh"{{ end }}
       interval: 1s
       retries: 2
       start_period: 10s
+      {{- if templateCanUse "healthcheck.start_interval" }}
+      start_interval: "500ms"
+      {{- end }}
       timeout: 62s
 networks:
   ddev_default:

@@ -9,6 +9,7 @@
  * that you leave this file alone.
  */
 
+{{ if $config.HasDBContainer -}}
 $host = "{{ $config.DatabaseHost }}";
 $port = {{ $config.DatabasePort }};
 $driver = "{{ $config.DatabaseDriver }}";
@@ -20,6 +21,7 @@ $databases['default']['default']['host'] = $host;
 $databases['default']['default']['port'] = $port;
 $databases['default']['default']['driver'] = $driver;
 
+{{ end -}}
 $settings['hash_salt'] = '{{ $config.HashSalt }}';
 
 // This will prevent Drupal from setting read-only permissions on sites/default.
@@ -41,6 +43,11 @@ $config['symfony_mailer.mailer_transport.sendmail']['configuration']['user'] = '
 $config['symfony_mailer.mailer_transport.sendmail']['configuration']['pass'] = '';
 $config['symfony_mailer.mailer_transport.sendmail']['configuration']['host'] = 'localhost';
 $config['symfony_mailer.mailer_transport.sendmail']['configuration']['port'] = '1025';
+
+// Override drupal/symfony_mailer_lite default config to use Mailpit.
+$config['symfony_mailer_lite.settings']['default_transport'] = 'native';
+$config['symfony_mailer_lite.symfony_mailer_lite_transport.native']['plugin'] = 'dsn';
+$config['symfony_mailer_lite.symfony_mailer_lite_transport.native']['configuration']['dsn'] = 'smtp://127.0.0.1:1025';
 
 // Override drupal/swiftmailer default config to use Mailpit.
 $config['swiftmailer.transport']['transport'] = 'smtp';

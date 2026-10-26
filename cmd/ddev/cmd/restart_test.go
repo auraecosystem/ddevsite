@@ -45,14 +45,12 @@ func TestCmdRestart(t *testing.T) {
 func TestCmdRestartJSON(t *testing.T) {
 	assert := asrt.New(t)
 	site := TestSites[0]
-	origDdevDebug := os.Getenv("DDEV_DEBUG")
-	_ = os.Unsetenv("DDEV_DEBUG")
+	t.Setenv("DDEV_DEBUG", "")
 	origDir, _ := os.Getwd()
 	err := os.Chdir(site.Dir)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		_ = os.Chdir(origDir)
-		_ = os.Setenv("DDEV_DEBUG", origDdevDebug)
 	})
 
 	_, err = ddevapp.GetActiveApp("")
@@ -70,11 +68,68 @@ func TestCmdRestartJSON(t *testing.T) {
 	// The key item should be the last item; there may be a warning
 	// or other info before that.
 
-	var item map[string]interface{}
+	var item map[string]any
 	for _, item = range logItems {
 		if item["level"] == "info" && item["msg"] != nil && strings.Contains(item["msg"].(string), "Your project can be reached at") {
 			break
 		}
 	}
 	assert.Contains(item["msg"], "Your project can be reached at")
+}
+
+// TestCmdRestartProfilesAndServices checks `ddev restart --profiles` and
+// `ddev restart --service` with several services, one in a profile.
+// See https://github.com/ddev/ddev/issues/7904
+func TestCmdRestartProfilesAndServices(t *testing.T) {
+	site := TestSites[0]
+	origDir, _ := os.Getwd()
+	err := os.Chdir(site.Dir)
+	require.NoError(t, err)
+
+	app, err := ddevapp.NewApp(site.Dir, false)
+	require.NoError(t, err)
+	composePath := app.GetConfigPath("docker-compose.restart-profiles.yaml")
+
+	t.Cleanup(func() {
+		_ = os.Chdir(origDir)
+		_ = app.Stop(true, false)
+		_ = os.RemoveAll(composePath)
+		_ = app.Start()
+	})
+
+	err = os.WriteFile(composePath, []byte(`services:
+  busybox1:
+    image: busybox:stable
+    init: true
+    command: tail -f /dev/null
+    profiles:
+      - busybox
+    container_name: ddev-${DDEV_SITENAME}-busybox1
+`), 0644)
+	require.NoError(t, err)
+
+	out, err := exec.RunHostCommand(DdevBin, "restart", "--profiles=busybox")
+	require.NoError(t, err, "output='%s'", out)
+	require.Contains(t, out, "Started optional compose profiles 'busybox'")
+	busybox, err := app.FindContainerByType("busybox1")
+	require.NoError(t, err)
+	require.NotNil(t, busybox)
+
+	out, err = exec.RunHostCommand(DdevBin, "restart", "-s", "db,busybox1")
+	require.NoError(t, err, "output='%s'", out)
+	require.Contains(t, out, "Restarted db, busybox1 in "+site.Name)
+	restartedBusybox, err := app.FindContainerByType("busybox1")
+	require.NoError(t, err)
+	require.NotNil(t, restartedBusybox)
+	require.NotEqual(t, busybox.ID, restartedBusybox.ID)
+
+	out, err = exec.RunHostCommand(DdevBin, "restart", "-s", "db", "--profiles=busybox")
+	require.Error(t, err)
+	require.Contains(t, out, "[profiles service] were all set")
+
+	out, err = exec.RunHostCommand(DdevBin, "__complete", "restart", "-s", "db,")
+	require.NoError(t, err)
+	require.Contains(t, out, "db,busybox1")
+	require.Contains(t, out, "db,web")
+	require.NotContains(t, out, "db,db")
 }

@@ -84,6 +84,19 @@ func WithDefaultContextStoreConfig() CLIOption {
 	}
 }
 
+// WithContextResolver overrides context selection during [DockerCli.Initialize].
+// The resolver runs after configuration and the context store are loaded, but
+// before telemetry and endpoint initialization.
+// An empty result preserves normal context selection; an error aborts
+// initialization.
+// The resolver must not initialize the API client.
+func WithContextResolver(resolve func(*DockerCli) (string, error)) CLIOption {
+	return func(cli *DockerCli) error {
+		cli.contextResolver = resolve
+		return nil
+	}
+}
+
 // WithAPIClient configures the cli to use the given API client.
 func WithAPIClient(c client.APIClient) CLIOption {
 	return func(cli *DockerCli) error {
@@ -101,6 +114,16 @@ func WithInitializeClient(makeClient func(*DockerCli) (client.APIClient, error))
 			return err
 		}
 		return WithAPIClient(c)(cli)
+	}
+}
+
+// WithAPIClientOptions configures additional [client.Opt] to use when
+// initializing the API client. These options have no effect if a custom
+// client is set (through [WithAPIClient] or [WithInitializeClient]).
+func WithAPIClientOptions(c ...client.Opt) CLIOption {
+	return func(cli *DockerCli) error {
+		cli.clientOpts = append(cli.clientOpts, c...)
+		return nil
 	}
 }
 
@@ -221,7 +244,7 @@ func WithUserAgent(userAgent string) CLIOption {
 		if userAgent == "" {
 			return errors.New("user agent cannot be blank")
 		}
-		cli.userAgent = userAgent
+		cli.clientOpts = append(cli.clientOpts, client.WithUserAgent(userAgent))
 		return nil
 	}
 }

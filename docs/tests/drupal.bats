@@ -11,129 +11,156 @@ teardown() {
   _common_teardown
 }
 
+@test "Drupal 12 quickstart with $(ddev --version)" {
+  PROJNAME=my-drupal12-site
+
+  run -0 mkdir -p my-drupal12-site
+  cd my-drupal12-site
+
+  run -0 ddev config --project-type=drupal12 --docroot=web
+
+  run -0 ddev start -y
+
+  _extra_info
+
+  run -0 _retry ddev composer create-project drupal/recommended-project:main-dev@dev
+
+  run -0 ddev composer require drush/drush
+
+  run -0 ddev drush site:install --account-name=admin --account-pass=admin -y
+
+  DDEV_DEBUG=true run -0 ddev launch
+  assert_line "FULLURL ${PRIMARY_URL}"
+
+  # validate the return header of the running project
+  run -0 curl -sI ${PRIMARY_URL}
+  assert_output --partial "x-generator: Drupal 12 (https://www.drupal.org)"
+  assert_output --partial "HTTP/2 403"
+  assert_output --partial "expires: Sun, 19 Nov 1978 05:00:00 GMT"
+
+  # validate the DOM of the running project
+  run -0 curl -s ${PRIMARY_URL}
+  assert_output --partial "<meta name=\"Generator\" content=\"Drupal 12"
+  assert_output --partial "<h1 class=\"page-title\">Access denied</h1>"
+}
+
 @test "Drupal 11 quickstart with $(ddev --version)" {
-  # mkdir my-drupal-site && cd my-drupal-site
-  run mkdir my-drupal-site && cd my-drupal-site
-  assert_success
-  # ddev config --project-type=drupal11 --docroot=web
-  run ddev config --project-type=drupal11 --docroot=web
-  assert_success
-  # ddev start -y
-  run ddev start -y
-  assert_success
-  # ddev composer create-project "drupal/recommended-project:^11"
-  run ddev composer create-project "drupal/recommended-project:^11"
-  assert_success
-  # ddev composer require drush/drush
-  run ddev composer require drush/drush
-  assert_success
-  #ddev drush site:install --account-name=admin --account-pass=admin -y
-  run ddev drush site:install --account-name=admin --account-pass=admin -y
-  assert_success
-  # ddev launch
-  run bash -c "DDEV_DEBUG=true ddev launch"
-  assert_output "FULLURL https://${PROJNAME}.ddev.site"
-  assert_success
+  PROJNAME=my-drupal11-site
+
+  run -0 mkdir -p my-drupal11-site
+  cd my-drupal11-site
+
+  run -0 ddev config --project-type=drupal11 --docroot=web
+
+  run -0 ddev start -y
+
+  _extra_info
+
+  run -0 _retry ddev composer create-project "drupal/recommended-project"
+
+  run -0 ddev composer require drush/drush
+
+  run -0 ddev drush site:install --account-name=admin --account-pass=admin -y
+
+  DDEV_DEBUG=true run -0 ddev launch
+  assert_line "FULLURL ${PRIMARY_URL}"
+
   # validate running project
-  run curl -sfI https://${PROJNAME}.ddev.site
-  assert_success
+  run -0 curl -sSfI ${PRIMARY_URL}
   assert_output --partial "x-generator: Drupal 11 (https://www.drupal.org)"
   assert_output --partial "HTTP/2 200"
 }
 
 @test "Drupal 10 quickstart with $(ddev --version)" {
-  # mkdir my-drupal-site && cd my-drupal-site
-  run mkdir my-drupal-site && cd my-drupal-site
-  assert_success
-  # ddev config --project-type=drupal10 --docroot=web
-  run ddev config --project-type=drupal10 --docroot=web
-  assert_success
-  # ddev start -y
-  run ddev start -y
-  assert_success
-  # ddev composer create-project "drupal/recommended-project:^10"
-  run ddev composer create-project "drupal/recommended-project:^10"
-  assert_success
-  # ddev composer require drush/drush
-  run ddev composer require drush/drush
-  assert_success
-  #ddev drush site:install --account-name=admin --account-pass=admin -y
-  run ddev drush site:install --account-name=admin --account-pass=admin -y
-  assert_success
-  # ddev launch
-  run bash -c "DDEV_DEBUG=true ddev launch"
-  assert_output "FULLURL https://${PROJNAME}.ddev.site"
-  assert_success
+  PROJNAME=my-drupal10-site
+
+  run -0 mkdir -p my-drupal10-site
+  cd my-drupal10-site
+
+  run -0 ddev config --project-type=drupal10 --docroot=web
+
+  run -0 ddev start -y
+
+  _extra_info
+
+  run -0 _retry ddev composer create-project "drupal/recommended-project:^10"
+
+  run -0 ddev composer require drush/drush
+
+  run -0 ddev drush site:install --account-name=admin --account-pass=admin -y
+
+  DDEV_DEBUG=true run -0 ddev launch
+  assert_line "FULLURL ${PRIMARY_URL}"
+
   # validate running project
-  run curl -sfI https://${PROJNAME}.ddev.site
-  assert_success
+  run -0 curl -sSfI ${PRIMARY_URL}
   assert_output --partial "x-generator: Drupal 10 (https://www.drupal.org)"
   assert_output --partial "HTTP/2 200"
 }
 
 @test "Drupal 11 git based quickstart with $(ddev --version)" {
-  # PROJECT_GIT_URL=https://github.com/ddev/test-drupal11.git
+  PROJNAME=my-drupal11-site
+
   PROJECT_GIT_URL=https://github.com/ddev/test-drupal11.git
-  # git clone ${PROJECT_GIT_URL} ${PROJNAME}
-  run git clone ${PROJECT_GIT_URL} ${PROJNAME}
-  assert_success
-  # cd my-drupal-site
+  run -0 git clone ${PROJECT_GIT_URL} ${PROJNAME}
+
   cd ${PROJNAME} || exit 2
-  assert_success
-  # ddev config --project-type=drupal11 --docroot=web
-  run ddev config --project-type=drupal11 --docroot=web
-  assert_success
-  # ddev start -y
-  run ddev start -y
-  assert_success
-  # ddev composer install
-  run ddev composer install
-  assert_success
-  #ddev drush site:install --account-name=admin --account-pass=admin -y
-  run ddev drush site:install --account-name=admin --account-pass=admin -y
-  assert_success
-  # ddev launch
-  run bash -c "DDEV_DEBUG=true ddev launch"
-  assert_output "FULLURL https://${PROJNAME}.ddev.site"
-  assert_success
+
+  run -0 ddev config --project-type=drupal11 --docroot=web
+
+  run -0 ddev start -y
+
+  _extra_info
+
+  run -0 ddev composer install
+
+  run -0 ddev drush site:install --account-name=admin --account-pass=admin -y
+
+  DDEV_DEBUG=true run -0 ddev launch
+  assert_line "FULLURL ${PRIMARY_URL}"
+
   # validate running project
-  run curl -sfI https://${PROJNAME}.ddev.site
-  assert_success
+  run -0 curl -sSfI ${PRIMARY_URL}
   assert_output --partial "x-generator: Drupal 11 (https://www.drupal.org)"
   assert_output --partial "HTTP/2 200"
 }
 
 @test "Drupal CMS composer quickstart with $(ddev --version)" {
-  # mkdir my-drupal-site && cd my-drupal-site
-  run mkdir my-drupal-site && cd my-drupal-site
-  assert_success
-  # ddev config --project-type=drupal11 --docroot=web
-  run ddev config --project-type=drupal11 --docroot=web
-  assert_success
-  # ddev start -y
-  run ddev start -y
-  assert_success
-  # ddev composer create-project drupal/cms
-  run ddev composer create-project drupal/cms
-  assert_success
+  PROJNAME=my-drupalcms-site
+
+  run -0 mkdir -p my-drupalcms-site
+  cd my-drupalcms-site
+
+  run -0 ddev config --project-type=drupal11 --docroot=web
+
+  run -0 ddev start -y
+
+  _extra_info
+
+  run -0 _retry ddev composer create-project drupal/cms
+  # This check shows that post-create-project-cmd event ran successfully
+  assert_output --partial "You're all set to get started with Drupal CMS"
+
+  # Note: recipe-unpack runs automatically in DDEV v1.25.0+
+  run -0 ddev composer drupal:recipe-unpack
+  assert_output --partial "No recipes to unpack."
+
+  # drush si makes the installer composer-require drupal_cms_helper mid-run, and
+  # its davereid/drupal-environment dependency is not autoloadable in that process.
+  run -0 ddev composer require drupal/drupal_cms_helper
+
   # Run Drush site install to set up the site
-  run ddev drush si --account-name=admin --account-pass=admin -y
-  assert_success
-  # Apply one of the additional recipes Drupal CMS ships with
-  run ddev drush recipe ../recipes/drupal_cms_blog
-  assert_success
-  # ddev launch
-  run bash -c "DDEV_DEBUG=true ddev launch"
-  assert_output "FULLURL https://${PROJNAME}.ddev.site"
-  assert_success
+  run -0 ddev drush si --account-name=admin --account-pass=admin -y
+
+  DDEV_DEBUG=true run ddev launch
+  assert_line "FULLURL ${PRIMARY_URL}"
+
   # validate running project
-  run curl -sfI https://${PROJNAME}.ddev.site
-  assert_success
+  run -0 curl -sSfI ${PRIMARY_URL}
   assert_output --partial "HTTP/2 200"
   assert_output --partial "expires: Sun, 19 Nov 1978 05:00:00 GMT"
   assert_output --partial "x-generator: Drupal 11 (https://www.drupal.org)"
-  run curl -sf https://${PROJNAME}.ddev.site
-  assert_success
-  assert_output --partial "<title>Home | Drush Site-Install</title>"
-  assert_output --partial "<span>A celebration of Drupal and open-source contributions</span>"
+  _assert_page_contains ${PRIMARY_URL} \
+    "Home | Drush Site-Install" \
+    "Bring your site to life, starting here."
 }

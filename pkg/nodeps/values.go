@@ -8,13 +8,6 @@ import (
 	"github.com/maruel/natural"
 )
 
-// Providers
-// TODO: This should be removed as many providers will now be valid
-const (
-	// ProviderDefault contains the name of the default provider which will be used if one is not otherwise specified.
-	ProviderDefault = "default"
-)
-
 // Database Types
 const (
 	MariaDB  = "mariadb"
@@ -73,7 +66,9 @@ var FailOnHookFailDefault = false
 
 // GoroutineLimit is the number of goroutines allowed at exit in parts of some tests
 // Can be overridden by setting DDEV_TEST_GOROUTINE_LIMIT=<somenumber>
-var GoroutineLimit = 10
+// Two of them are the interrupt handler and os/signal's loop, which last for
+// the whole process.
+var GoroutineLimit = 12
 
 // ValidWebserverTypes should be updated whenever supported webserver types are added or
 // removed, and should be used to ensure user-supplied values are valid.
@@ -85,30 +80,41 @@ var ValidWebserverTypes = map[string]bool{
 
 const AppTypeDrupalLatestStable = AppTypeDrupal11
 
+// DefaultDrupalSettingsVersion is the version used for settings.php/settings.ddev.php
+// when using the generic "drupal" type and no Drupal version can be detected from the codebase
+const DefaultDrupalSettingsVersion = "11"
+
 // App types
 const (
-	AppTypeNone     = ""
-	AppTypeBackdrop = "backdrop"
-	AppTypeCakePHP  = "cakephp"
-	AppTypeCraftCms = "craftcms"
-	AppTypeDrupal6  = "drupal6"
-	AppTypeDrupal7  = "drupal7"
-	AppTypeDrupal8  = "drupal8"
-	AppTypeDrupal9  = "drupal9"
-	AppTypeDrupal10 = "drupal10"
-	AppTypeDrupal11 = "drupal11"
+	AppTypeNone        = ""
+	AppTypeAsterios    = "asterios"
+	AppTypeBackdrop    = "backdrop"
+	AppTypeCakePHP     = "cakephp"
+	AppTypeCodeIgniter = "codeigniter"
+	AppTypeCraftCms    = "craftcms"
+	AppTypeDrupal6     = "drupal6"
+	AppTypeDrupal7     = "drupal7"
+	AppTypeDrupal8     = "drupal8"
+	AppTypeDrupal9     = "drupal9"
+	AppTypeDrupal10    = "drupal10"
+	AppTypeDrupal11    = "drupal11"
+	AppTypeDrupal12    = "drupal12"
 	// AppTypeDrupal is an alias for "most recent Drupal version"
 	AppTypeDrupal       = "drupal"
 	AppTypeGeneric      = "generic"
+	AppTypeJoomla       = "joomla"
 	AppTypeLaravel      = "laravel"
 	AppTypeSilverstripe = "silverstripe"
 	AppTypeSymfony      = "symfony"
 	AppTypeMagento      = "magento"
 	AppTypeMagento2     = "magento2"
+	AppTypeMaho         = "maho"
+	AppTypeMODX         = "modx"
 	AppTypePHP          = "php"
 	AppTypeShopware6    = "shopware6"
 	AppTypeTYPO3        = "typo3"
 	AppTypeWordPress    = "wordpress"
+	AppTypeWPBedrock    = "wp-bedrock"
 )
 
 // Ports and other defaults
@@ -128,7 +134,7 @@ const (
 	DefaultDefaultContainerTimeout  = "120"
 	InternetDetectionTimeoutDefault = 3000
 	TraefikMonitorPortDefault       = "10999"
-	MinimumDockerSpaceWarning       = 5000000 // 5GB in KB (to compare against df reporting in KB)
+	MinimumDockerSpaceWarning       = 5 * 1024 * 1024 * 1024 // 5GiB in bytes
 )
 
 // IsValidPHPVersion is a helper function to determine if a PHP version is valid, returning

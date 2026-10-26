@@ -1,3 +1,6 @@
+// FIXME(thaJeztah): remove once we are a module; the go:build directive prevents go from downgrading language version to go1.16:
+//go:build go1.26
+
 package opts
 
 import (
@@ -21,8 +24,7 @@ func parseCount(s string) (int, error) {
 	}
 	i, err := strconv.Atoi(s)
 	if err != nil {
-		var numErr *strconv.NumError
-		if errors.As(err, &numErr) {
+		if numErr, ok := errors.AsType[*strconv.NumError](err); ok {
 			err = numErr.Err
 		}
 		return 0, fmt.Errorf(`invalid count (%s): value must be either "all" or an integer: %w`, s, err)
@@ -105,7 +107,7 @@ func (*GpuOpts) Type() string {
 
 // String returns a string repr of this option
 func (o *GpuOpts) String() string {
-	gpus := []string{}
+	gpus := make([]string, 0, len(o.values))
 	for _, gpu := range o.values {
 		gpus = append(gpus, fmt.Sprintf("%v", gpu))
 	}

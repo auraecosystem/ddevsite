@@ -12,22 +12,30 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
+	"sync"
 	"time"
+	"unicode"
 
 	"github.com/ddev/ddev/pkg/exec"
 	"github.com/ddev/ddev/pkg/globalconfig"
+	"github.com/ddev/ddev/pkg/interrupt"
 	"github.com/ddev/ddev/pkg/nodeps"
 	"github.com/ddev/ddev/pkg/output"
 	"github.com/jedib0t/go-pretty/v6/text"
 )
 
-// outputOnceCache is a cache to keep track of messages that have already been shown
-var outputOnceCache = map[string]map[string]bool{}
+var (
+	// outputOnceCache is a cache to keep track of messages that have already been shown
+	outputOnceCache = map[string]map[string]bool{}
+	// outputOnceMutex is a mutex to protect outputOnceCache from data races
+	outputOnceMutex sync.Mutex
+)
 
 // outputOnce executes a function only once per unique message and function type.
 // It uses a SHA256 hash of the formatted message to detect duplicates.
-func outputOnce(format string, a []interface{}, fn func(string, ...interface{})) {
+func outputOnce(format string, a []any, fn func(string, ...any)) {
 	// Format the message first to create the cache key
 	var message string
 	if a != nil {
@@ -40,6 +48,7 @@ func outputOnce(format string, a []interface{}, fn func(string, ...interface{}))
 	msgKey := HashSalt(message)
 	fnKey := fmt.Sprintf("%p", fn) // Use function pointer as key
 
+	outputOnceMutex.Lock()
 	// Initialize the function type cache if it doesn't exist
 	if outputOnceCache[fnKey] == nil {
 		outputOnceCache[fnKey] = map[string]bool{}
@@ -47,15 +56,20 @@ func outputOnce(format string, a []interface{}, fn func(string, ...interface{}))
 
 	// Check if we've already executed this message for this function type
 	if outputOnceCache[fnKey][msgKey] {
+		outputOnceMutex.Unlock()
 		return
 	}
-	// Mark as shown and execute the function
+	// Mark as shown
 	outputOnceCache[fnKey][msgKey] = true
+	outputOnceMutex.Unlock()
+
+	// execute the function
 	fn(format, a...)
 }
 
 // Failed will print a red error message and exit with failure.
-func Failed(format string, a ...interface{}) {
+func Failed(format string, a ...any) {
+	interrupt.WaitIfExiting()
 	format = ColorizeText(format, "red")
 	if a != nil {
 		// output.UserOut.Fatalf(format, a...)
@@ -68,7 +82,7 @@ func Failed(format string, a ...interface{}) {
 }
 
 // Error will print a red error message but will not exit.
-func Error(format string, a ...interface{}) {
+func Error(format string, a ...any) {
 	format = ColorizeText(format, "red")
 	if a != nil {
 		output.UserErr.Errorf(format, a...)
@@ -78,7 +92,7 @@ func Error(format string, a ...interface{}) {
 }
 
 // Warning will present the user with warning text.
-func Warning(format string, a ...interface{}) {
+func Warning(format string, a ...any) {
 	format = ColorizeText(format, "yellow")
 	if a != nil {
 		output.UserErr.Warnf(format, a...)
@@ -88,13 +102,13 @@ func Warning(format string, a ...interface{}) {
 }
 
 // WarningOnce will present the user with warning text only once per message.
-func WarningOnce(format string, a ...interface{}) {
+func WarningOnce(format string, a ...any) {
 	defer TimeTrackC("WarningOnce(): " + fmt.Sprintf(format, a...))()
 	outputOnce(format, a, Warning)
 }
 
 // WarningWithColor allows specifying a color for the warning to make it more visible
-func WarningWithColor(color string, format string, a ...interface{}) {
+func WarningWithColor(color string, format string, a ...any) {
 	format = ColorizeText(format, color)
 	if a != nil {
 		output.UserErr.Warnf(format, a...)
@@ -104,7 +118,7 @@ func WarningWithColor(color string, format string, a ...interface{}) {
 }
 
 // Success will indicate an operation succeeded with colored confirmation text.
-func Success(format string, a ...interface{}) {
+func Success(format string, a ...any) {
 	format = ColorizeText(format, "green")
 	if a != nil {
 		output.UserOut.Infof(format, a...)
@@ -114,7 +128,7 @@ func Success(format string, a ...interface{}) {
 }
 
 // Debug Output controlled by DDEV_DEBUG environment variable
-func Debug(format string, a ...interface{}) {
+func Debug(format string, a ...any) {
 	if !globalconfig.DdevDebug || output.JSONOutput {
 		return
 	}
@@ -124,7 +138,7 @@ func Debug(format string, a ...interface{}) {
 }
 
 // Verbose Output controlled by DDEV_VERBOSE environment variable
-func Verbose(format string, a ...interface{}) {
+func Verbose(format string, a ...any) {
 	if !globalconfig.DdevVerbose || output.JSONOutput {
 		return
 	}
@@ -133,16 +147,15 @@ func Verbose(format string, a ...interface{}) {
 	output.UserOut.Debugf("%s %s", n.Format("2006-01-02T15:04:05.000"), s)
 }
 
-// ShowDots displays dots one per second until done gets true
-func ShowDots() chan bool {
-	done := make(chan bool)
-	go func() {
+// ShowDots displays dots one per second. Call the returned function to stop;
+// the line is left open for output.WaitTimer to finish.
+func ShowDots() func() {
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Go(func() {
 		for {
 			select {
 			case <-done:
-				if !output.JSONOutput {
-					_, _ = fmt.Fprintln(os.Stderr)
-				}
 				return
 			default:
 				if !output.JSONOutput {
@@ -151,8 +164,11 @@ func ShowDots() chan bool {
 				time.Sleep(1 * time.Second)
 			}
 		}
-	}()
-	return done
+	})
+	return func() {
+		close(done)
+		wg.Wait()
+	}
 }
 
 // FormatPlural is a simple wrapper which returns different strings based on the count value.
@@ -206,7 +222,7 @@ func AskForConfirmation() bool {
 }
 
 // MapKeysToArray takes the keys of the map and turns them into a string array
-func MapKeysToArray(mapWithKeys map[string]interface{}) []string {
+func MapKeysToArray(mapWithKeys map[string]any) []string {
 	result := make([]string, 0, len(mapWithKeys))
 	for v := range mapWithKeys {
 		result = append(result, v)
@@ -239,16 +255,28 @@ func FindBashPath() string {
 	if !nodeps.IsWindows() {
 		return "bash"
 	}
-	windowsBashPath, err := osexec.LookPath(`C:\Program Files\Git\bin\bash.exe`)
-	if err != nil {
-		// This one could come back with the WSL Bash, in which case we may have some trouble.
-		windowsBashPath, err = osexec.LookPath("bash.exe")
-		if err != nil {
-			Warning("Not loading custom commands; Bash is not in PATH")
-			return ""
+
+	// Check for user-local Git Bash installation first (installed for current user only)
+	// This takes precedence over system-wide installations
+	if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
+		userLocalBashPath := filepath.Join(localAppData, `Programs\Git\bin\bash.exe`)
+		if _, err := os.Stat(userLocalBashPath); err == nil {
+			return userLocalBashPath
 		}
 	}
-	return windowsBashPath
+
+	// Check for system-wide Git Bash installation using PROGRAMFILES environment variable
+	// This works even if Program Files is on a different drive
+	if programFiles := os.Getenv("PROGRAMFILES"); programFiles != "" {
+		systemWideBashPath := filepath.Join(programFiles, `Git\bin\bash.exe`)
+		if _, err := os.Stat(systemWideBashPath); err == nil {
+			return systemWideBashPath
+		}
+	}
+
+	// Not found - don't search PATH as it may return WSL bash which won't work
+	WarningOnce("Git Bash is not installed in standard locations, so some features like custom commands may not work correctly")
+	return ""
 }
 
 // ElapsedTime is an easy way to report how long something took.
@@ -325,9 +353,9 @@ func Killall(processName string) {
 }
 
 // InterfaceSliceToStringSlice converts a slice of interfaces to a slice of strings
-func InterfaceSliceToStringSlice(input interface{}) ([]string, error) {
+func InterfaceSliceToStringSlice(input any) ([]string, error) {
 	switch v := input.(type) {
-	case []interface{}:
+	case []any:
 		raw := make([]string, len(v))
 		for i := range v {
 			if s, ok := v[i].(string); ok {
@@ -508,4 +536,74 @@ func GetHomeDir() string {
 		}
 	}
 	return home
+}
+
+// CurlDiagnosticSuffix is the marker used by ExtractCurlBody to separate
+// the response body from diagnostic information appended by curl's -w option.
+const CurlDiagnosticSuffix = "\n_CURL_HTTP_CODE_:"
+
+// ExtractCurlBody extracts the response body from curl output that includes
+// diagnostic information appended via the -w (write-out) option.
+//
+// This is useful when you need to:
+// 1. Parse JSON responses from curl while also capturing HTTP status codes for debugging
+// 2. See the HTTP status code in test failure messages without breaking JSON parsing
+//
+// Usage:
+//
+//	// Run curl with -w to append HTTP code after body (on a new line)
+//	out, err := exec.RunCommand("ddev", []string{"exec", "curl", "-sf",
+//	    "-w", "\n_CURL_HTTP_CODE_:%{http_code}",
+//	    "http://example.com/api/endpoint"})
+//	// Full output is preserved for error messages: "{"key":"value"}\n_CURL_HTTP_CODE_:200"
+//	require.NoError(t, err, "curl failed, output=%s", out)
+//	// Extract just the JSON body for parsing
+//	body := util.ExtractCurlBody(out)
+//	var result map[string]interface{}
+//	json.Unmarshal([]byte(body), &result)
+func ExtractCurlBody(curlOutput string) string {
+	if before, _, ok := strings.Cut(curlOutput, CurlDiagnosticSuffix); ok {
+		return before
+	}
+	return curlOutput
+}
+
+// FormatBytes converts bytes to a human-readable string
+// Returns format like: "2.3GB", "156.7MB", "1.5KB", "0B"
+// SI (metric):  1 KB  = 1000 bytes (KB/MB/GB)    - used by macOS Finder and storage manufacturers.
+// IEC 80000-13: 1 KiB = 1024 bytes (KiB/MiB/GiB) - used by Linux tools and Windows (mislabeled as GB).
+func FormatBytes(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%dB", bytes)
+	}
+
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+
+	units := []string{"KB", "MB", "GB", "TB", "PB"}
+	return fmt.Sprintf("%.1f%s", float64(bytes)/float64(div), units[exp])
+}
+
+// IsPHPVersionEmbargoed returns true if phpVersion is listed in
+// DDEV_EMBARGO_PHP_VERSIONS, for example "8.4|8.3". Versions are separated
+// by "|" or by any whitespace, including line endings.
+func IsPHPVersionEmbargoed(phpVersion string) bool {
+	versions := strings.FieldsFunc(os.Getenv("DDEV_EMBARGO_PHP_VERSIONS"), func(r rune) bool {
+		return r == '|' || unicode.IsSpace(r)
+	})
+	return slices.Contains(versions, phpVersion)
+}
+
+// WarnAboutMultipleGlobalDdevDirs warns if a global DDEV config exists in a
+// location other than the one DDEV actually uses. It is a no-op in JSON output mode.
+func WarnAboutMultipleGlobalDdevDirs() {
+	if !output.JSONOutput {
+		if err := globalconfig.CheckForMultipleGlobalDdevDirs(); err != nil {
+			WarningWithColor("magenta", "Warning: %v.", err)
+		}
+	}
 }

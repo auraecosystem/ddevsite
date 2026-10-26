@@ -12,37 +12,38 @@ teardown() {
 }
 
 @test "Joomla quickstart with $(ddev --version)" {
-  # mkdir ${PROJNAME} && cd ${PROJNAME}
-  run mkdir ${PROJNAME} && cd ${PROJNAME}
-  assert_success
+  run -0 mkdir -p ${PROJNAME}
+  cd ${PROJNAME}
+
   # Download the latest version of Joomla
-  run curl -o joomla.zip -L $(curl -sL https://api.github.com/repos/joomla/joomla-cms/releases/latest | docker run -i --rm ddev/ddev-utilities jq -r '.assets | map(select(.name | test("^Joomla.*Stable-Full_Package\\.zip$")))[0].browser_download_url')
-  assert_success
-  # unzip joomla.zip && rm -f joomla.zip
-  run unzip joomla.zip && rm -f joomla.zip
-  assert_success
-  # ddev config --project-type=php --webserver-type=apache-fpm --upload-dirs=images
-  run ddev config --project-type=php --webserver-type=apache-fpm --upload-dirs=images
-  assert_success
-  # ddev start -y
-  run ddev start -y
-  assert_success
-  # ddev php installation/joomla.php install --site-name="My Joomla Site" --admin-user="Administrator" --admin-username=admin --admin-password=AdminAdmin1! --admin-email=admin@example.com --db-type=mysql --db-encryption=0 --db-host=db --db-user=db --db-pass="db" --db-name=db --db-prefix=ddev_ --public-folder=""
-  run ddev php installation/joomla.php install --site-name="My Joomla Site" --admin-user="Administrator" --admin-username=admin --admin-password=AdminAdmin1! --admin-email=admin@example.com --db-type=mysql --db-encryption=0 --db-host=db --db-user=db --db-pass="db" --db-name=db --db-prefix=ddev_ --public-folder=""
-  assert_success
-  # ddev launch
-  run bash -c "DDEV_DEBUG=true ddev launch /administrator/"
-  assert_output "FULLURL https://${PROJNAME}.ddev.site/administrator/"
-  assert_success
+  run -0 curl -fsSL --retry 3 --retry-all-errors -o joomla.zip "https://www.joomla.org/latest"
+
+  run -0 unzip joomla.zip
+  rm -f joomla.zip
+
+  run -0 ddev config --project-type=joomla
+
+  run -0 echo "display_errors = off" > .ddev/php/joomla.ini
+
+  run -0 echo "output_buffering = off" >> .ddev/php/joomla.ini
+  assert_file_exist .ddev/php/joomla.ini
+
+  run -0 ddev start -y
+
+  _extra_info
+
+  run -0 ddev php installation/joomla.php install --site-name="My Joomla Site" --admin-user="Administrator" --admin-username=admin --admin-password=AdminAdmin1! --admin-email=admin@example.com --db-type=mysql --db-encryption=0 --db-host=db --db-user=db --db-pass="db" --db-name=db --db-prefix=ddev_ --public-folder=""
+
+  DDEV_DEBUG=true run -0 ddev launch /administrator/
+  assert_output "FULLURL ${PRIMARY_URL}/administrator/"
+
   # validate running project
-  run curl -sf https://${PROJNAME}.ddev.site
-  assert_success
-  assert_output --partial "<meta name=\"generator\" content=\"Joomla! - Open Source Content Management\">"
-  assert_output --partial "alt=\"My Joomla Site\""
-  run curl -sfI https://${PROJNAME}.ddev.site/administrator/
-  assert_success
+  _assert_page_contains ${PRIMARY_URL} \
+    "<meta name=\"generator\" content=\"Joomla! - Open Source Content Management\">" \
+    "alt=\"My Joomla Site\""
+
+  run -0 curl -sSfI ${PRIMARY_URL}/administrator/
   assert_output --partial "HTTP/2 200"
-  run curl -sf https://${PROJNAME}.ddev.site/administrator/
-  assert_success
-  assert_output --partial "<meta name=\"generator\" content=\"Joomla! - Open Source Content Management\">"
+
+  _assert_page_contains ${PRIMARY_URL}/administrator/ "<meta name=\"generator\" content=\"Joomla! - Open Source Content Management\">"
 }
