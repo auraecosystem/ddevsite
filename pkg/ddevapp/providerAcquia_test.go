@@ -114,11 +114,14 @@ func TestAcquiaPull(t *testing.T) {
 
 	provider, err := app.GetProvider("acquia")
 	require.NoError(t, err)
+
+	require.Equal(t, acquiaPullTestEnvironment, provider.GetInfo())
+
 	err = app.Pull(provider, false, false, false)
 	require.NoError(t, err)
 
 	require.FileExists(t, filepath.Join(app.GetHostUploadDirFullPath(), "chocolate-brownie-umami.jpg"))
-	out, err := exec.RunCommand("bash", []string{"-c", fmt.Sprintf(`echo 'select COUNT(*) from users_field_data where mail="randy@example.com";' | %s mysql -B --skip-column-names `, DdevBin)})
+	out, err := exec.RunCommand("bash", []string{"-c", fmt.Sprintf(`echo 'select COUNT(*) from users_field_data where name="admin";' | %s mysql -B --skip-column-names `, DdevBin)})
 	require.NoError(t, err)
 	out = strings.Trim(out, " \n")
 	require.Equal(t, "1", out)
@@ -231,11 +234,13 @@ func TestAcquiaPush(t *testing.T) {
 	provider, err := app.GetProvider("acquia")
 	require.NoError(t, err)
 
+	require.Equal(t, acquiaPushTestEnvironment, provider.GetInfo())
+
 	err = app.Push(provider, false, false)
 	require.NoError(t, err)
 
 	// Test that the database row was added
-	readQuery := fmt.Sprintf(`acli -n ssh %s 'echo "SELECT title FROM %s WHERE title=\"%s\";" | docroot/vendor/bin/drush  sql-cli --extra=-N'`, acquiaPushTestEnvironment, t.Name(), tval)
+	readQuery := fmt.Sprintf(`acli -n ssh %s 'echo "SELECT title FROM %s WHERE title=\"%s\";" | drush sql-cli --extra=-N'`, acquiaPushTestEnvironment, t.Name(), tval)
 	out, _, err := app.Exec(&ddevapp.ExecOpts{
 		Cmd: readQuery,
 	})

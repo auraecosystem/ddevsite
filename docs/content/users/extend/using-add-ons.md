@@ -142,6 +142,14 @@ ddev add-on get <owner>/<repo>
 
 This updates to the latest version while preserving your customizations.
 
+To check and update every installed add-on at once:
+
+```bash
+ddev add-on update
+```
+
+Add `--dry-run` to see what would be updated without installing anything.
+
 ### Remove an Add-on
 
 ```bash
@@ -171,6 +179,8 @@ You can also edit the `.ddev/.env.redis` file directly:
 REDIS_TAG="7-bookworm"
 REDIS_FOO="bar"
 ```
+
+In DDEV v1.25.4+, if an add-on needs an API token or anything else you would rather not commit, put that value in a `.local` file instead, named `.ddev/.env.<addon>.local`. DDEV keeps those out of Git and applies them right after `.ddev/.env.<addon>`, so the shared settings can stay in Git while the secret doesn’t. See [Environment Variables](../configuration/environment-variables.md) for the full set of filenames and the order they override each other in.
 
 !!!tip "Check add-on documentation"
     Each add-on documents its available environment variables. Check the add-on's GitHub repository for configuration options.
@@ -267,6 +277,12 @@ ddev restart
 ```
 
 This restarts all services and applies any configuration changes.
+
+```bash
+ddev restart -s <service>
+```
+
+This restarts only the add-on's service and applies changes to its configuration and Dockerfile. Add `--no-cache` to rebuild its image without Docker cache.
 
 ### Review Add-on Configuration
 

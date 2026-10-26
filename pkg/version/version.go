@@ -1,7 +1,6 @@
 package version
 
 import (
-	"fmt"
 	"os/exec"
 	"runtime"
 	"strconv"
@@ -20,11 +19,21 @@ import (
 // IMPORTANT: These versions are overridden by version ldflags specifications VERSION_VARIABLES in the Makefile
 
 // GetVersionInfo returns a map containing the version info defined above.
-func GetVersionInfo() map[string]string {
-	var err error
+func GetVersionInfo() (map[string]string, error) {
+	var retErr error
+	trackErr := func(err error) {
+		if retErr == nil {
+			retErr = err
+		}
+	}
 	versionInfo := make(map[string]string)
 
 	versionInfo["DDEV version"] = versionconstants.DdevVersion
+	// build-source ties an unreleased build (a PR, branch, or other dev
+	// build) back to where it came from. Omitted for an official release.
+	if versionconstants.BuildSource != "" && versionconstants.IsUnreleasedDdevVersion(versionconstants.DdevVersion) {
+		versionInfo["build-source"] = versionconstants.BuildSource
+	}
 	versionInfo["ddev-environment"] = environment.GetDDEVEnvironment()
 	versionInfo["cgo_enabled"] = strconv.FormatInt(versionconstants.CGOEnabled, 10)
 	versionInfo["global-ddev-dir"] = util.WindowsPathToCygwinPath(globalconfig.GetGlobalDdevDir())
@@ -36,22 +45,49 @@ func GetVersionInfo() map[string]string {
 	versionInfo["build info"] = versionconstants.BUILDINFO
 	versionInfo["os"] = runtime.GOOS
 	versionInfo["architecture"] = runtime.GOARCH
-	if versionInfo["docker"], err = dockerutil.GetDockerVersion(); err != nil {
-		versionInfo["docker"] = fmt.Sprintf("Failed to GetDockerVersion(): %v", err)
+
+	if v, err := dockerutil.GetDockerVersion(); err != nil {
+		versionInfo["docker"] = "error"
+		trackErr(err)
+	} else {
+		versionInfo["docker"] = v
 	}
-	if versionInfo["docker-api"], err = dockerutil.GetDockerAPIVersion(); err != nil {
-		versionInfo["docker-api"] = fmt.Sprintf("Failed to GetDockerAPIVersion(): %v", err)
+	if v, err := dockerutil.GetDockerAPIVersion(); err != nil {
+		versionInfo["docker-api"] = "error"
+		trackErr(err)
+	} else {
+		versionInfo["docker-api"] = v
 	}
-	if versionInfo["docker-platform"], err = GetDockerPlatform(); err != nil {
-		versionInfo["docker-platform"] = fmt.Sprintf("Failed to GetDockerPlatform(): %v", err)
+	if v, err := GetDockerPlatform(); err != nil {
+		versionInfo["docker-platform"] = "error"
+		trackErr(err)
+	} else {
+		versionInfo["docker-platform"] = v
 	}
-	if versionInfo["docker-compose"], err = dockerutil.GetDockerComposeVersion(); err != nil {
-		versionInfo["docker-compose"] = fmt.Sprintf("Failed to GetDockerComposeVersion(): %v", err)
+	if v, err := dockerutil.GetDockerBuildxVersion(); err != nil {
+		versionInfo["docker-buildx"] = "error"
+	} else {
+		versionInfo["docker-buildx"] = v
 	}
 	versionInfo["mutagen"] = versionconstants.RequiredMutagenVersion
 	versionInfo["xhgui-image"] = docker.GetXhguiImage()
 
-	return versionInfo
+	return versionInfo, retErr
+}
+
+// ImageTagBranches maps each image's `ddev version` key to the branch (or
+// release tag) its content hash was built from. The hashes themselves carry
+// no branch information, so this is display-only context for the CLI table -
+// it is not part of the map returned by GetVersionInfo, and so never appears
+// in `ddev version -j`.
+func ImageTagBranches() map[string]string {
+	return map[string]string{
+		"web":            versionconstants.WebTagBranch,
+		"db":             versionconstants.BaseDBTagBranch,
+		"router":         versionconstants.TraefikRouterTagBranch,
+		"ddev-ssh-agent": versionconstants.SSHAuthTagBranch,
+		"xhgui-image":    versionconstants.XhguiTagBranch,
+	}
 }
 
 // GetDockerPlatform gets the platform used for Docker engine

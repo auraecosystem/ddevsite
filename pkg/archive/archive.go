@@ -17,6 +17,7 @@ import (
 	"github.com/ddev/ddev/pkg/fileutil"
 	"github.com/ddev/ddev/pkg/nodeps"
 	"github.com/ddev/ddev/pkg/util"
+	"github.com/klauspost/compress/zstd"
 	"github.com/ulikunitz/xz"
 )
 
@@ -154,7 +155,64 @@ func UnXz(source string, destDirectory string) error {
 	return nil
 }
 
-// Untar accepts a tar, tar.gz, tar.bz2, tar.xz file and extracts the contents to the provided destination path.
+// UnZstd accepts a zstd-compressed file and uncompresses it to the provided destination directory.
+func UnZstd(source string, destDirectory string) error {
+	f, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		if e := f.Close(); e != nil {
+			err = e
+		}
+	}()
+
+	zr, err := zstd.NewReader(f)
+	if err != nil {
+		return err
+	}
+	defer zr.Close()
+
+	fname := strings.TrimSuffix(filepath.Base(f.Name()), ".zst")
+	exFile, err := os.Create(filepath.Join(destDirectory, fname))
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		if e := exFile.Close(); e != nil {
+			err = e
+		}
+	}()
+
+	_, err = io.Copy(exFile, zr)
+	if err != nil {
+		return err
+	}
+
+	err = exFile.Sync()
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// isArchiveAbsolutePath reports whether a tar entry's Linkname is an absolute
+// path, in any spelling. Linkname comes from the archive being extracted, so
+// it cannot be trusted to follow tar's usual POSIX-style ("/") convention;
+// filepath.IsAbs alone is not enough to catch every case, since its notion
+// of "absolute" is host-OS-dependent: on Windows it returns false for a
+// leading "/" or "\" with no drive letter, even though the resulting symlink
+// still resolves rooted (to the current drive) rather than confined under
+// dest. Checking all three forms explicitly catches an absolute target
+// regardless of which spelling the archive uses or which OS is running.
+func isArchiveAbsolutePath(p string) bool {
+	return strings.HasPrefix(p, "/") || strings.HasPrefix(p, `\`) || filepath.IsAbs(p)
+}
+
+// Untar accepts a tar, tar.gz, tar.bz2, tar.xz, tar.zst file and extracts the contents to the provided destination path.
 // extractionDir is the path at which extraction should start; nothing will be extracted except the contents of
 // extractionDir. If extranctionDir is empty, the entire tarball is extracted.
 func Untar(source string, dest string, extractionDir string) error {
@@ -193,6 +251,14 @@ func Untar(source string, dest string, extractionDir string) error {
 			return err
 		}
 		tf = tar.NewReader(gf)
+
+	case strings.HasSuffix(source, "zst"):
+		zr, err := zstd.NewReader(f)
+		if err != nil {
+			return err
+		}
+		defer zr.Close()
+		tf = tar.NewReader(zr)
 
 	default:
 		tf = tar.NewReader(f)
@@ -233,6 +299,11 @@ func Untar(source string, dest string, extractionDir string) error {
 		}
 
 		fullPath := filepath.Join(dest, file.Name)
+
+		// Prevent path traversal (ZipSlip): ensure fullPath stays within dest
+		if !strings.HasPrefix(filepath.Clean(fullPath)+string(os.PathSeparator), filepath.Clean(dest)+string(os.PathSeparator)) {
+			return fmt.Errorf("archive entry %q escapes destination directory", file.Name)
+		}
 
 		// Handle directories, regular files, and symlinks
 		switch file.Typeflag {
@@ -284,10 +355,24 @@ func Untar(source string, dest string, extractionDir string) error {
 				return fmt.Errorf("failed to create the directory %s, err: %v", fullPathDir, err)
 			}
 
+			// A dev-environment archive has no legitimate need to plant an
+			// absolute symlink target, and there's no safe general way to
+			// let one through: rebasing it under dest is what caused this
+			// function's history of escape bugs (see GHSA-9hq4-hm3j-jmph).
+			// Reject absolute targets outright; only relative targets,
+			// resolved against and confined to the symlink's parent
+			// directory, are allowed.
+			if isArchiveAbsolutePath(file.Linkname) {
+				return fmt.Errorf("symlink target %q in archive entry %q is absolute, which is not allowed", file.Linkname, file.Name)
+			}
+			resolvedTarget := filepath.Join(fullPathDir, file.Linkname)
+			if !strings.HasPrefix(filepath.Clean(resolvedTarget)+string(os.PathSeparator), filepath.Clean(dest)+string(os.PathSeparator)) {
+				return fmt.Errorf("symlink target %q in archive entry %q escapes destination directory", file.Linkname, file.Name)
+			}
+
 			// Remove any existing file/symlink at this path
 			_ = os.Remove(fullPath)
 
-			// Create the symlink
 			err = os.Symlink(file.Linkname, fullPath)
 			if err != nil {
 				return fmt.Errorf("failed to create symlink %v -> %v, err: %v", fullPath, file.Linkname, err)
@@ -340,6 +425,11 @@ func Unzip(source string, dest string, extractionDir string) error {
 		}
 
 		fullPath := filepath.Join(dest, file.Name)
+
+		// Prevent path traversal (ZipSlip): ensure fullPath stays within dest
+		if !strings.HasPrefix(filepath.Clean(fullPath)+string(os.PathSeparator), filepath.Clean(dest)+string(os.PathSeparator)) {
+			return fmt.Errorf("archive entry %q escapes destination directory", file.Name)
+		}
 
 		if strings.HasSuffix(file.Name, "/") {
 			err = os.MkdirAll(fullPath, 0777)

@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -10,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/go-github/v74/github"
+	"github.com/google/go-github/v90/github"
 )
 
 // Aliases to avoid direct imports
@@ -25,83 +26,137 @@ var (
 	githubContext context.Context
 	// githubClient is the singleton instance of Client
 	githubClient *Client
+	// githubClientErr holds any error from initializing githubClient
+	githubClientErr error
 	// githubClientNoAuth is the singleton instance of Client without authentication
 	githubClientNoAuth *Client
+	// githubClientNoAuthErr holds any error from initializing githubClientNoAuth
+	githubClientNoAuthErr error
 	// githubClientOnce ensures githubClient is initialized only once
 	githubClientOnce sync.Once
 )
 
-// GetGitHubClient returns a singleton GitHub client and context, initializing it if necessary.
-func GetGitHubClient(withAuth bool) (context.Context, *Client) {
+// GetGitHubClient returns a context and a singleton GitHub client, initializing it once.
+// With withAuth, it returns the token-authenticated client; otherwise the no-auth client.
+// The returned error is non-nil if the requested client failed to initialize.
+func GetGitHubClient(withAuth bool) (context.Context, *Client, error) {
 	githubClientOnce.Do(func() {
 		githubContext = context.Background()
-		// Respect proxies set in the environment
-		githubClientNoAuth = github.NewClientWithEnvProxy()
-		githubClient = githubClientNoAuth
-		githubToken, _ := GetGitHubToken()
-		if githubToken != "" {
-			githubClient = githubClient.WithAuthToken(githubToken)
+		// Build the no-auth client, respecting any proxy set in the environment
+		githubClientNoAuth, githubClientNoAuthErr = github.NewClient(github.WithEnvProxy())
+		// Clone with an auth token if one is set, otherwise reuse the no-auth client
+		if githubToken, _ := GetGitHubToken(); githubClientNoAuthErr == nil && githubToken != "" {
+			githubClient, githubClientErr = githubClientNoAuth.Clone(github.WithAuthToken(githubToken))
+		} else {
+			githubClient, githubClientErr = githubClientNoAuth, githubClientNoAuthErr
 		}
 	})
 	if withAuth {
-		return githubContext, githubClient
+		return githubContext, githubClient, githubClientErr
 	}
-	return githubContext, githubClientNoAuth
+	return githubContext, githubClientNoAuth, githubClientNoAuthErr
 }
 
-// GetGitHubRelease gets the tarball URL and version for a GitHub repository release
-func GetGitHubRelease(owner, repo, requestedVersion string) (tarballURL, downloadedRelease string, err error) {
-	ctx, client := GetGitHubClient(true)
-
-	releases, resp, err := client.Repositories.ListReleases(ctx, owner, repo, &ListOptions{PerPage: 100})
+// withAuthFallback runs fn with the authenticated GitHub client and, if GitHub
+// rejects the configured token with 401, retries once with the no-auth client.
+// Errors are annotated with GitHub rate-limit details, plus the invalid-token
+// hint after a 401 or 404 with a token set.
+func withAuthFallback[T any](fn func(ctx context.Context, client *Client) (T, *github.Response, error)) (T, error) {
+	var zero T
+	ctx, client, clientErr := GetGitHubClient(true)
+	if clientErr != nil {
+		return zero, clientErr
+	}
+	result, resp, err := fn(ctx, client)
 	var tokenErr error
 	if err != nil {
-		if tokenErr = HasInvalidGitHubToken(resp); tokenErr != nil {
-			ctx, client = GetGitHubClient(false)
-			releasesNoAuth, respNoAuth, errNoAuth := client.Repositories.ListReleases(ctx, owner, repo, &ListOptions{PerPage: 100})
-			if errNoAuth == nil {
-				releases = releasesNoAuth
-				resp = respNoAuth
-				err = errNoAuth
+		// The API rejects a bad token with 401. A 404 means the resource is
+		// missing or private, which an anonymous retry cannot change.
+		if tokenErr = HasInvalidGitHubToken(resp); tokenErr != nil && resp.StatusCode == http.StatusUnauthorized {
+			if ctx, client, clientErr = GetGitHubClient(false); clientErr != nil {
+				return zero, clientErr
+			}
+			result, resp, err = fn(ctx, client)
+		}
+	}
+	if err != nil {
+		detail := rateLimitDetail(resp)
+		if tokenErr != nil {
+			detail += "\nError: " + tokenErr.Error()
+		}
+		return zero, fmt.Errorf("%w%s", err, detail)
+	}
+	return result, nil
+}
+
+// rateLimitDetail returns a human-readable GitHub rate-limit suffix for error
+// messages, or an empty string when no rate information is available. When no
+// token is set it appends a hint, since authenticated requests get a much
+// higher rate limit than anonymous ones.
+func rateLimitDetail(resp *github.Response) string {
+	if resp == nil || resp.Rate.Limit == 0 {
+		return ""
+	}
+	resetIn := time.Until(resp.Rate.Reset.Time).Round(time.Second)
+	detail := fmt.Sprintf("\nGitHub API Rate Limit: %d/%d remaining (resets in %s)", resp.Rate.Remaining, resp.Rate.Limit, resetIn)
+	if !HasGitHubToken() {
+		detail += "\nSet DDEV_GITHUB_TOKEN, GH_TOKEN, or GITHUB_TOKEN to raise the rate limit."
+	}
+	return detail
+}
+
+// isNotFound reports whether err is a GitHub 404 response.
+func isNotFound(err error) bool {
+	var errResp *github.ErrorResponse
+	return errors.As(err, &errResp) && errResp.Response != nil && errResp.Response.StatusCode == http.StatusNotFound
+}
+
+// newestRelease returns the non-draft release with the latest created_at,
+// or nil if there is none.
+func newestRelease(releases []*github.RepositoryRelease) *github.RepositoryRelease {
+	var newest *github.RepositoryRelease
+	for _, r := range releases {
+		if !r.GetDraft() && (newest == nil || r.GetCreatedAt().After(newest.GetCreatedAt().Time)) {
+			newest = r
+		}
+	}
+	return newest
+}
+
+// GetGitHubRelease gets the tarball URL and version for a GitHub repository release.
+// With an empty requestedVersion it returns the release GitHub marks as latest,
+// or the newest non-draft release when every release is a prerelease.
+func GetGitHubRelease(owner, repo, requestedVersion string) (tarballURL, downloadedRelease string, err error) {
+	var release *github.RepositoryRelease
+	if requestedVersion != "" {
+		release, err = withAuthFallback(func(ctx context.Context, client *Client) (*github.RepositoryRelease, *github.Response, error) {
+			return client.Repositories.GetReleaseByTag(ctx, owner, repo, requestedVersion)
+		})
+		if isNotFound(err) {
+			return "", "", fmt.Errorf("no release found for %v with tag %v", repo, requestedVersion)
+		}
+	} else {
+		release, err = withAuthFallback(func(ctx context.Context, client *Client) (*github.RepositoryRelease, *github.Response, error) {
+			return client.Repositories.GetLatestRelease(ctx, owner, repo)
+		})
+		// A 404 means there is no latest release, e.g. only prereleases. GitHub's
+		// list order is unreliable, so pick the newest by created_at, as it does.
+		if isNotFound(err) {
+			var releases []*github.RepositoryRelease
+			releases, err = withAuthFallback(func(ctx context.Context, client *Client) ([]*github.RepositoryRelease, *github.Response, error) {
+				return client.Repositories.ListReleases(ctx, owner, repo, &ListOptions{PerPage: 100})
+			})
+			release = newestRelease(releases)
+			if err == nil && release == nil {
+				return "", "", fmt.Errorf("no releases found for %v", repo)
 			}
 		}
 	}
 	if err != nil {
-		errorDetail := ""
-		if resp != nil {
-			rate := resp.Rate
-			if rate.Limit != 0 {
-				resetIn := time.Until(rate.Reset.Time).Round(time.Second)
-				errorDetail += fmt.Sprintf("\nGitHub API Rate Limit: %d/%d remaining (resets in %s)", rate.Remaining, rate.Limit, resetIn)
-			}
-			if tokenErr != nil {
-				errorDetail += "\nError: " + tokenErr.Error()
-			}
-		}
-		return "", "", fmt.Errorf("unable to get releases for %v: %w%s", repo, err, errorDetail)
-	}
-	if len(releases) == 0 {
-		return "", "", fmt.Errorf("no releases found for %v", repo)
+		return "", "", fmt.Errorf("unable to get releases for %v: %w", repo, err)
 	}
 
-	releaseItem := 0
-	releaseFound := false
-	if requestedVersion != "" {
-		for i, release := range releases {
-			if release.GetTagName() == requestedVersion {
-				releaseItem = i
-				releaseFound = true
-				break
-			}
-		}
-		if !releaseFound {
-			return "", "", fmt.Errorf("no release found for %v with tag %v", repo, requestedVersion)
-		}
-	}
-
-	tarballURL = releases[releaseItem].GetTarballURL()
-	downloadedRelease = releases[releaseItem].GetTagName()
-	return tarballURL, downloadedRelease, nil
+	return release.GetTarballURL(), release.GetTagName(), nil
 }
 
 // GetGitHubHeaders returns headers to be used in GitHub REST API requests if the URL is for GitHub.
@@ -113,7 +168,7 @@ func GetGitHubHeaders(requestURL string) map[string]string {
 	}
 	if githubToken, _ := GetGitHubToken(); githubToken != "" {
 		headers["Authorization"] = "Bearer " + githubToken
-		// Use the same header as in vendor/github.com/google/go-github/v74/github/github.go
+		// Use the same header as in vendor/github.com/google/go-github/v90/github/github.go
 		headers["X-Github-Api-Version"] = "2022-11-28"
 	}
 	return headers
@@ -150,7 +205,7 @@ func HasGitHubToken() bool {
 
 // HasInvalidGitHubToken checks if the response indicates an invalid GitHub token.
 // This is possible if we get 401 or 404 response.
-func HasInvalidGitHubToken(response interface{}) error {
+func HasInvalidGitHubToken(response any) error {
 	var httpResp *http.Response
 	switch r := response.(type) {
 	case *github.Response:

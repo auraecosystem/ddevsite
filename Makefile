@@ -1,18 +1,39 @@
 # Makefile for a standard golang repo with associated container
 
-# Circleci doesn't seem to provide a decent way to add to path, just adding here, for case where
-# linux build and linuxbrew is installed.
-export PATH := $(EXTRA_PATH):$(PATH)
+# scripts/install-dev-tools.sh puts the docs tooling in its own venv and npm
+# prefix, and until now only .envrc added those to PATH. direnv covers
+# interactive shells that have it hooked in and nothing else, so a make target
+# could resolve some other copy of a tool instead: a Homebrew pyspelling, for
+# instance, whose Python prefix has no pymdown-extensions and so cannot read
+# .spellcheck.yml at all. Prepend the dev-tools directories here so make always
+# gets the ones we installed. Missing directories on PATH are harmless.
+DEV_TOOLS_DIR ?= $(HOME)/.ddev-dev-tools
+DEV_TOOLS_PATH = $(DEV_TOOLS_DIR)/python/bin:$(DEV_TOOLS_DIR)/node/bin
+ifeq ($(OS),Windows_NT)
+# Native Windows make sees PATH as C:\...;C:\..., so joining with colons yields
+# garbage. Venvs use Scripts and npm has no bin there; the shell adds them in
+# require_tool, where $$PATH is already in its own format. EXTRA_PATH
+# rides along in DEV_TOOLS_PATH because the export below is skipped.
+DEV_TOOLS_DIR := $(shell cygpath -u '$(DEV_TOOLS_DIR)')
+DEV_TOOLS_PATH = $(DEV_TOOLS_DIR)/python/Scripts:$(DEV_TOOLS_DIR)/node$(if $(EXTRA_PATH),:$(EXTRA_PATH))
+else
+export PATH := $(DEV_TOOLS_PATH):$(EXTRA_PATH):$(PATH)
+endif
 
 BUILD_BASE_DIR ?= $(PWD)
 
 GOTMP=.gotmp
 SHELL = /bin/bash
 PWD = $(shell pwd)
-GOFILES = $(shell find $(SRC_DIRS) -name "*.go" ! -path "*/testdata/*")
 GORACE = "halt_on_error=1"
 CGO_ENABLED = 0
-.PHONY: darwin_amd64 darwin_arm64 darwin_amd64_notarized darwin_arm64_notarized darwin_arm64_signed darwin_amd64_signed linux_amd64 linux_arm64 linux_arm windows_amd64 windows_arm64 windows_install setup
+SIGNING_TOOLS_REVISION ?= main
+SIGNING_TOOLS_RAW_URL = https://raw.githubusercontent.com/ddev/signing_tools/$(SIGNING_TOOLS_REVISION)
+DDEV_MACOS_CERT_FILE ?=
+DDEV_MACOS_CERT_NAME ?= Developer ID Application: DDEV Foundation (9HQ298V2BW)
+DDEV_MACOS_APPLE_ID ?= notarizer@ddev.com
+DDEV_MACOS_TEAM_ID ?= 9HQ298V2BW
+.PHONY: darwin_amd64 darwin_arm64 darwin_amd64_notarized darwin_arm64_notarized darwin_arm64_signed darwin_amd64_signed linux_amd64 linux_arm64 linux_arm windows_amd64 windows_arm64 windows_amd64_binaries windows_arm64_binaries windows_binaries windows_sign_binaries windows_install setup
 
 # Expands SRC_DIRS into the common golang ./dir/... format for "all below"
 SRC_AND_UNDER = $(patsubst %,./%/...,$(SRC_DIRS))
@@ -26,14 +47,10 @@ PKG := github.com/ddev/ddev
 SRC_DIRS := cmd pkg
 
 # Version variables to replace in build
-VERSION_VARIABLES ?= DdevVersion AmplitudeAPIKey
+VERSION_VARIABLES ?= DdevVersion AmplitudeAPIKey BuildSource
 
 # These variables will be used as the default unless overridden by the make
 DdevVersion ?= $(VERSION)
-# WebTag ?= $(VERSION)  # WebTag is normally specified in version_constants.go, sometimes overridden (night-build.mak)
-# DBTag ?=  $(VERSION)  # DBTag is normally specified in version_constants.go, sometimes overridden (night-build.mak)
-# RouterTag ?= $(VERSION) #RouterTag is normally specified in version_constants.go, sometimes overridden (night-build.mak)
-# DBATag ?= $(VERSION) #DBATag is normally specified in version_constants.go, sometimes overridden (night-build.mak)
 
 # VERSION can be set by
   # Default: git tag
@@ -43,11 +60,20 @@ DdevVersion ?= $(VERSION)
 # This version-strategy uses git tags to set the version string
 # VERSION can be overridden on make commandline: make VERSION=0.9.1 push
 VERSION := $(shell git describe --tags --always --dirty)
+
+# BuildSource ties an unreleased `ddev version` build back to where it came
+# from: a GitHub Actions run when the GITHUB_* variables Actions sets are
+# present, otherwise the builder and branch of a local `make` build. Written
+# as a standalone script rather than inline shell: $(shell ...) balances every
+# parenthesis in its argument, including literal ones meant for the shell, so
+# anything more than a one-liner belongs in its own file.
+BuildSource := $(shell ./scripts/build-source.sh)
 # Some things insist on having the version without the leading 'v', so provide a
 # $(NO_V_VERSION) without it.
 # no_v_version removes the front v, for Chocolatey mostly
 NO_V_VERSION=$(shell echo $(VERSION) | awk -F"-" '{ OFS="-"; sub(/^./, "", $$1); printf $$0; }')
 GITHUB_ORG := ddev
+MKCERT_VERSION := v1.4.4
 
 BUILD_OS = $(shell go env GOHOSTOS)
 BUILD_ARCH = $(shell go env GOHOSTARCH)
@@ -56,7 +82,51 @@ VERSION_LDFLAGS=$(foreach v,$(VERSION_VARIABLES),-X '$(PKG)/pkg/versionconstants
 LDFLAGS=-extldflags -static $(VERSION_LDFLAGS) -s -w
 DEFAULT_BUILD=$(shell go env GOHOSTOS)_$(shell go env GOHOSTARCH)
 
-build: $(DEFAULT_BUILD)
+build: autotag-images $(DEFAULT_BUILD)
+
+# autotag-images detects, per container image, whether the image's own content
+# (see containers/hash-paths.sh) has changed since the tag committed in
+# pkg/versionconstants/versionconstants.go. Unchanged images are a fast no-op
+# (no Docker, no network). A changed image is built locally (host arch only)
+# and its tag in versionconstants.go is rewritten automatically - see
+# containers/autotag.sh and docs/content/developers/building-contributing.md.
+# Only the default db variant (mariadb_11.8) is built here, to keep an
+# unrelated rebuild cheap. Every ddev-dbserver variant shares BaseDBTag, so a
+# dbserver change moves the tag for all of them at once; CI builds and pushes
+# the whole matrix (containers/ddev-dbserver/variants.txt), and the rest are
+# pulled from the registry.
+.PHONY: autotag-images
+autotag-images:
+	@containers/autotag.sh WebTag ddev/ddev-webserver containers/ddev-webserver containers/containers_shared.mk -- $(MAKE) -C containers/ddev-webserver images
+	@containers/autotag.sh TraefikRouterTag ddev/ddev-traefik-router containers/ddev-traefik-router containers/containers_shared.mk -- $(MAKE) -C containers/ddev-traefik-router container
+	@containers/autotag.sh SSHAuthTag ddev/ddev-ssh-agent containers/ddev-ssh-agent containers/containers_shared.mk -- $(MAKE) -C containers/ddev-ssh-agent container
+	@containers/autotag.sh XhguiTag ddev/ddev-xhgui containers/ddev-xhgui containers/containers_shared.mk -- $(MAKE) -C containers/ddev-xhgui container
+	@containers/autotag.sh BaseDBTag ddev/ddev-dbserver-mariadb-11.8 containers/ddev-dbserver containers/get_arch.sh -- $(MAKE) -C containers/ddev-dbserver mariadb_11.8_$(shell go env GOHOSTARCH)
+
+# retag-images is autotag-images without the Docker half: it rewrites the
+# changed images' tags in versionconstants.go and leaves the building to CI.
+# The tags it writes name images that exist nowhere until that push completes.
+.PHONY: retag-images
+retag-images:
+	@containers/retag-images.sh
+
+# release-prep stamps a release marker into every image's Dockerfile so all of
+# their hashes move, then retags as above, so the pull request rebuilds and
+# retests every image. `make release-prep TAG=v1.25.4`, or bare to be asked.
+.PHONY: release-prep
+release-prep:
+	@containers/release-prep.sh $(TAG)
+
+# print-image-tags prints the tag each image would use right now (computed,
+# not necessarily built or pushed) - use this to find the value to pass to
+# the push-tagged-image.yml / push-tagged-dbimage.yml tag input.
+.PHONY: print-image-tags
+print-image-tags:
+	@echo "WebTag:            $$(containers/autotag.sh --print-only WebTag ddev/ddev-webserver containers/ddev-webserver containers/containers_shared.mk)"
+	@echo "TraefikRouterTag:  $$(containers/autotag.sh --print-only TraefikRouterTag ddev/ddev-traefik-router containers/ddev-traefik-router containers/containers_shared.mk)"
+	@echo "SSHAuthTag:        $$(containers/autotag.sh --print-only SSHAuthTag ddev/ddev-ssh-agent containers/ddev-ssh-agent containers/containers_shared.mk)"
+	@echo "XhguiTag:          $$(containers/autotag.sh --print-only XhguiTag ddev/ddev-xhgui containers/ddev-xhgui containers/containers_shared.mk)"
+	@echo "BaseDBTag:         $$(containers/autotag.sh --print-only BaseDBTag ddev/ddev-dbserver-mariadb-11.8 containers/ddev-dbserver containers/get_arch.sh)"
 
 
 # Provide shorthand targets
@@ -72,7 +142,11 @@ wsl_arm64: $(GOTMP)/bin/wsl_arm64/ddev-hostname.exe $(GOTMP)/bin/wsl_arm64/mkcer
 completions: $(GOTMP)/bin/completions.tar.gz
 
 TARGETS=$(GOTMP)/bin/linux_amd64/ddev $(GOTMP)/bin/linux_arm64/ddev $(GOTMP)/bin/linux_arm/ddev $(GOTMP)/bin/darwin_amd64/ddev $(GOTMP)/bin/darwin_arm64/ddev $(GOTMP)/bin/windows_amd64/ddev.exe $(GOTMP)/bin/windows_arm64/ddev.exe $(GOTMP)/bin/linux_amd64/ddev-hostname $(GOTMP)/bin/linux_arm64/ddev-hostname $(GOTMP)/bin/darwin_amd64/ddev-hostname $(GOTMP)/bin/darwin_arm64/ddev-hostname $(GOTMP)/bin/windows_amd64/ddev-hostname.exe $(GOTMP)/bin/windows_arm64/ddev-hostname.exe
-$(TARGETS): mkcert $(GOFILES)
+# Always hand the build to go, whose cache decides what changed. Make's own
+# timestamps miss //go:embed assets and the git-derived VERSION in LDFLAGS.
+.PHONY: FORCE
+FORCE:
+$(TARGETS): FORCE
 	@rm -f $@
 	@export TARGET=$(word 3, $(subst /, ,$@)); \
 	if [[ "$@" == *ddev-hostname.exe ]]; then \
@@ -89,7 +163,7 @@ $(TARGETS): mkcert $(GOFILES)
 	@echo $(VERSION) >VERSION.txt
 
 
-$(GOTMP)/bin/completions.tar.gz: build
+$(GOTMP)/bin/completions.tar.gz: $(DEFAULT_BUILD)
 	$(GOTMP)/bin/$(BUILD_OS)_$(BUILD_ARCH)/ddev_gen_autocomplete
 	tar -C $(GOTMP)/bin/completions -czf $(GOTMP)/bin/completions.tar.gz .
 
@@ -114,15 +188,18 @@ mkcert: $(GOTMP)/bin/darwin_arm64/mkcert $(GOTMP)/bin/darwin_amd64/mkcert $(GOTM
 
 # Set CURL to the Homebrew-installed curl, fallback to default
 CURL := $(shell command -v /opt/homebrew/opt/curl/bin/curl || command -v /usr/local/opt/curl/bin/curl || echo curl)
+# No --retry-delay, so curl backs off exponentially and rides out GitHub
+# release-asset outages longer than a fixed delay would.
+DOWNLOAD_RETRY := --retry 8 --retry-max-time 300 --retry-connrefused --retry-all-errors
 
-# Download mkcert to it can be added to tarball installations
+# mkcert is only needed to package releases, not to build or test ddev.
 $(GOTMP)/bin/darwin_arm64/mkcert $(GOTMP)/bin/darwin_amd64/mkcert $(GOTMP)/bin/linux_arm64/mkcert $(GOTMP)/bin/linux_amd64/mkcert:
 	@export TARGET=$(word 3, $(subst /, ,$@)) && \
-	export GOOS="$${TARGET%_*}" GOARCH="$${TARGET#*_}" MKCERT_VERSION=v1.4.4 && \
+	export GOOS="$${TARGET%_*}" GOARCH="$${TARGET#*_}" MKCERT_VERSION=$(MKCERT_VERSION) && \
 	mkdir -p $(GOTMP)/bin/$${GOOS}_$${GOARCH} && \
-	$(CURL) --fail -JL -s -S --retry 5 --retry-delay 5 --retry-connrefused --retry-all-errors -o $(GOTMP)/bin/$${GOOS}_$${GOARCH}/mkcert "https://github.com/FiloSottile/mkcert/releases/download/$${MKCERT_VERSION}/mkcert-$${MKCERT_VERSION}-$${GOOS}-$${GOARCH}" && chmod +x $(GOTMP)/bin/$${GOOS}_$${GOARCH}/mkcert
+	$(CURL) --fail -JL -s -S $(DOWNLOAD_RETRY) -o $(GOTMP)/bin/$${GOOS}_$${GOARCH}/mkcert "https://github.com/FiloSottile/mkcert/releases/download/$${MKCERT_VERSION}/mkcert-$${MKCERT_VERSION}-$${GOOS}-$${GOARCH}" && chmod +x $(GOTMP)/bin/$${GOOS}_$${GOARCH}/mkcert
 
-TEST_TIMEOUT=4h
+TEST_TIMEOUT=6h
 BUILD_ARCH = $(shell go env GOARCH)
 
 DDEVNAME=ddev
@@ -130,19 +207,26 @@ SHASUM=shasum -a 256
 ifeq ($(BUILD_OS),windows)
 	DDEVNAME=ddev.exe
 	SHASUM=sha256sum
-	TEST_TIMEOUT=6h
-endif
-
-ifeq ($(DDEV_TEST_PODMAN_ROOTLESS),true)
-	TEST_TIMEOUT=6h
-endif
-
-ifeq ($(DDEV_TEST_PODMAN_ROOT),true)
-	TEST_TIMEOUT=6h
 endif
 
 DDEV_PATH=$(PWD)/$(GOTMP)/bin/$(BUILD_OS)_$(BUILD_ARCH)
 DDEV_BINARY_FULLPATH=$(DDEV_PATH)/$(DDEVNAME)
+
+# If DDEV_EMBARGO_TESTS is set, pass it to go test as -skip. First turn CR and
+# LF into "|", then remove empty values and spaces around "|", because an empty
+# value like the end of "A|" would make -skip skip every test.
+EMBARGO_TESTS := $(shell printf '%s' "$$DDEV_EMBARGO_TESTS" | tr '\r\n' '||' | sed 's/[ |]*|[ |]*/|/g;s/^[ |]*//;s/[ |]*$$//')
+EMBARGO_SKIP_FLAG := $(if $(EMBARGO_TESTS),-skip "$(EMBARGO_TESTS)",)
+
+# When GOTESTSUM_JSONFILE_DIR is set, tests run through gotestsum instead of
+# `go test` directly, additionally writing structured per-test JSON events to
+# <dir>/<name>.ndjson for the CI test-runtime collector (see
+# perf/collector/README.md). --format=standard-verbose mirrors plain
+# `go test -v` console output, including full failure detail, so CI log
+# review is unaffected. Unset by default, so local `make test` needs no
+# gotestsum install and behaves exactly as before.
+GOTESTSUM_JSONFILE_DIR ?=
+gotest = $(if $(GOTESTSUM_JSONFILE_DIR),gotestsum --format=standard-verbose --jsonfile=$(GOTESTSUM_JSONFILE_DIR)/$(1).ndjson --,go test)
 
 # Override test section with tests specific to ddev
 test: testpkg testcmd
@@ -150,162 +234,240 @@ test: testpkg testcmd
 testcmd: $(DEFAULT_BUILD) setup
 	@echo LDFLAGS=$(LDFLAGS)
 	@echo DDEV_BINARY_FULLPATH=$(DDEV_BINARY_FULLPATH)
-	export PATH="$(DDEV_PATH):$$PATH" DDEV_NO_INSTRUMENTATION=true CGO_ENABLED=$(CGO_ENABLED) DDEV_BINARY_FULLPATH=$(DDEV_BINARY_FULLPATH); go test $(USEMODVENDOR) -p 1 -timeout $(TEST_TIMEOUT) -v -installsuffix static -ldflags " $(LDFLAGS) " ./cmd/... $(TESTARGS)
+	@echo "Running ddev version check..."
+	@$(DDEV_BINARY_FULLPATH) version
+	export PATH="$(DDEV_PATH):$$PATH" DDEV_NO_INSTRUMENTATION=true CGO_ENABLED=$(CGO_ENABLED) DDEV_BINARY_FULLPATH=$(DDEV_BINARY_FULLPATH); $(call gotest,testcmd) $(USEMODVENDOR) -p 1 -timeout $(TEST_TIMEOUT) -v -installsuffix static -ldflags " $(LDFLAGS) " ./cmd/... $(EMBARGO_SKIP_FLAG) $(TESTARGS)
 
 testpkg: testnotddevapp testddevapp
 
 testddevapp: $(DEFAULT_BUILD) setup
-	export PATH="$(DDEV_PATH):$$PATH" DDEV_NO_INSTRUMENTATION=true CGO_ENABLED=$(CGO_ENABLED) DDEV_BINARY_FULLPATH=$(DDEV_BINARY_FULLPATH); go test $(USEMODVENDOR) -p 1 -timeout $(TEST_TIMEOUT) -v -installsuffix static -ldflags " $(LDFLAGS) " ./pkg/ddevapp $(TESTARGS)
+	@echo "Running ddev version check..."
+	@$(DDEV_BINARY_FULLPATH) version
+	export PATH="$(DDEV_PATH):$$PATH" DDEV_NO_INSTRUMENTATION=true CGO_ENABLED=$(CGO_ENABLED) DDEV_BINARY_FULLPATH=$(DDEV_BINARY_FULLPATH); $(call gotest,testddevapp) $(USEMODVENDOR) -p 1 -timeout $(TEST_TIMEOUT) -v -installsuffix static -ldflags " $(LDFLAGS) " ./pkg/ddevapp $(EMBARGO_SKIP_FLAG) $(TESTARGS)
 
 testnotddevapp: $(DEFAULT_BUILD) setup
-	export PATH="$(DDEV_PATH):$$PATH" DDEV_NO_INSTRUMENTATION=true CGO_ENABLED=$(CGO_ENABLED) DDEV_BINARY_FULLPATH=$(DDEV_BINARY_FULLPATH); go test $(USEMODVENDOR) -p 1 -timeout $(TEST_TIMEOUT) -v -installsuffix static -ldflags " $(LDFLAGS) " $(shell find ./pkg -maxdepth 1 -type d ! -name ddevapp ! -name pkg) $(TESTARGS)
+	@echo "Running ddev version check..."
+	@$(DDEV_BINARY_FULLPATH) version
+	export PATH="$(DDEV_PATH):$$PATH" DDEV_NO_INSTRUMENTATION=true CGO_ENABLED=$(CGO_ENABLED) DDEV_BINARY_FULLPATH=$(DDEV_BINARY_FULLPATH); $(call gotest,testnotddevapp) $(USEMODVENDOR) -p 1 -timeout $(TEST_TIMEOUT) -v -installsuffix static -ldflags " $(LDFLAGS) " $(shell find ./pkg -maxdepth 1 -type d ! -name ddevapp ! -name pkg) $(EMBARGO_SKIP_FLAG) $(TESTARGS)
 
 testfullsitesetup: $(DEFAULT_BUILD) setup
-	export PATH="$(DDEV_PATH):$$PATH" DDEV_NO_INSTRUMENTATION=true CGO_ENABLED=$(CGO_ENABLED) DDEV_BINARY_FULLPATH=$(DDEV_BINARY_FULLPATH); go test $(USEMODVENDOR) -p 1 -timeout $(TEST_TIMEOUT) -v -installsuffix static -ldflags " $(LDFLAGS) " ./pkg/ddevapp -run TestDdevFullSiteSetup $(TESTARGS)
+	@echo "Running ddev version check..."
+	@$(DDEV_BINARY_FULLPATH) version
+	export PATH="$(DDEV_PATH):$$PATH" DDEV_NO_INSTRUMENTATION=true CGO_ENABLED=$(CGO_ENABLED) DDEV_BINARY_FULLPATH=$(DDEV_BINARY_FULLPATH); go test $(USEMODVENDOR) -p 1 -timeout $(TEST_TIMEOUT) -v -installsuffix static -ldflags " $(LDFLAGS) " ./pkg/ddevapp -run TestDdevFullSiteSetup $(EMBARGO_SKIP_FLAG) $(TESTARGS)
+
+testonepkg: $(DEFAULT_BUILD) setup
+	@echo "Running ddev version check..."
+	@$(DDEV_BINARY_FULLPATH) version
+	@if [ -z "$(TESTPKG)" ]; then echo "ERROR: TESTPKG must be set, e.g., make testonepkg TESTPKG=./pkg/util"; exit 1; fi
+	export PATH="$(DDEV_PATH):$$PATH" DDEV_NO_INSTRUMENTATION=true CGO_ENABLED=$(CGO_ENABLED) DDEV_BINARY_FULLPATH=$(DDEV_BINARY_FULLPATH); go test $(USEMODVENDOR) -p 1 -timeout $(TEST_TIMEOUT) -v -installsuffix static -ldflags " $(LDFLAGS) " $(TESTPKG) $(EMBARGO_SKIP_FLAG) $(TESTARGS)
+
+# testonefile runs all tests found in a single _test.go file.
+# Usage: make testonefile TESTFILE=./pkg/ddevapp/ddevapp_test.go [TESTARGS="-count=1"]
+testonefile: $(DEFAULT_BUILD) setup
+	@echo "Running ddev version check..."
+	@$(DDEV_BINARY_FULLPATH) version
+	@if [ -z "$(TESTFILE)" ]; then echo "ERROR: TESTFILE must be set, e.g., make testonefile TESTFILE=./pkg/util/utils_test.go"; exit 1; fi
+	export PATH="$(DDEV_PATH):$$PATH" DDEV_NO_INSTRUMENTATION=true CGO_ENABLED=$(CGO_ENABLED) DDEV_BINARY_FULLPATH=$(DDEV_BINARY_FULLPATH); go test $(USEMODVENDOR) -p 1 -timeout $(TEST_TIMEOUT) -v -installsuffix static -ldflags " $(LDFLAGS) " $(shell dirname "$(TESTFILE)") -run "$(shell grep -oE '^func Test[[:alnum:]_]+' "$(TESTFILE)" | sed 's/^func //' | tr '\n' '|' | sed 's/|$$//')" $(EMBARGO_SKIP_FLAG) $(TESTARGS)
 
 testwininstaller: windows_amd64_install
 	@echo "Running Windows installer tests..."
-	export DDEV_TEST_USE_REAL_INSTALLER=true; go test -p 1 -timeout 30m -v ./winpkg -run TestWindowsInstaller $(TESTARGS)
+	export DDEV_TEST_USE_REAL_INSTALLER=true; go test -p 1 -timeout 15m -v ./winpkg -run TestWindowsInstaller $(EMBARGO_SKIP_FLAG) $(TESTARGS)
+
+# testwsl2scripts tests the manual WSL2 install PowerShell scripts. Unlike
+# testwininstaller it does not build the installer .exe (the scripts install
+# ddev from the apt repo and use mkcert.exe from PATH).
+testwsl2scripts:
+	@echo "Running WSL2 install-script tests..."
+	export DDEV_TEST_USE_REAL_INSTALLER=true; go test -p 1 -timeout 15m -v ./winpkg -run TestWSL2InstallScripts $(EMBARGO_SKIP_FLAG) $(TESTARGS)
 
 setup:
 	@mkdir -p $(GOTMP)/{bin/linux_arm64,bin/linux_amd64,bin/darwin_arm64,bin/darwin_amd64,bin/windows_amd64,bin/windows_arm64,src,pkg/mod/cache,.cache}
 	@mkdir -p $(TESTTMP)
+	@if [ -n "$(GOTESTSUM_JSONFILE_DIR)" ]; then mkdir -p "$(GOTESTSUM_JSONFILE_DIR)"; fi
 
-# Required static analysis targets used in circleci - these cause fail if they don't work
-staticrequired: setup golangci-lint markdownlint mkdocs
+# Required static analysis targets for pre-push.
+staticrequired: setup golangci-lint markdownlint zensical check-image-tags
+
+# A changed image whose tag never made it into versionconstants.go ships a
+# binary pulling tags nothing builds. Checked rather than fixed here, because
+# fixing means a Docker build - run `make` for that.
+.PHONY: check-image-tags
+check-image-tags:
+	@containers/check-image-tags.sh
+
+# Fail rather than skip when a required tool is absent. These targets used to
+# print a note and exit 0, so `make staticrequired` reported success while
+# silently running nothing -- the worst of both worlds, since it looks checked.
+#
+# $(2) replaces the install hint, for a tool install-dev-tools.sh does not
+# carry: that script covers only the Python and Node docs tooling.
+define require_tool
+	@PATH="$(DEV_TOOLS_PATH):$$PATH"; command -v $(1) >/dev/null 2>&1 || { \
+		echo "$(1) is required but was not found on PATH."; \
+		echo "$(if $(2),$(2),Install the development tools with: scripts/install-dev-tools.sh)"; \
+		$(if $(2),,echo "Expected location: $(DEV_TOOLS_DIR)";) \
+		exit 1; \
+	}
+endef
+
+# Check for a tool, then run it. The PATH= prefix is not redundant with the
+# export at the top of this file: GNU make 3.81, still /usr/bin/make on macOS,
+# execs a recipe line with no shell metacharacters itself and looks the command
+# up in make's own PATH rather than the exported one, so a bare
+# `pyspelling --config ...` dies with "No such file or directory" even though
+# the `command -v pyspelling` on the line before it just succeeded. The prefix
+# forces the line through $(SHELL), which does have the exported PATH.
+# $(2) must not contain commas; $(call) would split them into further
+# arguments. $(3) is the optional install hint that require_tool documents.
+define run_tool
+	$(call require_tool,$(1),$(3))
+	@PATH="$(DEV_TOOLS_PATH):$$PATH" $(1) $(2)
+endef
 
 # Best to install markdownlint-cli locally with "npm install -g markdownlint-cli"
 markdownlint:
 	@echo "markdownlint: "
-	@CMD="markdownlint *.md docs/content 2>&1"; \
-	set -eu -o pipefail; \
-	if command -v markdownlint >/dev/null 2>&1 ; then \
-		$$CMD; \
-	else \
-		echo "Skipping markdownlint as not installed (see .envrc file)"; \
-	fi
+	$(call run_tool,markdownlint,*.md docs/content 2>&1)
 
-# Install mkdocs locally using
+# DDEV_MD_FILES overrides the default *.md docs/content scope
+.PHONY: markdownlint-fix
+markdownlint-fix:
+	@echo "markdownlint --fix: "
+	$(call run_tool,markdownlint,--fix $(if $(DDEV_MD_FILES),$(DDEV_MD_FILES),*.md docs/content) 2>&1)
+
+# Install zensical locally using
 # https://docs.ddev.com/en/stable/developers/testing-docs/
-mkdocs:
-	@echo "mkdocs: "
-	@CMD="mkdocs build -d /tmp/mkdocsbuild"; \
-	if command -v mkdocs >/dev/null 2>&1; then \
-		$$CMD ; \
-	else \
-		echo "Not running mkdocs because it's not installed (see .envrc file)"; \
-	fi
+zensical:
+	@echo "zensical: "
+	$(call run_tool,zensical,build --strict)
 
-# To see what the docs will look like, you can use `make mkdocs-serve`
-# It does require installing mkdocs and its requirements
+# To see what the docs will look like, you can use `make zensical-serve`
+# It does require installing zensical: pip install zensical
 # See https://docs.ddev.com/en/stable/developers/testing-docs/
-mkdocs-serve:
-	@if command -v mkdocs >/dev/null ; then \
-		mkdocs serve; \
-	else \
-		echo "mkdocs is not installed (see .envrc file)" && exit 2; \
-	fi; \
+zensical-serve:
+	$(call run_tool,zensical,serve)
+
+mkdocs: zensical
+mkdocs-serve: zensical-serve
 
 # Install linkspector locally with "sudo npm install -g @umbrelladocs/linkspector"
 linkspector:
 	@echo "linkspector: "
-	@if command -v linkspector >/dev/null 2>&1; then \
-		linkspector check; \
-	else \
-		echo "Not running linkspector because it's not installed (see .envrc file)"; \
-	fi
+	$(call run_tool,linkspector,check)
 
 
 # Best to install pyspelling locally with "sudo -H pip3 install pyspelling pymdown-extensions". Also requires aspell, `sudo apt-get install aspell"
 pyspelling:
 	@echo "pyspelling: "
-	@CMD="pyspelling --config .spellcheck.yml"; \
-	set -eu -o pipefail; \
-	if command -v pyspelling >/dev/null 2>&1 ; then \
-		$$CMD; \
-	else \
-		echo "Not running pyspelling because it's not installed (see scripts/install-dev-tools.sh)"; \
-	fi
+	$(call run_tool,pyspelling,--config .spellcheck.yml)
 
 # Install textlint locally with `npm install -g textlint textlint-filter-rule-comments textlint-rule-no-todo textlint-rule-stop-words textlint-rule-terminology`
 textlint:
 	@echo "textlint: "
-	@CMD="textlint {README.md,version-history.md,docs/**}"; \
-	set -eu -o pipefail; \
-	if command -v textlint >/dev/null 2>&1 ; then \
-		$$CMD; \
-	else \
-		echo "textlint is not installed (see scripts/install-dev-tools.sh)"; \
-	fi
+	$(call run_tool,textlint,README.md docs/**)
 
 darwin_amd64_signed: $(GOTMP)/bin/darwin_amd64/ddev $(GOTMP)/bin/darwin_amd64/ddev-hostname
-	@if [ -z "$(DDEV_MACOS_SIGNING_PASSWORD)" ]; then \
-		echo "Skipping signing ddev for macOS, no DDEV_MACOS_SIGNING_PASSWORD provided"; \
+	@if [ -z "$(DDEV_MACOS_SIGNING_PASSWORD)" ] || [ -z "$(DDEV_MACOS_CERT_FILE)" ]; then \
+		echo "Skipping signing ddev for macOS; DDEV_MACOS_SIGNING_PASSWORD and DDEV_MACOS_CERT_FILE are required"; \
 	else \
 		for bin in $^; do \
 			set -o errexit -o pipefail; \
 			codesign --remove-signature "$$bin" || true; \
-			$(CURL) -s --retry 5 --retry-delay 5 --retry-connrefused --retry-all-errors https://raw.githubusercontent.com/ddev/signing_tools/master/macos_sign.sh | \
-				bash -s - --signing-password="$(DDEV_MACOS_SIGNING_PASSWORD)" --cert-file=certfiles/ddev_developer_id_cert.p12 --cert-name="Developer ID Application: Localdev Foundation (9HQ298V2BW)" --target-binary="$$bin"; \
+			$(CURL) -s --retry 5 --retry-delay 5 --retry-connrefused --retry-all-errors $(SIGNING_TOOLS_RAW_URL)/macos_sign.sh | \
+				bash -s - --signing-password="$(DDEV_MACOS_SIGNING_PASSWORD)" --cert-file="$(DDEV_MACOS_CERT_FILE)" --cert-name="$(DDEV_MACOS_CERT_NAME)" --target-binary="$$bin"; \
 		done; \
 	fi
 darwin_arm64_signed: $(GOTMP)/bin/darwin_arm64/ddev $(GOTMP)/bin/darwin_arm64/ddev-hostname
-	@if [ -z "$(DDEV_MACOS_SIGNING_PASSWORD)" ]; then \
-		echo "Skipping signing ddev for macOS, no DDEV_MACOS_SIGNING_PASSWORD provided"; \
+	@if [ -z "$(DDEV_MACOS_SIGNING_PASSWORD)" ] || [ -z "$(DDEV_MACOS_CERT_FILE)" ]; then \
+		echo "Skipping signing ddev for macOS; DDEV_MACOS_SIGNING_PASSWORD and DDEV_MACOS_CERT_FILE are required"; \
 	else \
 		for bin in $^; do \
 			set -o errexit -o pipefail; \
 			codesign --remove-signature "$$bin" || true; \
-			$(CURL) -s --retry 5 --retry-delay 5 --retry-connrefused --retry-all-errors https://raw.githubusercontent.com/ddev/signing_tools/master/macos_sign.sh | \
-				bash -s - --signing-password="$(DDEV_MACOS_SIGNING_PASSWORD)" --cert-file=certfiles/ddev_developer_id_cert.p12 --cert-name="Developer ID Application: Localdev Foundation (9HQ298V2BW)" --target-binary="$$bin"; \
+			$(CURL) -s --retry 5 --retry-delay 5 --retry-connrefused --retry-all-errors $(SIGNING_TOOLS_RAW_URL)/macos_sign.sh | \
+				bash -s - --signing-password="$(DDEV_MACOS_SIGNING_PASSWORD)" --cert-file="$(DDEV_MACOS_CERT_FILE)" --cert-name="$(DDEV_MACOS_CERT_NAME)" --target-binary="$$bin"; \
 		done; \
 	fi
 darwin_amd64_notarized: darwin_amd64_signed
-	@if [ -z "$(DDEV_MACOS_APP_PASSWORD)" ]; then echo "Skipping notarizing ddev for macOS, no DDEV_MACOS_APP_PASSWORD provided"; else \
+	@if [ -z "$(DDEV_MACOS_APP_PASSWORD)" ] || [ -z "$(DDEV_MACOS_SIGNING_PASSWORD)" ] || [ -z "$(DDEV_MACOS_CERT_FILE)" ]; then echo "Skipping notarizing ddev for macOS; DDEV_MACOS_APP_PASSWORD, DDEV_MACOS_SIGNING_PASSWORD, and DDEV_MACOS_CERT_FILE are required"; else \
 		set -o errexit -o pipefail; \
 		echo "Notarizing $(GOTMP)/bin/darwin_amd64/ddev and ddev-hostname ..." ; \
-		$(CURL) -sSL --retry 5 --retry-delay 5 --retry-connrefused --retry-all-errors -f https://raw.githubusercontent.com/ddev/signing_tools/master/macos_notarize.sh | bash -s -  --app-specific-password=$(DDEV_MACOS_APP_PASSWORD) --apple-id=notarizer@localdev.foundation --primary-bundle-id=com.ddev.ddev --target-binary="$(GOTMP)/bin/darwin_amd64/ddev" ; \
-		$(CURL) -sSL --retry 5 --retry-delay 5 --retry-connrefused --retry-all-errors -f https://raw.githubusercontent.com/ddev/signing_tools/master/macos_notarize.sh | bash -s -  --app-specific-password=$(DDEV_MACOS_APP_PASSWORD) --apple-id=notarizer@localdev.foundation --primary-bundle-id=com.ddev.ddev --target-binary="$(GOTMP)/bin/darwin_amd64/ddev-hostname" ; \
+		$(CURL) -sSL --retry 5 --retry-delay 5 --retry-connrefused --retry-all-errors -f $(SIGNING_TOOLS_RAW_URL)/macos_notarize.sh | bash -s -  --app-specific-password=$(DDEV_MACOS_APP_PASSWORD) --apple-id=$(DDEV_MACOS_APPLE_ID) --team-id=$(DDEV_MACOS_TEAM_ID) --primary-bundle-id=com.ddev.ddev --target-binary="$(GOTMP)/bin/darwin_amd64/ddev" ; \
+		$(CURL) -sSL --retry 5 --retry-delay 5 --retry-connrefused --retry-all-errors -f $(SIGNING_TOOLS_RAW_URL)/macos_notarize.sh | bash -s -  --app-specific-password=$(DDEV_MACOS_APP_PASSWORD) --apple-id=$(DDEV_MACOS_APPLE_ID) --team-id=$(DDEV_MACOS_TEAM_ID) --primary-bundle-id=com.ddev.ddev --target-binary="$(GOTMP)/bin/darwin_amd64/ddev-hostname" ; \
 	fi
 darwin_arm64_notarized: darwin_arm64_signed
-	@if [ -z "$(DDEV_MACOS_APP_PASSWORD)" ]; then echo "Skipping notarizing ddev for macOS, no DDEV_MACOS_APP_PASSWORD provided"; else \
+	@if [ -z "$(DDEV_MACOS_APP_PASSWORD)" ] || [ -z "$(DDEV_MACOS_SIGNING_PASSWORD)" ] || [ -z "$(DDEV_MACOS_CERT_FILE)" ]; then echo "Skipping notarizing ddev for macOS; DDEV_MACOS_APP_PASSWORD, DDEV_MACOS_SIGNING_PASSWORD, and DDEV_MACOS_CERT_FILE are required"; else \
 		set -o errexit -o pipefail; \
 		echo "Notarizing $(GOTMP)/bin/darwin_arm64/ddev and ddev-hostname ..." ; \
-		$(CURL) -sSL --retry 5 --retry-delay 5 --retry-connrefused --retry-all-errors -f https://raw.githubusercontent.com/ddev/signing_tools/master/macos_notarize.sh | bash -s - --app-specific-password=$(DDEV_MACOS_APP_PASSWORD) --apple-id=notarizer@localdev.foundation --primary-bundle-id=com.ddev.ddev --target-binary="$(GOTMP)/bin/darwin_arm64/ddev" ; \
-		$(CURL) -sSL --retry 5 --retry-delay 5 --retry-connrefused --retry-all-errors -f https://raw.githubusercontent.com/ddev/signing_tools/master/macos_notarize.sh | bash -s - --app-specific-password=$(DDEV_MACOS_APP_PASSWORD) --apple-id=notarizer@localdev.foundation --primary-bundle-id=com.ddev.ddev --target-binary="$(GOTMP)/bin/darwin_arm64/ddev-hostname" ; \
+		$(CURL) -sSL --retry 5 --retry-delay 5 --retry-connrefused --retry-all-errors -f $(SIGNING_TOOLS_RAW_URL)/macos_notarize.sh | bash -s - --app-specific-password=$(DDEV_MACOS_APP_PASSWORD) --apple-id=$(DDEV_MACOS_APPLE_ID) --team-id=$(DDEV_MACOS_TEAM_ID) --primary-bundle-id=com.ddev.ddev --target-binary="$(GOTMP)/bin/darwin_arm64/ddev" ; \
+		$(CURL) -sSL --retry 5 --retry-delay 5 --retry-connrefused --retry-all-errors -f $(SIGNING_TOOLS_RAW_URL)/macos_notarize.sh | bash -s - --app-specific-password=$(DDEV_MACOS_APP_PASSWORD) --apple-id=$(DDEV_MACOS_APPLE_ID) --team-id=$(DDEV_MACOS_TEAM_ID) --primary-bundle-id=com.ddev.ddev --target-binary="$(GOTMP)/bin/darwin_arm64/ddev-hostname" ; \
 	fi
 
 windows_amd64_install: $(GOTMP)/bin/windows_amd64/ddev_windows_amd64_installer.exe
 windows_arm64_install: $(GOTMP)/bin/windows_arm64/ddev_windows_arm64_installer.exe
 windows_install: windows_amd64_install windows_arm64_install
 
-windows_amd64_sign_binaries: $(GOTMP)/bin/windows_amd64/ddev.exe $(GOTMP)/bin/windows_amd64/ddev-hostname.exe $(GOTMP)/bin/windows_amd64/mkcert.exe
-	@if [ "$(DDEV_WINDOWS_SIGN)" != "true" ] ; then echo "Skipping signing amd64 ddev.exe, DDEV_WINDOWS_SIGN not set"; else echo "Signing windows amd64 binaries..." && signtool sign -fd SHA256 ".gotmp/bin/windows_amd64/ddev.exe" ".gotmp/bin/windows_amd64/ddev-hostname.exe" ".gotmp/bin/windows_amd64/mkcert.exe" ".gotmp/bin/windows_amd64/ddev_gen_autocomplete.exe"; fi
+# A Windows release is assembled in three phases because signtool runs only on
+# the signing host, while everything else cross-builds on Linux: the binaries
+# are built and signed, NSIS packs the signed binaries into an installer, and
+# the installer is then signed itself. The signing and packaging targets take
+# no build prerequisites, so main-build.yml can run one on a machine holding
+# nothing but signtool and the files it downloaded.
+windows_amd64_binaries: $(GOTMP)/bin/windows_amd64/ddev.exe $(GOTMP)/bin/windows_amd64/ddev-hostname.exe $(GOTMP)/bin/windows_amd64/mkcert.exe $(GOTMP)/bin/windows_amd64/mkcert_license.txt
+windows_arm64_binaries: $(GOTMP)/bin/windows_arm64/ddev.exe $(GOTMP)/bin/windows_arm64/ddev-hostname.exe $(GOTMP)/bin/windows_arm64/mkcert.exe $(GOTMP)/bin/windows_arm64/mkcert_license.txt
+windows_binaries: windows_amd64_binaries windows_arm64_binaries
 
-windows_arm64_sign_binaries: $(GOTMP)/bin/windows_arm64/ddev.exe $(GOTMP)/bin/windows_arm64/ddev-hostname.exe $(GOTMP)/bin/windows_arm64/mkcert.exe
-	@if [ "$(DDEV_WINDOWS_SIGN)" != "true" ] ; then echo "Skipping signing arm64 ddev.exe, DDEV_WINDOWS_SIGN not set"; else echo "Signing windows arm64 binaries..." && signtool sign -fd SHA256 ".gotmp/bin/windows_arm64/ddev.exe" ".gotmp/bin/windows_arm64/ddev-hostname.exe" ".gotmp/bin/windows_arm64/mkcert.exe" ".gotmp/bin/windows_arm64/ddev_gen_autocomplete.exe"; fi
+windows_%_sign_binaries:
+	@if [ "$(DDEV_WINDOWS_SIGN)" != "true" ] ; then echo "Skipping signing $* binaries, DDEV_WINDOWS_SIGN not set"; else \
+		echo "Signing windows $* binaries..." && \
+		signtool sign -fd SHA256 "$(GOTMP)/bin/windows_$*/ddev.exe" "$(GOTMP)/bin/windows_$*/ddev-hostname.exe" "$(GOTMP)/bin/windows_$*/mkcert.exe" "$(GOTMP)/bin/windows_$*/ddev_gen_autocomplete.exe"; \
+	fi
 
 windows_sign_binaries: windows_amd64_sign_binaries windows_arm64_sign_binaries
 
-$(GOTMP)/bin/windows_amd64/ddev_windows_amd64_installer.exe: windows_amd64_sign_binaries linux_amd64 $(GOTMP)/bin/windows_amd64/mkcert_license.txt winpkg/ddev_windows_installer.nsi
-	@makensis -DTARGET_ARCH=amd64 -DVERSION=$(VERSION) winpkg/ddev_windows_installer.nsi  # brew install makensis, apt-get install nsis, or install on Windows
-	@if [ "$(DDEV_WINDOWS_SIGN)" != "true" ] ; then echo "Skipping signing amd64 $@, DDEV_WINDOWS_SIGN not set"; else echo "Signing windows installer amd64 binary..." && signtool sign -fd SHA256 "$@"; fi
-	$(SHASUM) $@ >$@.sha256.txt
+# Packs whatever is already in $(GOTMP)/bin/windows_$* and $(GOTMP)/bin/linux_$*.
+windows_%_package:
+	@makensis -DTARGET_ARCH=$* -DVERSION=$(VERSION) winpkg/ddev_windows_installer.nsi  # brew install makensis, apt-get install nsis, or install on Windows
 
-$(GOTMP)/bin/windows_arm64/ddev_windows_arm64_installer.exe: windows_arm64_sign_binaries linux_arm64  $(GOTMP)/bin/windows_arm64/mkcert_license.txt winpkg/ddev_windows_installer.nsi
-	@makensis -DTARGET_ARCH=arm64 -DVERSION=$(VERSION) winpkg/ddev_windows_installer.nsi  # brew install makensis, apt-get install nsis, or install on Windows
-	@if [ "$(DDEV_WINDOWS_SIGN)" != "true" ] ; then echo "Skipping signing arm64 $@, DDEV_WINDOWS_SIGN not set"; else echo "Signing windows installer arm64 binary..." && signtool sign -fd SHA256 "$@"; fi
-	$(SHASUM) $@ >$@.sha256.txt
+windows_%_sign_installer:
+	@if [ "$(DDEV_WINDOWS_SIGN)" != "true" ] ; then echo "Skipping signing $* installer, DDEV_WINDOWS_SIGN not set"; else \
+		echo "Signing windows $* installer..." && \
+		signtool sign -fd SHA256 "$(GOTMP)/bin/windows_$*/ddev_windows_$*_installer.exe"; \
+	fi
+	$(MAKE) windows_$*_installer_checksum
+
+# Separate from signing because signing rewrites the installer, so whichever
+# machine signs last has to be the one that hashes it.
+windows_%_installer_checksum:
+	$(SHASUM) $(GOTMP)/bin/windows_$*/ddev_windows_$*_installer.exe >$(GOTMP)/bin/windows_$*/ddev_windows_$*_installer.exe.sha256.txt
+
+# The wsl_amd64/wsl_arm64 targets above rebuild the Windows binaries first,
+# discarding any signature applied elsewhere. This copies what is already there.
+wsl_%_copy:
+	mkdir -p $(GOTMP)/bin/wsl_$*
+	cp $(GOTMP)/bin/windows_$*/ddev-hostname.exe $(GOTMP)/bin/windows_$*/mkcert.exe $(GOTMP)/bin/wsl_$*/
+
+$(GOTMP)/bin/windows_amd64/ddev_windows_amd64_installer.exe: windows_amd64_binaries linux_amd64 $(GOTMP)/bin/linux_amd64/mkcert winpkg/ddev_windows_installer.nsi
+	$(MAKE) windows_amd64_sign_binaries
+	$(MAKE) windows_amd64_package
+	$(MAKE) windows_amd64_sign_installer
+
+$(GOTMP)/bin/windows_arm64/ddev_windows_arm64_installer.exe: windows_arm64_binaries linux_arm64 $(GOTMP)/bin/linux_arm64/mkcert winpkg/ddev_windows_installer.nsi
+	$(MAKE) windows_arm64_sign_binaries
+	$(MAKE) windows_arm64_package
+	$(MAKE) windows_arm64_sign_installer
 
 no_v_version:
 	@echo $(NO_V_VERSION)
 
-chocolatey: $(GOTMP)/bin/windows_amd64/ddev_windows_amd64_installer.exe
+# Packages the installer already present, for the same reason as
+# windows_%_installer_checksum.
+chocolatey:
 	rm -rf $(GOTMP)/bin/windows_amd64/chocolatey && cp -r winpkg/chocolatey $(GOTMP)/bin/windows_amd64/chocolatey
 	perl -pi -e 's/REPLACE_DDEV_VERSION/$(NO_V_VERSION)/g' $(GOTMP)/bin/windows_amd64/chocolatey/*.nuspec
 	perl -pi -e 's/REPLACE_DDEV_VERSION/$(VERSION)/g' $(GOTMP)/bin/windows_amd64/chocolatey/tools/*.ps1
 	perl -pi -e 's/REPLACE_GITHUB_ORG/$(REPOSITORY_OWNER)/g' $(GOTMP)/bin/windows_amd64/chocolatey/*.nuspec $(GOTMP)/bin/windows_amd64/chocolatey/tools/*.ps1 #GITHUB_ORG is for testing, for example when the binaries are on rfay acct
-	perl -pi -e "s/REPLACE_INSTALLER_CHECKSUM/$$(cat $(GOTMP)/bin/windows_amd64/ddev_windows_amd64installer.exe.sha256.txt | awk '{ print $$1; }')/g" $(GOTMP)/bin/windows_amd64/chocolatey/tools/*
+	perl -pi -e "s/REPLACE_INSTALLER_CHECKSUM/$$(cat $(GOTMP)/bin/windows_amd64/ddev_windows_amd64_installer.exe.sha256.txt | awk '{ print $$1; }')/g" $(GOTMP)/bin/windows_amd64/chocolatey/tools/*
 	if [[ "$(NO_V_VERSION)" =~ -g[0-9a-f]+ ]]; then \
 		echo "Skipping chocolatey build on interim version"; \
 	else \
@@ -314,23 +476,27 @@ chocolatey: $(GOTMP)/bin/windows_amd64/ddev_windows_amd64_installer.exe
 	fi
 
 $(GOTMP)/bin/windows_amd64/mkcert.exe $(GOTMP)/bin/windows_amd64/mkcert_license.txt:
-	$(CURL) --fail -S --retry 5 --retry-delay 5 --retry-connrefused --retry-all-errors -JL -s -o $(GOTMP)/bin/windows_amd64/mkcert.exe "https://dl.filippo.io/mkcert/latest?for=windows/amd64"
-	$(CURL) --fail -sSL --retry 5 --retry-delay 5 --retry-connrefused --retry-all-errors -o $(GOTMP)/bin/windows_amd64/mkcert_license.txt -O https://raw.githubusercontent.com/FiloSottile/mkcert/master/LICENSE
+	$(CURL) --fail -S $(DOWNLOAD_RETRY) -JL -s -o $(GOTMP)/bin/windows_amd64/mkcert.exe "https://github.com/FiloSottile/mkcert/releases/download/$(MKCERT_VERSION)/mkcert-$(MKCERT_VERSION)-windows-amd64.exe"
+	$(CURL) --fail -sSL $(DOWNLOAD_RETRY) -o $(GOTMP)/bin/windows_amd64/mkcert_license.txt -O https://raw.githubusercontent.com/FiloSottile/mkcert/master/LICENSE
 
 $(GOTMP)/bin/windows_arm64/mkcert.exe $(GOTMP)/bin/windows_arm64/mkcert_license.txt:
-	$(CURL) --fail -JL -S --retry 5 --retry-delay 5 --retry-connrefused --retry-all-errors -s -o $(GOTMP)/bin/windows_arm64/mkcert.exe "https://dl.filippo.io/mkcert/latest?for=windows/arm64"
-	$(CURL) --fail -sSL --retry 5 --retry-delay 5 --retry-connrefused --retry-all-errors -o $(GOTMP)/bin/windows_arm64/mkcert_license.txt -O https://raw.githubusercontent.com/FiloSottile/mkcert/master/LICENSE
+	$(CURL) --fail -JL -S $(DOWNLOAD_RETRY) -s -o $(GOTMP)/bin/windows_arm64/mkcert.exe "https://github.com/FiloSottile/mkcert/releases/download/$(MKCERT_VERSION)/mkcert-$(MKCERT_VERSION)-windows-arm64.exe"
+	$(CURL) --fail -sSL $(DOWNLOAD_RETRY) -o $(GOTMP)/bin/windows_arm64/mkcert_license.txt -O https://raw.githubusercontent.com/FiloSottile/mkcert/master/LICENSE
 
-# Best to install golangci-lint locally with "curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b /usr/local/bin v1.31.0"
+# golangci-lint is a Go binary, so it comes from neither install-dev-tools.sh
+# nor DEV_TOOLS_DIR. A variable because both targets below need it.
+GOLANGCI_LINT_HINT = Install golangci-lint from https://golangci-lint.run/docs/welcome/install/local/
+
 golangci-lint:
 	@echo "golangci-lint: "
-	@CMD="golangci-lint run $(SRC_AND_UNDER)"; \
-	set -eu -o pipefail; \
-	if command -v golangci-lint >/dev/null 2>&1; then \
-		$$CMD; \
-	else \
-		echo "Skipping golangci-lint as not installed"; \
-	fi
+	$(call run_tool,golangci-lint,run $(SRC_AND_UNDER),$(GOLANGCI_LINT_HINT))
+
+# `run --fix` applies the gofmt formatter too, so there is no gofmt target.
+# DDEV_GO_FILES overrides the default $(SRC_AND_UNDER) scope
+.PHONY: golangci-lint-fix
+golangci-lint-fix:
+	@echo "golangci-lint --fix: "
+	$(call run_tool,golangci-lint,run --fix $(if $(DDEV_GO_FILES),$(DDEV_GO_FILES),$(SRC_AND_UNDER)),$(GOLANGCI_LINT_HINT))
 
 go-mod-update:
 	@echo "bump golang dependencies: "
@@ -338,11 +504,20 @@ go-mod-update:
 	go mod tidy
 	go mod vendor
 
-quickstart-test: build
+quickstart-test: build dummy-project
 	@echo "quickstart-test:"
 	@echo DDEV_BINARY_FULLPATH=$(DDEV_BINARY_FULLPATH)
+	@echo "Running ddev version check..."
+	@$(DDEV_BINARY_FULLPATH) version
 	export PATH="$(DDEV_PATH):$$PATH" DDEV_NO_INSTRUMENTATION=true CGO_ENABLED=$(CGO_ENABLED) DDEV_BINARY_FULLPATH=$(DDEV_BINARY_FULLPATH); bats docs/tests
+# bats refuses ever to exit until all processes started by it
+# have exited. So we don't want to let bats/ddev start mutagen daemon
+dummy-project: build
+	mkdir -p ~/tmp/dummy-project && pushd ~/tmp/dummy-project >/dev/null && $(DDEV_BINARY_FULLPATH) config --performance-mode=mutagen >/dev/null 2>&1 && popd >/dev/null
+	$(DDEV_BINARY_FULLPATH) start -y dummy-project >/dev/null 2>&1
 
+DDEV_BINARY_FULLPATH:
+	@echo $(DDEV_BINARY_FULLPATH)
 version:
 	@echo VERSION:$(VERSION)
 

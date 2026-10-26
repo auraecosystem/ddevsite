@@ -1,17 +1,29 @@
 <!-- 
   PR titles have very precise rules, please read 
   https://docs.ddev.com/en/stable/developers/building-contributing/#pull-request-title-guidelines
+
+  If this is a nontrivial contribution, please create an issue for discussion first, or discuss it first in Discord, https://ddev.com/s/discord. This will save you time and help direct the feature.
+
+  DDEV is community-funded — if you or your team rely on DDEV, see https://ddev.com/sponsor.
 -->
+
+## Short Summary (TL;DR)
+
+<!-- Required. One or two sentences a reviewer can read at a glance: what this changes, and why. Write it last, but put it here first. If it needs a paragraph, the detail belongs in the sections below. -->
 
 ## The Issue
 
-- #<issue number>
+- Fixes #REPLACE_ME_WITH_RELATED_ISSUE_NUMBER
 
 <!-- Provide a brief description of the issue. -->
 
 ## How This PR Solves The Issue
 
+<!-- Describe the key change(s) in this PR that address the issue above. -->
+
 ## Manual Testing Instructions
+
+<!-- If this PR changes logic, consider adding additional steps or context to the instructions below. -->
 
 ## Automated Testing Overview
 

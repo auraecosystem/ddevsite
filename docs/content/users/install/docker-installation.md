@@ -6,193 +6,706 @@ You’ll need a Docker provider on your system before you can [install DDEV](dde
 
     ## macOS
 
-    Install one of the supported Docker providers:
+    Choose a container runtime:
 
-    * [OrbStack](#orbstack): Recommended, easiest to install, most performant, commercial, not open-source.
-    * [Lima](#lima): Free, open-source.
-    * [Docker Desktop](#docker-desktop-for-mac): Familiar, popular, not open-source, may require license, may be unstable.
-    * [Rancher Desktop](#rancher-desktop): Free, open-source, simple installation, slower startup.
-    * [Colima](#colima): Free, open-source. Depends on separate Lima installation (managed by Homebrew).
+    * **Docker** (recommended) - The best-tested option. Install OrbStack, Lima, Docker Desktop, Rancher Desktop, or Colima.
+    * **Podman rootless** - Rootless by default; a good fit where Docker is forbidden. Can't use the default ports 80/443, so DDEV must be configured to use unprivileged ports.
 
-    ### OrbStack
+    === "Docker"
 
-    [OrbStack](https://orbstack.dev) is a newer Docker provider that is very popular with DDEV users because it’s fast, lightweight, and easy to install. It’s a good choice for most users. It is *not* open-source, and it is not free for professional use.
-    
-    1. Install OrbStack with `brew install orbstack` or [download it directly](https://orbstack.dev/download).
-    2. Run the OrbStack app (from Applications) to finish setup, choosing "Docker" as the option. Answer any prompts to allow OrbStack access.
+        Install one of the supported Docker providers:
 
-    ### Lima
+        * [OrbStack](#orbstack): Recommended, easiest to install, most performant, commercial, not open-source.
+        * [Lima](#lima): Free, open-source.
+        * [Docker Desktop](#docker-desktop-for-mac): Familiar, popular, not open-source, may require license, may be unstable.
+        * [Rancher Desktop](#rancher-desktop): Free, open-source, simple installation, slower startup.
+        * [Colima](#colima): Free, open-source. Depends on separate Lima installation (managed by Homebrew).
 
-    [Lima](https://github.com/lima-vm/lima) is a free and open-source project supported by the [Cloud Native Computing Foundation](https://cncf.io/).
+        ### OrbStack
 
-    1. Install Lima with `brew install lima`.
-    2. If you don't have the `docker` client (if `docker help` fails) then install it with `brew install docker`.
-    3. Create a 100GB VM in Lima with 4 CPUs, 6GB memory, and Cloudflare DNS. Adjust to your own needs:
-    ```
-    limactl create --name=default --vm-type=vz --mount-type=virtiofs --mount-writable --memory=6 --cpus=4 --disk=100 template://docker
-    docker context create lima-default --docker "host=unix://$HOME/.lima/default/sock/docker.sock"
-    docker context use lima-default
-    ```
-    After the initial run above, you can use `limactl start`.  Run `limactl list` to see configured setup.
+        [OrbStack](https://orbstack.dev) is a newer Docker provider that is very popular with DDEV users because it’s fast, lightweight, and easy to install. It’s a good choice for most users. It is *not* open-source, and it is not free for professional use.
 
-    When your computer restarts, you’ll need to `limactl start` again.
+        1. Install OrbStack with `brew install orbstack` or [download it directly](https://orbstack.dev/download).
+        2. Run the OrbStack app (from Applications) to finish setup, choosing "Docker" as the option. Answer any prompts to allow OrbStack access.
 
-    !!!warning "Docker contexts let the Docker client point at the right Docker server"
-        The Docker provider you're using is selected with `docker context`. You can see the available contexts with `docker context ls` and the currently selected one with `docker context show`. With the setup above you'll want `docker context use lima-default`.
+        ### Lima
 
-    !!!warning "Lima only mounts filesystems in your home directory unless you do further configuration"
-        By default, Lima only works with DDEV projects in your home directory. You must have your projects somewhere in your home directory for DDEV to work unless you do additional configuration. If your project is not in your home directory, you must add additional mounts, as described in [mounts example](https://github.com/lima-vm/lima/blob/e9423da6b7c60083aaa455a0c6ecb5c729edfe1f/examples/docker.yaml#L25-L28).
+        [Lima](https://github.com/lima-vm/lima) is a free and open-source project supported by the [Cloud Native Computing Foundation](https://cncf.io/).
 
-    ### Docker Desktop for Mac
+        1. Install Lima with `brew install lima`.
+        2. If you don't have the `docker` client (if `docker help` fails) then install it with `brew install docker`.
+        3. Create a 100GB VM in Lima with 4 CPUs, 6GB memory, and Cloudflare DNS. Adjust to your own needs:
+        ```
+        limactl create --name=default --vm-type=vz --mount-type=virtiofs --mount-writable --memory=6 --cpus=4 --disk=100 template:docker
+        docker context create lima-default --docker "host=unix://$HOME/.lima/default/sock/docker.sock"
+        docker context use lima-default
+        ```
+        After the initial run above, you can use `limactl start`.  Run `limactl list` to see configured setup.
 
-    Docker Desktop for Mac can be downloaded from [docker.com](https://www.docker.com/products/docker-desktop). It has long been supported by DDEV and has extensive automated testing. It is not open-source, may require a license for many users, and sometimes has stability problems.
+        When your computer restarts, you’ll need to `limactl start` again.
 
-    !!!warning "Ports unavailable?"
-        If you get messages like `Ports are not available... exposing port failed... is vmnetd running?` it means you need to check the "Allow privileged port mapping (requires password)" checkbox in the "Advanced" section of the Docker Desktop configuration. You may have to stop and restart Docker Desktop, and you may have to turn it off, restart Docker Desktop, turn it on again, restart Docker Desktop. (More extensive problem resolution is in [Docker Desktop issue](https://github.com/docker/for-mac/issues/6677).)
+        !!!warning "Docker contexts let the Docker client point at the right Docker server"
+            The Docker provider you're using is selected with `docker context`. You can see the available contexts with `docker context ls` and the currently selected one with `docker context show`. With the setup above you'll want `docker context use lima-default`.
 
-    ### Rancher Desktop
+        !!!warning "Lima only mounts filesystems in your home directory unless you do further configuration"
+            By default, Lima only works with DDEV projects in your home directory. You must have your projects somewhere in your home directory for DDEV to work unless you do additional configuration. If your project is not in your home directory, you must add additional mounts, as described in [mounts example](https://github.com/lima-vm/lima/blob/e9423da6b7c60083aaa455a0c6ecb5c729edfe1f/examples/docker.yaml#L25-L28).
 
-    Rancher Desktop is an easy-to-install free and open-source Docker provider. Install from [Rancher Desktop](https://rancherdesktop.io/). It has automated testing with DDEV. When installing, choose only the Docker option and turn off Kubernetes.
+        ### Docker Desktop for Mac
 
+        Docker Desktop for Mac can be downloaded from [docker.com](https://www.docker.com/products/docker-desktop). It has long been supported by DDEV and has extensive automated testing. It is not open-source, may require a license for many users, and sometimes has stability problems.
 
-    ### Colima
+        !!!warning "Ports unavailable?"
+            If you get messages like `Ports are not available... exposing port failed... is vmnetd running?` it means you need to check the "Allow privileged port mapping (requires password)" checkbox in the "Advanced" section of the Docker Desktop configuration. You may have to stop and restart Docker Desktop, and you may have to turn it off, restart Docker Desktop, turn it on again, restart Docker Desktop. (More extensive problem resolution is in [Docker Desktop issue](https://github.com/docker/for-mac/issues/6677).)
 
-    [Colima](https://github.com/abiosoft/colima) is a free and open-source project which bundles Lima.
+        ### Rancher Desktop
 
-    1. Install Colima with `brew install colima`, which also installs Lima and other dependencies.
-    2. If you don't have the `docker` client (if `docker help` fails) then install it with `brew install docker`.
-    3. Start Colima with 4 CPUs, 6GB memory, 100GB storage, and Cloudflare DNS, adjusting as needed:
+        Rancher Desktop is an easy-to-install free and open-source Docker provider. Install from [Rancher Desktop](https://rancherdesktop.io/). It has automated testing with DDEV. When installing, choose only the Docker option and turn off Kubernetes.
+
+        ### Colima
+
+        [Colima](https://github.com/abiosoft/colima) is a free and open-source project which bundles Lima.
+
+        1. Install Colima with `brew install colima`, which also installs Lima and other dependencies.
+        2. If you don't have the `docker` client (if `docker help` fails) then install it with `brew install docker`.
+        3. Start Colima with 4 CPUs, 6GB memory, 100GB storage, Cloudflare DNS, and SSH-agent forwarding, adjusting as needed:
+
+            ```bash
+            colima start --cpu 4 --memory 6 --disk 100 --vm-type=vz --mount-type=virtiofs --dns=1.1.1.1 --ssh-agent
+            ```
+
+        After the initial run above, you can use `colima start` or use `colima start -e` to edit the configuration file. Run `colima status` at any time to check Colima’s status.
+
+        !!!warning "Docker contexts let the Docker client point at the right Docker server"
+            Colima activates its own Docker context to prevent conflicts with Docker Desktop. If you run `docker context ls`, you’ll see a list of available contexts where the currently-active one is indicated with a `*`—which will be `colima` after you’ve started it. You can change to the default (Docker Desktop) with `docker context use default` or change back with `docker context use colima`. This means you can run Docker Desktop and Colima at the same time, but be mindful of which context you’re pointing at!
+
+        !!!warning "Colima can only work in your home directory unless you do further configuration"
+            By default, Colima only works with DDEV projects in your home directory. You need to have your projects somewhere in your home directory for DDEV to work unless you do additional configuration. See the `~/.colima/default/colima.yaml` for more information, or notes in [colima.yaml](https://github.com/abiosoft/colima/blob/main/embedded/defaults/colima.yaml#L160-L173).
+
+        ### Migrating Projects Between Docker Providers
+
+        * OrbStack has built-in migration of images and volumes from Docker Desktop.
+        * Move projects between other Docker providers using [How can I migrate from one Docker provider to another?](../usage/faq.md#how-can-i-migrate-from-one-docker-provider-to-another).
+
+    === "Podman rootless"
+
+        Podman on macOS runs containers in a lightweight VM managed by `podman machine`. You can also use [Podman Desktop](https://podman-desktop.io/) for a GUI.
+
+        !!!warning "Podman on macOS can't use ports 80/443"
+            Podman on macOS cannot bind to privileged ports (80/443), so you must configure DDEV to use unprivileged ports. After installing DDEV, run:
+
+            ```bash
+            ddev config global --router-http-port=8080 --router-https-port=8443
+            ```
+
+            Your projects will then be reachable at `https://yourproject.ddev.site:8443` instead of the standard `https://yourproject.ddev.site`.
+
+        ### Install Podman
+
+        Install Podman using Homebrew:
 
         ```bash
-        colima start --cpu 4 --memory 6 --disk 100 --vm-type=vz --mount-type=virtiofs --dns=1.1.1.1
+        brew install podman
         ```
 
-    After the initial run above, you can use `colima start` or use `colima start -e` to edit the configuration file. Run `colima status` at any time to check Colima’s status.
+        Or install [Podman Desktop](https://podman-desktop.io/docs/installation/macos-install) if you prefer a GUI. For more information, see the [official Podman installation guide for macOS](https://podman.io/docs/installation#macos) and the [Podman tutorials](https://github.com/containers/podman/tree/main/docs/tutorials#readme).
 
-    !!!warning "Docker contexts let the Docker client point at the right Docker server"
-        Colima activates its own Docker context to prevent conflicts with Docker Desktop. If you run `docker context ls`, you’ll see a list of available contexts where the currently-active one is indicated with a `*`—which will be `colima` after you’ve started it. You can change to the default (Docker Desktop) with `docker context use default` or change back with `docker context use colima`. This means you can run Docker Desktop and Colima at the same time, but be mindful of which context you’re pointing at!
+        ### Install the Docker CLI
 
-    !!!warning "Colima can only work in your home directory unless you do further configuration"
-        By default, Colima only works with DDEV projects in your home directory. You need to have your projects somewhere in your home directory for DDEV to work unless you do additional configuration. See the `~/.colima/default/colima.yaml` for more information, or notes in [colima.yaml](https://github.com/abiosoft/colima/blob/main/embedded/defaults/colima.yaml#L160-L173).
+        Podman provides a Docker-compatible API, so you can use the Docker CLI as a front-end for Podman. This lets you use familiar `docker` commands, switch between runtimes with Docker contexts, and keep compatibility with tools that expect the `docker` command.
 
-    #### Migrating Projects Between Docker Providers
+        ```bash
+        brew install docker
+        ```
 
-    * OrbStack has built-in migration of images and volumes from Docker Desktop.
-    * Move projects between other Docker providers using [How can I migrate from one Docker provider to another?](../usage/faq.md#how-can-i-migrate-from-one-docker-provider-to-another).
+        ### Initialize and start the Podman machine
+
+        The Podman machine gets only 2GB of memory by default, which runs out with more than a project or two running, so create it with 6GB, adjusting to your own needs:
+
+        ```bash
+        # check `podman machine init -h` for more options
+        podman machine init --provider applehv --memory 6144
+        podman machine start
+        ```
+
+        ### Point the Docker CLI at Podman
+
+        ```bash
+        SOCKET=$(podman machine inspect | jq -r '.[0].ConnectionInfo.PodmanSocket.Path')
+        docker context create podman-rootless \
+            --description "Podman (rootless)" \
+            --docker "host=unix://${SOCKET}"
+        docker context use podman-rootless
+        docker ps
+        ```
+
+        ### Reclaim disk space
+
+        !!!warning "The Podman machine doesn't reclaim its own disk space"
+            The `podman machine` VM grows over time and does not shrink automatically, even after you remove images and containers. Periodically reclaim the freed space by trimming the VM's filesystem:
+
+            ```bash
+            podman machine start
+            podman machine ssh 'sudo fstrim -av'
+            ```
 
 === "Linux"
 
     ## Linux
 
-    * [Docker](#docker-for-linux): Recommended, free, open-source, best performance and stability.
-    * [Docker rootless](#docker-rootless): Experimental support, free, open-source, more complex setup, has limitations.
-    * [Podman](#podman-for-linux): Experimental support, free, open-source, more complex setup, has limitations.
-    * [Docker Desktop](#docker-desktop-for-linux): Not open-source, may require license, may be unstable, doesn't have explicit support from DDEV and doesn't have automated test coverage.
+    Choose a container runtime:
 
-    ### Docker for Linux
+    * **Docker** (recommended) - The best-tested option, with the best performance and stability. Install Docker CE or Docker Desktop.
+    * **Docker rootless** - Runs the Docker daemon without root, which reduces the attack surface. Full Docker compatibility.
+    * **Podman rootless** - Rootless by default; a good fit where Docker is forbidden. More setup and slower than Docker.
 
-    The best way to install Docker on Linux is to use your native package management tool (`apt`, `dnf`, etc.) with the official Docker repository. While many Linux distributions provide Docker packages in their own repositories, these are often outdated and may not include the latest features required for stability in a development environment like DDEV. To ensure you're using a supported version, install Docker directly from the official Docker repository. 
+    === "Docker"
 
-    Follow these distribution-specific instructions to set up Docker Engine from the official Docker repository:
+        Install one of the supported Docker providers:
 
-    * [Ubuntu](https://docs.docker.com/install/linux/docker-ce/ubuntu/)
-    * [CentOS](https://docs.docker.com/install/linux/docker-ce/centos/)
-    * [Debian](https://docs.docker.com/install/linux/docker-ce/debian/)
-    * [Fedora](https://docs.docker.com/install/linux/docker-ce/fedora/)
-    * [binaries](https://docs.docker.com/install/linux/docker-ce/binaries/)
+        * [Docker CE](#docker-for-linux): Recommended, free, open-source, best performance and stability. Install from the official Docker repository.
+        * [Docker Desktop for Linux](#docker-desktop-for-linux): Not explicitly supported by DDEV and has no automated testing.
 
-    Linux installation **absolutely** requires adding your Linux user to the `docker` group, and configuring the Docker daemon to start at boot. See [Post-installation steps for Linux](https://docs.docker.com/engine/install/linux-postinstall/).
+        ### Docker for Linux
 
-    !!!warning "Don’t `sudo` with `docker` or `ddev`"
-        Don’t use `sudo` with the `docker` command. If you find yourself needing it, you haven’t finished the installation. You also shouldn’t use `sudo` with `ddev` unless it’s specifically for the [`ddev hostname`](../usage/commands.md#hostname) command.
+        The best way to install Docker on Linux is to use your native package management tool (`apt`, `dnf`, etc.) with the official Docker repository. While many Linux distributions provide Docker packages in their own repositories, these are often outdated and may not include the latest features required for stability in a development environment like DDEV. To ensure you’re using a supported version, install Docker directly from the official Docker repository.
 
-    On systems without `systemd` or its equivalent—mostly if you’re installing inside WSL2—you’ll need to manually start Docker with `service docker start` or the equivalent in your distro. You can add this to your shell profile.
+        #### Debian/Ubuntu
 
-    ### Docker Rootless
+        ```bash
+        # Ensure sudo credentials are cached for copy/paste of this block
+        sudo true
 
-    DDEV has experimental support for Docker rootless mode on Linux. See [Podman and Docker Rootless in DDEV](https://ddev.com/blog/podman-and-docker-rootless/) for details.
+        # Remove any old/conflicting Docker packages
+        sudo apt-get remove -y docker.io docker-doc docker-compose podman-docker containerd runc 2>/dev/null || true
 
-    ### Podman for Linux
+        # Install prerequisites
+        sudo apt-get update && sudo apt-get install -y ca-certificates curl
+        sudo install -m 0755 -d /etc/apt/keyrings
 
-    DDEV has experimental support for Podman on Linux. See [Podman and Docker Rootless in DDEV](https://ddev.com/blog/podman-and-docker-rootless/) for details.
+        # Add Docker’s GPG key
+        sudo curl -fsSL https://download.docker.com/linux/$(. /etc/os-release && echo "$ID")/gpg -o /etc/apt/keyrings/docker.asc
+        sudo chmod a+r /etc/apt/keyrings/docker.asc
 
-    ### Docker Desktop for Linux
+        # Remove old repository files if present
+        sudo rm -f /etc/apt/keyrings/docker.gpg /etc/apt/sources.list.d/docker.list
 
-    Docker Desktop for Linux can be downloaded from [docker.com](https://www.docker.com/products/docker-desktop). Casual manual testing seems to work, but DDEV does not have explicit support for it and does not have automated testing.
+        # Add Docker repository in deb822 format
+        printf "Types: deb\nURIs: https://download.docker.com/linux/%s\nSuites: %s\nComponents: stable\nSigned-By: /etc/apt/keyrings/docker.asc\n" \
+          "$(. /etc/os-release && echo "$ID")" \
+          "$(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")" \
+          | sudo tee /etc/apt/sources.list.d/docker.sources >/dev/null
+
+        # Install Docker CE
+        sudo apt-get update && sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+        # Add your user to the docker group (create group if it doesn’t exist)
+        sudo groupadd -f docker && sudo usermod -aG docker ${SUDO_USER:-$USER}
+
+        # Start and enable Docker
+        sudo systemctl enable --now docker
+        ```
+
+        Run `sg docker` to open a new subshell with the `docker` group active, then verify with `docker run hello-world`. (A full log out and back in applies the change to your whole session.)
+
+        ??? tip "Prefer to run as a script?"
+            Create a script file, then run it:
+
+            ```bash
+            cat > /tmp/install-docker.sh << 'SCRIPT'
+            #!/usr/bin/env bash
+            set -euo pipefail
+            sudo true
+            sudo apt-get remove -y docker.io docker-doc docker-compose podman-docker containerd runc 2>/dev/null || true
+            sudo apt-get update && sudo apt-get install -y ca-certificates curl
+            sudo install -m 0755 -d /etc/apt/keyrings
+            sudo curl -fsSL "https://download.docker.com/linux/$(. /etc/os-release && echo "$ID")/gpg" -o /etc/apt/keyrings/docker.asc
+            sudo chmod a+r /etc/apt/keyrings/docker.asc
+            sudo rm -f /etc/apt/keyrings/docker.gpg /etc/apt/sources.list.d/docker.list
+            printf "Types: deb\nURIs: https://download.docker.com/linux/%s\nSuites: %s\nComponents: stable\nSigned-By: /etc/apt/keyrings/docker.asc\n" \
+              "$(. /etc/os-release && echo "$ID")" \
+              "$(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")" \
+              | sudo tee /etc/apt/sources.list.d/docker.sources >/dev/null
+            sudo apt-get update && sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+            sudo groupadd -f docker && sudo usermod -aG docker ${SUDO_USER:-$USER}
+            sudo systemctl enable --now docker
+            SCRIPT
+            ```
+
+            Review the script, then run it: `bash /tmp/install-docker.sh`
+
+        See the full [Docker Engine installation docs for Ubuntu](https://docs.docker.com/engine/install/ubuntu/) or [Debian](https://docs.docker.com/engine/install/debian/) for more details.
+
+        #### Other Linux Distributions
+
+        Follow these distribution-specific instructions to set up Docker Engine from the official Docker repository:
+
+        * [CentOS](https://docs.docker.com/install/linux/docker-ce/centos/)
+        * [Fedora](https://docs.docker.com/install/linux/docker-ce/fedora/)
+        * [binaries](https://docs.docker.com/install/linux/docker-ce/binaries/)
+
+        After installing Docker, add your user to the `docker` group and enable the Docker daemon to start at boot:
+
+        ```bash
+        sudo groupadd -f docker && sudo usermod -aG docker ${SUDO_USER:-$USER}
+        sudo systemctl enable --now docker
+        ```
+
+        Run `sg docker` to open a new subshell with the `docker` group active, or log out and back in to apply the change to your whole session. See [Post-installation steps for Linux](https://docs.docker.com/engine/install/linux-postinstall/) for more details.
+
+        !!!warning "Don’t `sudo` with `docker` or `ddev`"
+            Don’t use `sudo` with the `docker` command. If you find yourself needing it, you haven’t finished the installation. You also shouldn’t use `sudo` with `ddev` unless it’s specifically for the [`ddev hostname`](../usage/commands.md#hostname) command.
+
+        On systems without `systemd` or its equivalent—mostly if you’re installing inside WSL2—you’ll need to manually start Docker with `service docker start` or the equivalent in your distro. You can add this to your shell profile.
+
+        ### Docker Desktop for Linux
+
+        As an alternative to Docker CE, Docker Desktop for Linux can be downloaded from [docker.com](https://www.docker.com/products/docker-desktop). Casual manual testing seems to work, but DDEV does not have explicit support for it and does not have automated testing.
+
+    === "Docker rootless"
+
+        [Docker rootless mode](https://docs.docker.com/engine/security/rootless/) runs the Docker daemon and containers as a non-root user, which reduces the attack surface (no root daemon, container processes can't touch root-owned files). DDEV supports Docker rootless on Linux and WSL2, with full Docker compatibility.
+
+        !!!tip "`no_bind_mounts` is no longer required"
+            Earlier DDEV versions (v1.25.0-v1.25.2) required [`no_bind_mounts`](../configuration/config.md#no_bind_mounts) with Docker rootless. That is no longer necessary—Docker rootless now works with bind mounts.
+
+            With bind mounts under Docker rootless, you appear as `root` inside the web container (for example, in [`ddev ssh`](../usage/commands.md#ssh)). This is expected: rootless maps container `root` to your regular host user, so it has no special privileges on the host. If you prefer not to work as `root` in the container, run `ddev config global --no-bind-mounts=true`. This enables [`no_bind_mounts`](../configuration/config.md#no_bind_mounts), which relies on [Mutagen](performance.md#mutagen) to sync files rather than mounting them directly.
+
+        ### Install Docker rootless
+
+        Follow the official [Docker rootless installation guide](https://docs.docker.com/engine/security/rootless/).
+
+        ### Configure the system
+
+        ```bash
+        # Allow privileged port access if needed
+        if [ -f /proc/sys/net/ipv4/ip_unprivileged_port_start ]; then
+          if [ "1024" = "$(cat /proc/sys/net/ipv4/ip_unprivileged_port_start)" ]; then
+            echo 'net.ipv4.ip_unprivileged_port_start=0' | sudo tee -a /etc/sysctl.d/60-rootless.conf
+            sudo sysctl --system
+          fi
+        fi
+        # Allow loopback connections (needed for working Xdebug)
+        # See https://github.com/moby/moby/issues/47684#issuecomment-2166149845
+        mkdir -p ~/.config/systemd/user/docker.service.d
+        cat << 'EOF' > ~/.config/systemd/user/docker.service.d/override.conf
+        [Service]
+        Environment="DOCKERD_ROOTLESS_ROOTLESSKIT_DISABLE_HOST_LOOPBACK=false"
+        EOF
+        ```
+
+        ### Enable the Docker socket
+
+        ```bash
+        systemctl --user enable --now docker.socket
+
+        # You should see `/run/user/1000/docker.sock` (the number may vary):
+        ls $XDG_RUNTIME_DIR/docker.sock
+        ```
+
+        ### Point the Docker CLI at the rootless socket
+
+        ```bash
+        # View existing contexts
+        docker context ls
+
+        # Create the rootless context if it doesn't exist
+        docker context inspect rootless >/dev/null 2>&1 || \
+            docker context create rootless \
+                --description "Rootless runtime socket" \
+                --docker host="unix://$XDG_RUNTIME_DIR/docker.sock"
+
+        # Switch to the context
+        docker context use rootless
+
+        # Verify it works
+        docker ps
+        ```
+
+    === "Podman rootless"
+
+        [Podman](https://podman.io/) is rootless by default, which makes it a good fit for environments that forbid Docker or require rootless operation. Podman is slower than Docker and has more setup, but Podman rootless on Linux is solid.
+
+        ### Install Podman
+
+        Install Podman with your distribution's package manager (see the [official Podman installation guide for Linux](https://podman.io/docs/installation#installing-on-linux)):
+
+        ```bash
+        # Ubuntu/Debian
+        sudo apt-get update && sudo apt-get install podman
+        # Fedora
+        sudo dnf install --refresh podman
+        ```
+
+        ??? "Last resort: a newer Podman from Homebrew"
+            [Homebrew](https://brew.sh/) packages a current Podman. DDEV's CI installs it this way so that tests always run against the latest Podman, but it is not the recommended way to get Podman on a workstation: it means running a container stack from a second package manager, and most of the [troubleshooting](#podman-rootless-troubleshooting) entries below exist only because of it. Prefer your distribution's Podman even when it's older.
+
+            If you do use it, remove the distribution's Podman *and what it brought in* first, keeping only the `uidmap` helpers, which are root-owned privileged binaries that Homebrew cannot provide:
+
+            ```bash
+            # Ubuntu/Debian
+            sudo apt-get install -y uidmap && sudo apt-mark manual uidmap
+            sudo apt-get purge -y --auto-remove podman crun netavark aardvark-dns
+            # Fedora
+            sudo dnf remove -y podman crun netavark aardvark-dns
+
+            brew install podman
+            hash -r
+            ```
+
+            The `apt-mark manual` is not optional: `uidmap` arrives as an automatic dependency of the distribution's Podman, so the `--auto-remove` above — or any later `apt-get autoremove` run for unrelated cleanup — removes it again and breaks rootless Podman.
+
+        You can also install [Podman Desktop](https://podman-desktop.io/docs/installation/linux-install) if you prefer a GUI. For more information, see the [Podman tutorials](https://github.com/containers/podman/tree/main/docs/tutorials#readme).
+
+        ### Install the Docker CLI and buildx
+
+        Podman provides a Docker-compatible API, so you can use the Docker CLI as a front-end for Podman. This lets you use familiar `docker` commands, switch between runtimes with Docker contexts, and keep compatibility with tools that expect the `docker` command.
+
+        1. [Set up Docker's repository](https://docs.docker.com/engine/install/).
+        2. Install the CLI and the buildx plugin (you don't need `docker-ce`, the Docker engine):
+
+            ```bash
+            # Ubuntu/Debian
+            sudo apt-get update && sudo apt-get install docker-ce-cli docker-buildx-plugin
+            # Fedora
+            sudo dnf install --refresh docker-ce-cli docker-buildx-plugin
+            ```
+
+        !!!warning "buildx is required, and DDEV won't install it for you"
+            DDEV builds its project images with `docker buildx`, and its default setting (`docker_buildx_version: "system"`) uses whatever buildx is already installed rather than downloading one. Installing only `docker-ce-cli` leaves buildx missing, and `ddev start` then fails at the build step. Check with `docker buildx version`; DDEV requires 0.17.0 or newer.
+
+        ### Configure Podman rootless
+
+        Prepare the system by configuring `subuid`/`subgid` ranges and enabling `userns` options (see the [Arch Linux Wiki](https://wiki.archlinux.org/title/Podman#Rootless_Podman) for details). If another user on this machine already holds `100000-165535`, give yourself a range that doesn't overlap theirs — two users mapping the same host IDs break each other's containers:
+
+        ```bash
+        # Add subuid and subgid ranges if they don't exist for the current user
+        grep "^$(id -un):\|^$(id -u):" /etc/subuid >/dev/null 2>&1 || sudo usermod --add-subuids 100000-165535 $(whoami)
+        grep "^$(id -un):\|^$(id -u):" /etc/subgid >/dev/null 2>&1 || sudo usermod --add-subgids 100000-165535 $(whoami)
+        # Propagate changes to subuid and subgid
+        podman system migrate
+        # Debian requires setting unprivileged_userns_clone
+        if [ -f /proc/sys/kernel/unprivileged_userns_clone ]; then
+          if [ "1" != "$(cat /proc/sys/kernel/unprivileged_userns_clone)" ]; then
+            echo 'kernel.unprivileged_userns_clone=1' | sudo tee -a /etc/sysctl.d/60-rootless.conf
+            sudo sysctl --system
+          fi
+        fi
+        # Fedora requires setting max_user_namespaces
+        if [ -f /proc/sys/user/max_user_namespaces ]; then
+          if [ "0" = "$(cat /proc/sys/user/max_user_namespaces)" ]; then
+            echo 'user.max_user_namespaces=28633' | sudo tee -a /etc/sysctl.d/60-rootless.conf
+            sudo sysctl --system
+          fi
+        fi
+        # Allow privileged port access if needed
+        if [ -f /proc/sys/net/ipv4/ip_unprivileged_port_start ]; then
+          if [ "1024" = "$(cat /proc/sys/net/ipv4/ip_unprivileged_port_start)" ]; then
+            echo 'net.ipv4.ip_unprivileged_port_start=0' | sudo tee -a /etc/sysctl.d/60-rootless.conf
+            sudo sysctl --system
+          fi
+        fi
+        ```
+
+        Enable the Podman socket and verify it's running (see the [Podman socket activation documentation](https://github.com/containers/podman/blob/main/docs/tutorials/socket_activation.md)):
+
+        ```bash
+        systemctl --user enable --now podman.socket
+
+        # You should see `/run/user/1000/podman/podman.sock` (the number may vary):
+        ls $XDG_RUNTIME_DIR/podman/podman.sock
+
+        # You can also check the socket path with:
+        podman info --format '{{.Host.RemoteSocket.Path}}'
+        ```
+
+        Configure the Docker CLI to use Podman (see the [Podman rootless tutorial](https://github.com/containers/podman/blob/main/docs/tutorials/rootless_tutorial.md)):
+
+        ```bash
+        # View existing contexts
+        docker context ls
+
+        # Create Podman rootless context
+        docker context create podman-rootless \
+            --description "Podman (rootless)" \
+            --docker host="unix://$XDG_RUNTIME_DIR/podman/podman.sock"
+
+        # Switch to the new context
+        docker context use podman-rootless
+
+        # Verify it works
+        docker ps
+        ```
+
+        !!!warning "WSL2: the root filesystem isn't a shared mount"
+            On WSL2, `podman info` and container starts may warn `"/" is not a shared mount, this could cause issues or missing mounts with rootless containers`. This is specific to WSL2: its own boot process mounts the root filesystem before `systemd` starts and never marks it shared, unlike a natively booted Linux, where it's shared from boot. It hasn't caused failures in DDEV's own testing, but to fix it for the current session:
+
+            ```bash
+            sudo mount --make-rshared /
+            ```
+
+            That reverts on every `wsl --shutdown` or instance restart. To make it permanent, add to `/etc/wsl.conf`:
+
+            ```
+            [boot]
+            command = mount --make-rshared /
+            ```
+
+        ### Validate the setup
+
+        DDEV ships a script that checks everything on this page and explains anything it finds. It works with any Podman install, however you got it, and changes nothing unless you ask it to install:
+
+        ```bash
+        curl -fsSL https://raw.githubusercontent.com/ddev/ddev/main/scripts/linux-podman-rootless.sh -o /tmp/podman-rootless.sh
+        bash /tmp/podman-rootless.sh
+        ```
+
+        It verifies the Podman and `netavark` version pairing, the socket, `cgroup` manager, `subuid`/`subgid` ranges, privileged ports, the Docker context, and buildx. It then stops inferring and starts testing: it runs a real container, builds an image and loads it back into the engine, and watches a container healthcheck report `healthy`. Those last three are the steps `ddev start` fails at on a machine where everything else looks correct. To perform the whole setup described above instead of just checking it, run the script with `--install`. There's also `--install-brew` for the Homebrew last resort, which is what DDEV's CI uses.
+
+        ### Podman rootless performance optimization
+
+        What's slower under Podman rootless is container image and filesystem work: `ddev start`, image builds, `ddev import-db`, `ddev export-db`, `ddev snapshot` (see [Podman run/build performance issues](https://github.com/containers/podman/issues/13226) and the [Podman performance documentation](https://github.com/containers/podman/blob/main/docs/tutorials/performance.md)). Serving your site is not — once the containers are up, requests go through the same web server, PHP, and database as under Docker. The storage driver is the biggest lever on the operations that are affected.
+
+        On Linux kernel 5.13 and newer, Podman uses native rootless `overlay`, which is the fastest option and needs no configuration at all. Check what you're getting:
+
+        ```bash
+        podman info --format '{{.Store.GraphDriverName}} {{index .Store.GraphStatus "Native Overlay Diff"}}'
+        ```
+
+        `overlay true` means you're already on the fast path — do nothing. If it prints `overlay false`, something has configured the `fuse-overlayfs` mount program, which *disables* native overlay diff; remove `mount_program` from `~/.config/containers/storage.conf` to get the faster native path back.
+
+        !!!warning "Existing containers require a reset"
+            If you already have Podman containers, images, or volumes, you'll need to reset Podman for the storage change to take effect: `podman system reset`. This removes all existing containers, images, and volumes (similar to `docker system prune -a`).
+
+        ### Podman rootless troubleshooting
+
+        The Docker CLI hides most Podman-side errors behind a generic message. When something fails, read the real error from the Podman service:
+
+        ```bash
+        journalctl --user -u podman.service --since '-5min'
+        ```
+
+        | Symptom | Cause | Fix |
+        | ------- | ----- | --- |
+        | `unable to upgrade to tcp, received 500` from `docker run`, and containers stuck in `Created` | Your `netavark` major version doesn't match Podman's — they're released as a pair, so Podman 6.x needs `netavark` 2.x and Podman 4.x/5.x need 1.x. The Podman log shows `failed to load network options: invalid type: sequence, expected a map`. The usual cause is a Podman installed outside the distribution's packages while the distribution's older `netavark` is still there. | Remove the distribution's `netavark`/`aardvark-dns` so Podman uses its own, or install a Podman matching them. Don't mix stacks. |
+        | `could not find "netavark" in one of [...]` | `engine.helper_binaries_dir` is set somewhere. It *replaces* Podman's helper search path rather than extending it, so if the list omits the `libexec/podman` directory next to your `podman` binary, Podman finds no `netavark` at all — or a wrong-version one. | Remove the `helper_binaries_dir` setting from your `containers.conf` files. |
+        | `failed to load image: ... Source image rejected: ... is rejected by policy`, after a build that ran to completion | Your `policy.json` rejects by default and doesn't allow the `docker-archive` and `oci-archive` transports that `buildx --load` uses to hand the built image back. Registry pulls go through a different transport and keep working, so pulling, running and building all look healthy. | In the `policy.json` that applies (`~/.config/containers/policy.json` overrides `/etc/containers/policy.json`), add `"docker-archive"` and `"oci-archive"` entries set to `insecureAcceptAnything` under `transports`. That leaves the rest of the policy intact. |
+        | `Cannot connect to the Docker daemon`, and `systemctl --user is-active podman.socket` says `failed` | Repeated activation failures tripped `systemd`'s start limit. Fixing the underlying config doesn't clear this on its own. | `systemctl --user reset-failed podman.socket podman.service`, then `systemctl --user start podman.socket`. |
+        | `crun: create /sys/fs/cgroup/docker: Permission denied` during a build | Podman is using the `cgroupfs` `cgroup` manager, either because there's no lingering user session or because something set `cgroup_manager = "cgroupfs"` system-wide. GitHub Actions' Ubuntu runner image does the latter: it installs Podman from the [`podman-static`](https://github.com/mgoltzsche/podman-static) bundle, which ships that setting in `/etc/containers/containers.conf`. | `sudo loginctl enable-linger $(whoami)`. If `grep -rn cgroup_manager /etc/containers/` finds a setting, override it with `cgroup_manager = "systemd"` under `[engine]` in `~/.config/containers/containers.conf.d/ddev-podman.conf`, which outranks `/etc`. Confirm with `podman info --format '{{.Host.CgroupManager}}'`. |
+        | Containers fail to start, or behave oddly, and `podman info` shows an `ociRuntime` path outside your Podman's own prefix | Something pins the runtime with `[engine.runtimes]` in a `containers.conf` under `/etc`. GitHub Actions' runner image pins `crun = ["/usr/local/bin/crun"]`, the statically built `crun` from its Podman 5.x bundle, which then gets used by an unrelated Podman. | Point it back at the `crun` next to your own `podman` — `/usr/bin/crun` for a distribution Podman, `/home/linuxbrew/.linuxbrew/bin/crun` for Homebrew's — with `[engine.runtimes]` and `crun = ["<that path>"]` in `~/.config/containers/containers.conf.d/ddev-podman.conf`. |
+        | `compose build requires buildx 0.17.0 or later` | The buildx plugin isn't installed. | `sudo apt-get install docker-buildx-plugin` |
+        | `Must provide a valid firewall backend, got iptables` | Newer `netavark` dropped the `iptables` backend, but Podman still requests it. | Add `firewall_driver = "nftables"` under `[network]` in `~/.config/containers/containers.conf.d/ddev-podman.conf`. |
+        | `registries.conf must be in v2 format but is in v1` | Podman 6 rejects the old registries format. | Replace `/etc/containers/registries.conf` with `unqualified-search-registries = ["docker.io"]`. |
+        | `Include journald in compilation path to log to systemd journal` | Homebrew's `conmon` is built without `journald` support, but Podman defaults to `journald` logging. | Set `log_driver = "k8s-file"` under `[containers]` and `events_logger = "file"` under `[engine]` in `~/.config/containers/containers.conf.d/ddev-podman.conf`. |
+        | `failed to become ready ... timed out without becoming healthy` for every container, with an empty health log (`{"Status":"starting","FailingStreak":0,"Log":null}`) | Podman schedules each container's healthcheck as a transient `systemd` **user** timer. Either your Podman was built without its `systemd` build tag, which makes the timer functions silent no-ops, or your user session cannot create transient units. The healthcheck script itself is fine — running it with `podman exec` succeeds, which is why this is easy to misdiagnose. | Check the tags with `go version -m $(command -v podman) \| grep -- -tags=`. If `systemd` is missing, that Podman can't run healthchecks at all and no configuration changes it — use your distro's or Homebrew's build instead. Otherwise check `sudo loginctl enable-linger $(whoami)` and that `systemd-run --user --quiet /bin/true` succeeds. |
+        | `Unit podman.socket could not be found` from `systemctl --user status podman.socket`, on a Homebrew install | Homebrew's systemd user units live under `$(brew --prefix)/lib/systemd/user/`, which isn't one of `systemctl --user`'s search paths (`~/.config/systemd/user/` is). | `mkdir -p ~/.config/systemd/user && ln -s "$(brew --prefix)"/lib/systemd/user/podman.{socket,service} ~/.config/systemd/user/`, then `systemctl --user daemon-reload`. Note that the units Homebrew ships carry no `PATH`, so symlinking them leads straight to `could not find a working conmon binary` below. `scripts/linux-podman-rootless.sh --install-brew` writes its own units with that `PATH` already set. |
+        | `could not find a working conmon binary`, even though `conmon --version` works in your shell | `systemd --user` services start with a minimal `PATH` that excludes Homebrew's `bin`, so `podman.service` can't find `conmon`, `crun`, or other helpers even though your interactive shell can. | Add Homebrew's `bin` to the service's `PATH`: `systemctl --user edit podman.service`, add `Environment=PATH=/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin` under `[Service]`, then `systemctl --user daemon-reload && systemctl --user restart podman.socket`. |
+        | `netavark (exit code 127): ... libgcc_s.so.1: cannot open shared object file`, or containers silently get no networking | Homebrew's Linux dynamic linker doesn't search the host's system library paths, and `gcc` — which provides `libgcc_s.so.1` — isn't installed via Homebrew even though `netavark`/`aardvark-dns` (Rust binaries) need it at runtime. | `brew install gcc` |
+        | `config file not found: no policy.json file found; searched paths: [...]` on a Homebrew install | Homebrew's Podman ships a default `policy.json` under its own prefix, but nothing links it into a path Podman actually searches (`~/.config/containers/`, `/etc/containers/`, `/usr/share/containers/`). | `mkdir -p ~/.config/containers && cp "$(brew --prefix podman)"/etc/containers/policy.json ~/.config/containers/policy.json` |
+        | `unable to retrieve auth token: invalid username/password: unauthorized: incorrect username or password` pulling a public image | Stale or invalid Docker Hub credentials in `~/.docker/config.json` interfere with anonymous pulls, the same underlying cause as [`403 authentication required`](#troubleshooting) below. | `docker logout` |
 
 === "Windows"
 
     ## Windows
 
-    For initial installation of DDEV on Windows, you can use one of the following Docker providers:
+    First [install WSL2](#install-wsl2) below, then [choose a container runtime](#choose-a-container-runtime):
 
-    * Docker CE inside WSL2 - The most popular, performant, and best-supported way to run DDEV on Windows. No additional software is required; Docker CE will be installed by the DDEV installer. This approach does not work for traditional Windows (non-WSL2) installations.
-    * Docker Desktop for Windows - A popular choice that works with both traditional Windows and WSL2. It has extensive automated testing with DDEV, but has some performance and reliability problems. It is not open-source and may require a license for many users. This approach works for both traditional Windows and WSL2 installations.
-    * Rancher Desktop for Windows - A free and open-source Docker provider that has been manually tested with DDEV on traditional Windows, but does not have automated testing. This approach works for both traditional Windows and WSL2 installations.
+    * **Docker** (recommended) - The best-tested option. Run Docker CE inside WSL2, or use Docker Desktop or Rancher Desktop.
+    * **Docker rootless** - Runs the Docker daemon without root, which reduces the attack surface. Runs inside WSL2 using the same setup as Linux.
+    * **Podman rootless** - Rootless by default; a good fit where Docker is forbidden. Works via Podman Desktop, but is less mature on Windows than on Linux.
 
-    ### Using the Windows Installer
+    ### Install WSL2
 
-    The easiest way to install DDEV on Windows is to use the Windows installer, which can handle different installation scenarios:
+    In PowerShell, run:
 
-    1. **Download the Windows installer**. Make sure to download the correct installer for your system architecture:
+    ```powershell
+    # Install WSL2; reboot if prompted, then continue:
+    wsl --install --no-distribution
 
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; text-align: center;">
-        [Download for AMD64 :material-microsoft-windows:<br>(Intel/AMD) :material-download:](https://ddev.com/download/ddev_windows_amd64_installer.exe "For computers with Intel or AMD processors (most common)"){ .md-button .md-button--primary }
-        [Download for ARM64 :material-microsoft-windows:<br>(Snapdragon) :material-download:](https://ddev.com/download/ddev_windows_arm64_installer.exe "For computers with ARM processors like Qualcomm Snapdragon"){ .md-button .md-button--primary }
-        </div>
+    # Update WSL2 if previously installed:
+    wsl --update
+    ```
 
-        - **AMD64 (x86-64)**: Most traditional Windows PCs (Intel/AMD processors)
-        - **ARM64**: Windows on ARM devices like Microsoft Surface Pro X, Surface Pro 9 (5G), or other ARM-based Windows devices
+    Create a Debian-based WSL2 distro (skip if you're using Traditional Windows). Ubuntu is recommended:
 
-        Or browse all versions on the [DDEV releases page](https://github.com/ddev/ddev/releases).
+    ```powershell
+    # You'll be asked to set a username and password for the distro:
+    wsl --install Ubuntu-26.04 --name DDEV
+    ```
 
-        !!!tip "Check your system architecture"
-            Not sure which architecture you have? Open PowerShell and run: `$env:PROCESSOR_ARCHITECTURE`. It will show `AMD64` or `ARM64`. Alternatively, in WSL2/Ubuntu run `uname -m` which shows `x86_64` for AMD64 or `aarch64` for ARM64.
+    !!!tip "\"DDEV\" is just a suggested name — use any name you like."
 
-    2. **Run the installer** and choose your installation type:
-       - **Docker CE inside WSL2** (Recommended): The installer will automatically install Docker CE in your WSL2 environment. This is the fastest and most reliable option.
-       - **Docker Desktop**: Choose this if you already have Docker Desktop installed or prefer to use it.
-       - **Rancher Desktop**: Choose this if you already have Rancher Desktop installed.
-       - **Traditional Windows**: Choose this for non-WSL2 installations (requires Docker Desktop or Rancher Desktop).
+    !!!tip "Other Debian-based distros also work"
+        The DDEV installer supports Ubuntu and Debian and has been tested on Kali Linux and eLxr. If you prefer one of those, substitute its name, for example `wsl --install Debian --name DDEV`.
 
-    The installer will automatically configure DDEV for your chosen Docker provider and WSL2 environment.
+    Verify the "DDEV" distro is set as default:
 
-    ### Manual Installation Options
+    ```powershell { .no-copy }
+    > wsl -l -v
+      NAME                   STATE           VERSION
+    * DDEV                   Stopped         2
+    ```
 
-    If you prefer to install manually or need more control over the installation process, you can use the following approaches:
+    ### Choose a container runtime
 
-    #### Docker CE inside WSL2
+    === "Docker"
 
-    No additional software is required to run DDEV on Windows with Docker CE inside WSL2. The DDEV installer will install Docker CE for you. This is the most popular, performant, and best-supported way to run DDEV on Windows.
+        Install one of the supported Docker providers:
 
-    To install manually:
-    1. Install or update your Ubuntu-based WSL2 distro (Ubuntu, Ubuntu-20.04, Ubuntu-22.04, etc.)
-    2. Install DDEV inside your WSL2 environment using the Linux installation instructions
-    3. DDEV will automatically install Docker CE for you on first run
+        * [Docker CE inside WSL2](#docker-ce-inside-wsl2): Recommended, most popular, performant, and best-supported. The [DDEV installer](ddev-installation.md#windows) installs it automatically. Requires WSL2.
+        * [Docker Desktop for Windows](#docker-desktop-for-windows): Works with both WSL2 and traditional Windows. Extensive automated testing, but some performance and reliability problems. Not open-source; may require a license.
+        * [Rancher Desktop for Windows](#rancher-desktop-for-windows): Free, open-source. Manually tested on traditional Windows; no automated testing. Works with both WSL2 and traditional Windows.
 
-    #### Docker Desktop for Windows
+        ### Docker CE inside WSL2
 
-    1. Download and install Docker Desktop from [docker.com](https://www.docker.com/products/docker-desktop).
-    2. During installation, ensure "Use WSL 2 instead of Hyper-V" is selected.
-    3. After installation, open Docker Desktop settings and navigate to **Resources → WSL Integration**.
-    4. Enable integration with your Ubuntu-based WSL2 distro (e.g., Ubuntu, Ubuntu-24.04, Ubuntu-22.04).
-    5. Apply the changes and restart Docker Desktop if prompted.
-    6. Verify that `docker ps` works in git-bash, PowerShell, or WSL2, wherever you're using it.
+        The [DDEV Windows installer](ddev-installation.md#step-2-install-ddev) automatically installs Docker CE in your WSL2 environment — no manual Docker installation is needed. After installing WSL2 above, proceed to [install DDEV](ddev-installation.md#step-2-install-ddev).
 
-    #### Rancher Desktop for Windows
+        To install Docker CE manually instead, open your WSL2 terminal (Ubuntu) and run:
 
-    1. Download and install [Rancher Desktop](https://rancherdesktop.io/).
-    2. During installation, choose **Docker** as the container runtime and disable Kubernetes.
-    3. After installation, open Rancher Desktop and go to **WSL Integration** in the settings.
-    4. Enable integration with your Ubuntu-based WSL2 distro (e.g., Ubuntu, Ubuntu-24.04, Ubuntu-22.04).
-    5. Apply the changes and restart Rancher Desktop if needed.
-    6. Verify that `docker ps` works in git-bash, PowerShell, or WSL2, wherever you're using it.
+        ```bash
+        # Ensure sudo credentials are cached for copy/paste of this block
+        sudo true
+
+        # Remove any old/conflicting Docker packages
+        sudo apt-get remove -y docker.io docker-doc docker-compose podman-docker containerd runc 2>/dev/null || true
+
+        # Install prerequisites
+        sudo apt-get update && sudo apt-get install -y ca-certificates curl
+        sudo install -m 0755 -d /etc/apt/keyrings
+
+        # Add Docker's GPG key
+        sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+        sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+        # Remove old repository files if present
+        sudo rm -f /etc/apt/keyrings/docker.gpg /etc/apt/sources.list.d/docker.list
+
+        # Add Docker repository in deb822 format
+        printf "Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: %s\nComponents: stable\nSigned-By: /etc/apt/keyrings/docker.asc\n" \
+          "$(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")" \
+          | sudo tee /etc/apt/sources.list.d/docker.sources >/dev/null
+
+        # Install Docker CE
+        sudo apt-get update && sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+        # Add your user to the docker group (create group if it doesn't exist)
+        sudo groupadd -f docker && sudo usermod -aG docker ${SUDO_USER:-$USER}
+        ```
+
+        Run `sg docker` to open a new subshell with the `docker` group active, or log out and back in to apply the change to your whole session. On WSL2 systems without `systemd`, you may need to start Docker manually with `sudo service docker start`.
+
+        ??? tip "Prefer to run as a script?"
+            Create a script file, then run it:
+
+            ```bash
+            cat > /tmp/install-docker.sh << 'SCRIPT'
+            #!/usr/bin/env bash
+            set -euo pipefail
+            sudo true
+            sudo apt-get remove -y docker.io docker-doc docker-compose podman-docker containerd runc 2>/dev/null || true
+            sudo apt-get update && sudo apt-get install -y ca-certificates curl
+            sudo install -m 0755 -d /etc/apt/keyrings
+            sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+            sudo chmod a+r /etc/apt/keyrings/docker.asc
+            sudo rm -f /etc/apt/keyrings/docker.gpg /etc/apt/sources.list.d/docker.list
+            printf "Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: %s\nComponents: stable\nSigned-By: /etc/apt/keyrings/docker.asc\n" \
+              "$(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")" \
+              | sudo tee /etc/apt/sources.list.d/docker.sources >/dev/null
+            sudo apt-get update && sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+            sudo groupadd -f docker && sudo usermod -aG docker ${SUDO_USER:-$USER}
+            SCRIPT
+            ```
+
+            Review the script, then run it: `bash /tmp/install-docker.sh`
+
+        ### Docker Desktop for Windows
+
+        1. Download and install Docker Desktop from [docker.com](https://www.docker.com/products/docker-desktop).
+        2. During installation, ensure "Use WSL 2 instead of Hyper-V" is selected.
+        3. After installation, open Docker Desktop settings and navigate to **Resources → WSL Integration**.
+        4. Enable integration with your Debian-based WSL2 distro (e.g., Ubuntu-26.04, Debian).
+        5. Apply the changes and restart Docker Desktop if prompted.
+        6. Verify that `docker ps` works in git-bash, PowerShell, or WSL2, wherever you're using it.
+
+        ### Rancher Desktop for Windows
+
+        1. Download and install [Rancher Desktop](https://rancherdesktop.io/).
+        2. During installation, choose **Docker** as the container runtime and disable Kubernetes.
+        3. After installation, open Rancher Desktop and go to **WSL Integration** in the settings.
+        4. Enable integration with your Debian-based WSL2 distro (e.g., Ubuntu-26.04, Debian).
+        5. Apply the changes and restart Rancher Desktop if needed.
+        6. Verify that `docker ps` works in git-bash, PowerShell, or WSL2, wherever you're using it.
+
+    === "Docker rootless"
+
+        Docker rootless runs inside WSL2 using the same setup as Linux. In your WSL2 distro, follow the [Docker rootless instructions for Linux](#linux-docker-rootless).
+
+    === "Podman rootless"
+
+        Windows users can run Podman via [Podman Desktop](https://podman-desktop.io/), which manages the WSL2-based VM for you. Podman on Windows works but is less mature than on Linux.
+
+        ### Install Podman
+
+        Install [Podman Desktop](https://podman-desktop.io/docs/installation/windows-install), which includes Podman. Alternatively, install Podman directly following the [official Podman installation guide for Windows](https://podman.io/docs/installation#windows). For more information, see the [Podman tutorials](https://github.com/containers/podman/tree/main/docs/tutorials#readme).
+
+        ### Configure Podman
+
+        Setup and configuration follow the same patterns as the Linux/WSL2 setup, but with Podman Desktop managing the VM for you. Follow the [Podman rootless instructions for Linux](#linux-podman-rootless).
 
 === "Codespaces"
 
     ## GitHub Codespaces
 
     You can set up [GitHub Codespaces](https://github.com/features/codespaces) following the instructions in the [DDEV Installation](ddev-installation.md#github-codespaces) section.
+
+## Docker Buildx
+
+DDEV requires the [Docker buildx plugin](https://github.com/docker/buildx). GUI-based providers (OrbStack, Docker Desktop, Rancher Desktop) bundle it. If `docker buildx version` doesn't work, install it:
+
+- **macOS (Homebrew):** `brew install docker-buildx`
+- **Linux/WSL2 (Debian/Ubuntu):** `sudo apt-get install docker-buildx-plugin` (requires the [official Docker repository](https://docs.docker.com/engine/install/) to be configured)
+- **Other:** see [Docker buildx requirement](https://ddev.com/blog/docker-buildx-requirement-v1-25-1/) for installation instructions across platforms.
+
+!!!tip "Can't install the plugin?"
+    As a fallback, DDEV can manage its own copy via [`docker_buildx_version`](../configuration/config.md#docker_buildx_version).
+
+## Running Multiple Container Runtimes
+
+You can run Docker and Podman sockets simultaneously and switch between them using Docker contexts.
+
+For example, here's a system with three active Docker contexts:
+
+```bash
+$ docker context ls
+NAME                DESCRIPTION                               DOCKER ENDPOINT
+default             Current DOCKER_HOST based configuration   unix:///var/run/docker.sock
+podman-rootless *   Podman (rootless)                         unix:///run/user/1000/podman/podman.sock
+rootless            Rootless runtime socket                   unix:///run/user/1000/docker.sock
+```
+
+Switch between them with:
+
+```bash
+docker context use "<context-name>"
+```
+
+## Switching Runtimes with DDEV
+
+DDEV automatically detects your active container runtime. To switch:
+
+1. Stop DDEV projects:
+
+   ```bash
+   ddev poweroff
+   ```
+
+2. Switch the Docker context or change the `DOCKER_HOST` environment variable.
+3. Start your project:
+
+   ```bash
+   ddev start
+   ```
+
+For background on the trade-offs between these runtimes, see [Podman and Docker Rootless in DDEV](https://ddev.com/blog/podman-and-docker-rootless/).
 
 <a name="troubleshooting"></a>
 
@@ -209,6 +722,21 @@ But this error often indicates that either Docker is not installed or the Docker
 - **macOS/Traditional Windows:** Start your Docker provider (e.g., OrbStack, Docker Desktop, Rancher Desktop) from your applications menu
 - **Linux/WSL2:** Run `sudo systemctl enable --now docker` to start and enable it to start automatically on boot
 
+---
+
+> `permission denied while trying to connect to the docker API at unix:///var/run/docker.sock`
+
+A message like this means that your user is not in the `docker` group:
+
+```bash
+sudo groupadd -f docker && sudo usermod -aG docker ${SUDO_USER:-$USER}
+# sg opens a new subshell with the `docker` group active;
+# log out and back in to apply the change to your full session
+sg docker
+```
+
+---
+
 > `error during connect: Get "http://host:2375/v1.51/version": dial tcp: lookup host on 127.0.0.53:53: server misbehaving`
 
 or
@@ -222,10 +750,10 @@ These errors indicate Docker context issues:
 - Validate the current context: `docker ps`
 
 !!!warning "Environment variables override Docker context"
-    If you have set `DOCKER_HOST` and/or `DOCKER_CONTEXT` environment variables, they will override the `docker context` settings. This can lead to connection issues if the host is unreachable or the specified context is incorrect. Check your shell profile (`~/.bashrc`, `~/.zshrc`) for these variables.
+If you have set `DOCKER_HOST` and/or `DOCKER_CONTEXT` environment variables, they will override the `docker context` settings. This can lead to connection issues if the host is unreachable or the specified context is incorrect. Check your shell profile (`~/.bashrc`, `~/.zshrc`) for these variables.
 
 !!!tip "Creating a Docker context"
-    You can create a new Docker context using the `docker context create` command. See [Remote Docker Environments](../topics/remote-docker.md) for examples.
+You can create a new Docker context using the `docker context create` command. See [Remote Docker Environments](../topics/remote-docker.md) for examples.
 
 ### Testing Docker Setup
 
@@ -234,7 +762,7 @@ For DDEV to work properly, Docker needs to:
 - Mount your project code directory (typically under your home folder) from host to container
 - Access TCP ports on the host for HTTP/HTTPS (default ports 80 and 443, configurable per project)
 
-Run this command in your *project directory* to verify Docker configuration (use Git Bash if you're on Windows!):
+Run this command in your _project directory_ to verify Docker configuration (use Git Bash if you're on Windows!):
 
 ```bash
 docker run --rm -t -p 80:80 -p 443:443 -v "//$PWD:/tmp/projdir" ddev/ddev-utilities sh -c "echo ---- Project Directory && ls /tmp/projdir"
@@ -271,4 +799,4 @@ Docker daemon isn't running, or no internet connection:
 Stale Docker Hub authentication interfering with public image pulls:
 
 - **Solution:** Run `docker logout` and try again
-- **Note:** Docker authentication is *not* required for normal DDEV operations
+- **Note:** Docker authentication is _not_ required for normal DDEV operations

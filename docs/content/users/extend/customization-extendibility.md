@@ -49,79 +49,11 @@ Different customization needs require different approaches. Use this decision tr
 
 ## Environment Variables for Containers and Services
 
-You can set custom environment variables in several places:
-
-1. An optional, project-level `.ddev/.env` file provides environment variables to all DDEV containers, including any additional services or add-ons. It can look something like this:
-
-    ```dotenv
-    MY_ENV_VAR="someval"
-    MY_OTHER_ENV_VAR="someotherval"
-    ```
-
-2. With DDEV v1.23.5+, an optional, project-level `.ddev/.env.*` file (where `*` is a service name, like `web`, `db`, `redis`, etc.) provides environment variables to specific services or add-ons. For example, `.ddev/.env.redis` file can look something like this:
-
-    ```dotenv
-    REDIS_TAG="7-bookworm"
-    REDIS_FOO="bar"
-    ```
-
-    Use the [`ddev dotenv set`](../usage/commands.md#dotenv-set) command to set environment variables from command line:
-
-    ```bash
-    ddev dotenv set .ddev/.env.redis --redis-tag 7-bookworm --redis-foo bar
-    ```
-
-    If variables should be expanded only in `.ddev/docker-compose.*.yaml` files, use a different filename, for example, `.ddev/.env.redis-build`.
-
-3. The global `web_environment` setting in `.ddev/global_config.yaml`.
-
-    ```yaml
-    web_environment:
-        - MY_ENV_VAR=someval
-        - MY_OTHER_ENV_VAR=someotherval
-    ```
-
-4. The project’s [`web_environment`](../configuration/config.md#web_environment) setting in `.ddev/config.yaml` or `.ddev/config.*.yaml`:
-
-    ```yaml
-    web_environment:
-        - MY_ENV_VAR=someval
-        - MY_OTHER_ENV_VAR=someotherval
-    ```
-
-If you’d rather use the CLI to set the project or global `web_environment` value, you can use the [`ddev config`](../usage/commands.md#config) command:
-
-```sh
-# Set MY_ENV_VAR for the project
-ddev config --web-environment-add="MY_ENV_VAR=someval"
-
-# Set MY_ENV_VAR globally
-ddev config global --web-environment-add="MY_ENV_VAR=someval"
-```
-
-You can use the `--web-environment` flag to overwrite existing values rather than adding them.
-
-!!!warning "Don’t check in sensitive values!"
-    Sensitive variables like API keys should not be checked in with your project. You might use an `.env` file and _not_ check that in, but offer a `.env.example` with expected keys that don’t have values. Some use global configuration for sensitive values, as that’s not normally checked in either. (If you provide a `.env.example` it can be checked in, overriding the `.ddev/.gitignore`, with `git add -f .ddev/.env.example`.)
-
-### Altering the In-Container `$PATH`
-
-Sometimes it’s easiest to put the command you need into the existing `$PATH` using a symbolic link rather than changing the in-container `$PATH`. For example, the project `bin` directory is already included the `$PATH`. So if you have a command you want to run that’s not already in the `$PATH`, you can add a symlink.
-
-Examples:
-
-- On Craft CMS, the `craft` script is often in the project root, which is not in the `$PATH`. But if you `mkdir bin && ln -s craft bin/craft` you should be able to run `ddev exec craft`. (Note however that `ddev craft` takes care of this for you.)
-- On projects where the `vendor` directory is not in the project root (Acquia projects, for example, have `composer.json` and `vendor` in the `docroot` directory), you can `mkdir bin && ln -s docroot/vendor/bin/drush bin/drush` to put `drush` in your `$PATH`. (With projects like this, make sure to set `composer_root: docroot` so that `ddev composer` works properly.)
-
-You can also modify the `PATH` environment variable by adding a script to `<project>/.ddev/homeadditions/.bashrc.d/` or (global) `$HOME/.ddev/homeadditions/.bashrc.d/` (see [global configuration directory](../usage/architecture.md#global-files)). For example, if your project vendor directory is not in the expected place (`/var/www/html/vendor/bin`) you can add a `<project>/.ddev/homeadditions/.bashrc.d/path.sh`:
-
-```bash
-export PATH=$PATH:/var/www/html/somewhereelse/vendor/bin
-```
+See [Environment Variables](../configuration/environment-variables.md) for the `.ddev/.env*` files, their global equivalents, `web_environment`, and the order they override each other in.
 
 ## Changing PHP Version
 
-The project's `.ddev/config.yaml` file defines the PHP version to use. The [`php_version`](../configuration/config.md#php_version) can be `5.6` through `8.5`, and new versions are added when they are released by the PHP Foundation.
+The project's `.ddev/config.yaml` file defines the PHP version to use. The [`php_version`](../configuration/config.md#php_version) can be any PHP version supported by DDEV.
 
 ### Older Versions of PHP
 
@@ -131,7 +63,10 @@ If your project requires multiple versions of PHP, and one of them is EOL, you c
 
 ## Changing Web Server Type
 
-DDEV supports nginx with php-fpm by default (`nginx-fpm`), and Apache with php-fpm (`apache-fpm`). You can change this with the [`webserver_type`](../configuration/config.md#webserver_type) config option, or using the [`ddev config`](../usage/commands.md#config) command with the `--webserver-type` flag.
+DDEV supports nginx with php-fpm by default (`nginx-fpm`), Apache with php-fpm (`apache-fpm`), and `generic` for [custom web servers](../quickstart.md#generic). You can change this with the [`webserver_type`](../configuration/config.md#webserver_type) config option, or using the [`ddev config`](../usage/commands.md#config) command with the `--webserver-type` flag.
+
+!!!tip "Using FrankenPHP web server"
+    The `webserver_type: generic` setting allows you to use FrankenPHP as your web server. See the [ddev-frankenphp](https://github.com/ddev/ddev-frankenphp) add-on for details.
 
 ## Adding Services to a Project
 
@@ -219,7 +154,7 @@ web_extra_daemons:
 - `web_extra_daemons` is a shortcut for adding a configuration to `supervisord`, which organizes daemons inside the web container. If the default settings are inadequate for your use, you can write a [complete config file for your daemon](#explicit-supervisord-configuration-for-additional-daemons).
 - Your daemon is expected to run in the foreground, not to daemonize itself, `supervisord` will take care of that.
 - To debug and/or get your daemon running to begin with, experiment with running it manually inside `ddev ssh`. Then when it works perfectly implement auto-start with `web_extra_daemons`.
-- You can manually restart all daemons with `ddev exec supervisorctl restart webextradaemons:*` or `ddev exec supervisorctl restart webextradaemons:<yourdaemon>`. (`supervisorctl stop` and `supervisorctl start` are available as you would expect.)
+- You can manually restart all daemons with `ddev exec supervisorctl restart 'webextradaemons:*'` or `ddev exec supervisorctl restart webextradaemons:<yourdaemon>`. (`supervisorctl stop` and `supervisorctl start` are available as you would expect.)
 
 ## Exposing Extra Ports via `ddev-router`
 
@@ -277,7 +212,7 @@ You can also have more than one config file in the `.ddev/nginx_full` directory,
 - The configuration is copied into the container during restart. Therefore it is not possible to edit the host file for the changes to take effect. You may want to edit the file directly inside the container at `/etc/nginx/sites-enabled/`. (For example, run [`ddev ssh`](../usage/commands.md#ssh) to get into the container.)
 - You can run `ddev exec nginx -t` to test whether your configuration inside the container is valid. (Or run [`ddev ssh`](../usage/commands.md#ssh) and run `nginx -t`.)
 - You can reload the nginx configuration by running either [`ddev restart`](../usage/commands.md#restart) or editing the configuration inside the container at `/etc/nginx/sites-enabled/` and running `ddev exec nginx -s reload` on the host system (inside the container run `nginx -s reload`).
-- The alias `Alias "/phpstatus" "/var/www/phpstatus.php"` is required for the health check script to work.
+- The health check script needs the line `include /etc/nginx/monitoring.conf;` in `nginx-site.conf`. It serves `/phpstatus` only to requests from `127.0.0.1` inside the container.
 
 ### Multiple Docroots in nginx (Advanced)
 
@@ -310,7 +245,7 @@ When you run [`ddev restart`](../usage/commands.md#restart) using `apache-fpm`, 
 - Add your configuration changes.
 - Save your configuration file and run [`ddev restart`](../usage/commands.md#restart). If you encounter issues with your configuration or the project fails to start, use [`ddev logs`](../usage/commands.md#logs) to inspect the logs for possible Apache configuration errors.
 - Use `ddev exec apachectl -t` to do a general Apache syntax check.
-- The alias `Alias "/phpstatus" "/var/www/phpstatus.php"` is required for the health check script to work.
+- The health check script needs the alias `Alias "/phpstatus" "/var/www/phpstatus.php"` and its `<Location "/phpstatus">` block in `apache-site.conf`. Keep `Require ip 127.0.0.1` in that block: only the health check inside the container needs `/phpstatus`. Other virtual hosts, such as a second docroot, do not need them.
 - Any errors in your configuration may cause the `web` container to fail. If you see that behavior, use `ddev logs` to diagnose.
 
 !!!warning "Important!"
@@ -337,14 +272,23 @@ max_execution_time = 240;
 
 You can provide additional MySQL/MariaDB configuration for a project by creating a directory called `.ddev/mysql/` and adding any number of `*.cnf` MySQL configuration files. These files will be automatically included when MySQL is started. Make sure that the section header is included in the file.
 
-An example file in `.ddev/mysql/no_utf8mb4.cnf` might be:
+A common use case is setting the server's default character set and collation. DDEV automatically replaces modern collations like `utf8mb4_0900_ai_ci` (MySQL 8.0+) and `utf8mb4_uca1400_ai_ci` (MariaDB 11.x) with the server's `collation-server` value during `ddev import-db`. Setting this explicitly ensures the substitution lands on the collation you expect:
 
-```
+An example file in `.ddev/mysql/utf8mb4.cnf`:
+
+```ini
 [mysqld]
-server-id = 2
-collation-server = utf8_general_ci
-character-set-server = utf8
-innodb_large_prefix=false
+collation-server = utf8mb4_unicode_ci
+character-set-server = utf8mb4
+```
+
+DDEV already sets `max_allowed_packet` to 256M by default, which covers most cases. If your project works with unusually large BLOBs you can raise it further, though this is rarely needed:
+
+An example file in `.ddev/mysql/max-packet.cnf`:
+
+```ini
+[mysqld]
+max_allowed_packet = 512M
 ```
 
 To load the new configuration, run [`ddev restart`](../usage/commands.md#restart).
@@ -401,6 +345,8 @@ can have their intended affect.
 
 [`override_config`](../configuration/config.md#override_config) affects only behavior of the `config.*.yaml` file it exists in.
 
+The global `global_config.yaml` can be extended the same way with `global_config.*.yaml` files in the [global configuration directory](../usage/architecture.md#global-files), with the same rules and the same `override_config` behavior.
+
 To experiment with the behavior of a set of `config.*.yaml` files, use the [`ddev utility configyaml`](../usage/commands.md#utility-configyaml) file; it's especially valuable with the `yq` command, for example `ddev utility configyaml | yq`.
 
 ## Explicit `supervisord` Configuration for Additional Daemons
@@ -415,7 +361,7 @@ command=/var/www/html/path/to/daemon
 directory=/var/www/html/
 autorestart=true
 startretries=3
-stdout_logfile=/var/tmp/logpipe
+stdout_logfile=/proc/1/fd/1
 stdout_logfile_maxbytes=0
 redirect_stderr=true
 ```

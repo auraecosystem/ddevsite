@@ -3,7 +3,7 @@ name: ${COMPOSE_PROJECT_NAME}
 services:
   {{ if not .OmitDB }}
   db:
-    container_name: {{ .Plugin }}-${DDEV_SITENAME}-db
+    container_name: ddev-${DDEV_SITENAME}-db
     build:
       context: '{{ .DBBuildContext }}'
       args:
@@ -30,6 +30,9 @@ services:
       - .:/mnt/ddev_config
       - ./db_snapshots:/mnt/snapshots
       {{ end }} {{/* end if .NoBindMounts */}}
+      {{ if .SeedSnapshotMountDir }}
+      - {{ .SeedSnapshotMountDir }}:{{ .SeedSnapshotMountTarget }}:ro
+      {{ end }}
       - ddev-global-cache:/mnt/ddev-global-cache
     restart: "no"
 
@@ -37,14 +40,8 @@ services:
     hostname: {{ .Name }}-db
     ports:
       - "{{ .DockerIP }}:$DDEV_HOST_DB_PORT:{{ .DBPort }}"
-    labels:
-      com.ddev.site-name: ${DDEV_SITENAME}
-      com.ddev.platform: {{ .Plugin }}
-      com.ddev.app-type: {{ .AppType }}
-      com.ddev.approot: $DDEV_APPROOT
     environment:
       - COLUMNS
-      - BITNAMI_VOLUME_DIR={{ .BitnamiVolumeDir }}
       - DDEV_DATABASE
       - DDEV_DATABASE_FAMILY
       - DDEV_GID
@@ -87,14 +84,14 @@ services:
       interval: "1s"
       retries: 70
       start_period: "{{ .DefaultContainerTimeout }}s"
-      {{ if templateCanUse "healthcheck.start_interval" -}}
+      {{- if templateCanUse "healthcheck.start_interval" }}
       start_interval: "1s"
       {{- end }}
       timeout: "70s"
   {{ end }} {{/* end if not .OmitDB */}}
 
   web:
-    container_name: {{ .Plugin }}-${DDEV_SITENAME}-web
+    container_name: ddev-${DDEV_SITENAME}-web
     build:
       context: '{{ .WebBuildContext }}'
       args:
@@ -104,6 +101,9 @@ services:
         gid: '{{ .GID }}'
         DDEV_PHP_VERSION: ${DDEV_PHP_VERSION}
         DDEV_DATABASE: ${DDEV_DATABASE}
+      # A secret, unlike a build arg, stays out of the image
+      secrets:
+        - github_token
     image: ${DDEV_WEBIMAGE}-${DDEV_SITENAME}-built
     command: /pre-start.sh
 
@@ -134,13 +134,6 @@ services:
         target: /var/www
         volume:
           nocopy: true
-      # This second mutagen mount is only to make just the volume available so it can be chowned
-      # without accidentally also hitting docker mounts
-      - type: volume
-        source: project_mutagen
-        target: /tmp/project_mutagen
-        volume:
-          nocopy: true
       {{- end }}
 
       {{- if .NoBindMounts }}
@@ -166,6 +159,16 @@ services:
 
     restart: "no"
     user: '$DDEV_UID:$DDEV_GID'
+    # Group 0 (root) is added here because Docker does not derive supplementary
+    # groups from /etc/group when both uid and gid are given explicitly (as
+    # above); it must be requested with group_add. This lets the container user
+    # read/write directories baked group-writable-by-root in the image (e.g.
+    # /usr/local/n, see containers/ddev-php-base/Dockerfile and the useradd
+    # command in WriteBuildDockerfile), instead of DDEV chgrp/chmod'ing them
+    # for every project. See
+    # https://developers.redhat.com/blog/2020/10/26/adapting-docker-and-kubernetes-containers-to-run-on-red-hat-openshift-container-platform
+    group_add:
+      - "0"
     hostname: {{ .Name }}-web
 
     ports:
@@ -234,6 +237,8 @@ services:
     - IS_DDEV_PROJECT=true
     - LINES
     - MYSQL_HISTFILE=/mnt/ddev-global-cache/mysqlhistory/${DDEV_SITENAME}-web/mysql_history
+    - N_PREFIX=/usr/local/n
+    - N_CACHE_PREFIX=/mnt/ddev-global-cache/n_prefix/${DDEV_SITENAME}-web
     - NODE_EXTRA_CA_CERTS=/mnt/ddev-global-cache/mkcert/rootCA.pem
     - npm_config_cache=/mnt/ddev-global-cache/npm
     {{- if ne (env "DDEV_PAGER") "" }}
@@ -243,24 +248,13 @@ services:
     - PGHOST=db
     - PGPASSWORD=db
     - PGUSER=db
-    - PHP_IDE_CONFIG=serverName=${DDEV_SITENAME}.${DDEV_TLD}
+    - PHP_IDE_CONFIG=serverName={{ .Name | lower }}.${DDEV_TLD}
     - SSH_AUTH_SOCK=/home/.ssh-agent/socket
     - TZ={{ .Timezone }}
     - USER={{ .Username }}
     - VIRTUAL_HOST=${DDEV_HOSTNAME}
-    # This timeout is used for the web container's /start.sh,
-    # it should be divided by the number of times it's going to be used.
-    # The total timeout must be less than the default_container_timeout,
-    # that's why we subtract 5 seconds to make sure we didn't hit exactly.
-    # Currently used in 2 places: n-install.sh, install_nvm.sh
-    - START_SCRIPT_TIMEOUT={{ div (sub .DefaultContainerTimeout 5) 2 }}
     {{ range $env := .WebEnvironment }}- "{{ $env }}"
     {{ end }}
-    labels:
-      com.ddev.site-name: ${DDEV_SITENAME}
-      com.ddev.platform: {{ .Plugin }}
-      com.ddev.app-type: {{ .AppType }}
-      com.ddev.approot: $DDEV_APPROOT
 
     healthcheck:
       test: "/healthcheck.sh"
@@ -275,9 +269,6 @@ services:
   xhgui:
     image: {{ .XhguiImage }}
     container_name: ddev-${DDEV_SITENAME}-xhgui
-    labels:
-      com.ddev.site-name: ${DDEV_SITENAME}
-      com.ddev.approot: $DDEV_APPROOT
     profiles:
       - xhgui
     restart: "no"
@@ -302,7 +293,7 @@ services:
       interval: "1s"
       retries: 70
       start_period: "{{ .DefaultContainerTimeout }}s"
-      {{ if templateCanUse "healthcheck.start_interval" -}}
+      {{- if templateCanUse "healthcheck.start_interval" }}
       start_interval: "1s"
       {{- end }}
       timeout: "70s"
@@ -315,8 +306,6 @@ networks:
     external: true
   default:
     name: ${COMPOSE_PROJECT_NAME}_default
-    labels:
-      com.ddev.platform: ddev
 
 volumes:
   {{ if not .OmitDB }}
@@ -346,3 +335,7 @@ volumes:
     external: true
 
   {{ end }}{{/* end if and .MutagenEnabled (not .NoProjectMount) */}}
+
+secrets:
+  github_token:
+    environment: DDEV_BUILD_GITHUB_TOKEN

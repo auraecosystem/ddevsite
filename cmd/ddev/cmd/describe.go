@@ -6,7 +6,10 @@ import (
 	"sort"
 	"strings"
 
+	"os"
+
 	"github.com/ddev/ddev/pkg/ddevapp"
+	"github.com/ddev/ddev/pkg/dockerutil"
 	"github.com/ddev/ddev/pkg/fileutil"
 	"github.com/ddev/ddev/pkg/globalconfig"
 	"github.com/ddev/ddev/pkg/netutil"
@@ -18,6 +21,7 @@ import (
 	"github.com/ddev/ddev/pkg/versionconstants"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/jedib0t/go-pretty/v6/text"
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
 
@@ -25,6 +29,7 @@ import (
 var DescribeCommand = &cobra.Command{
 	ValidArgsFunction: ddevapp.GetProjectNamesFunc("all", 1),
 	Use:               "describe [projectname]",
+	Annotations:       map[string]string{NoDockerCommand: "true"},
 	Aliases:           []string{"status", "st", "desc"},
 	Short:             "Get a detailed description of a running DDEV project.",
 	Long: `Get a detailed description of a running DDEV project. Describe provides basic
@@ -38,6 +43,7 @@ running 'ddev describe <projectname>'.`,
 		if len(args) > 1 {
 			util.Failed("Too many arguments provided. Please use 'ddev describe' or 'ddev describe [projectname]'")
 		}
+		defer dockerutil.CacheContainers()()
 
 		apps, err := getRequestedProjects(args, false)
 		if err != nil {
@@ -50,7 +56,9 @@ running 'ddev describe <projectname>'.`,
 		}
 
 		// Ensure we have all services to describe for never-started projects.
-		if !fileutil.FileExists(app.DockerComposeFullRenderedYAMLPath()) {
+		// Rendering needs Docker, so without it such a project shows only web and db.
+		_, dockerErr := dockerutil.GetDockerVersion()
+		if dockerErr == nil && !fileutil.FileExists(app.DockerComposeFullRenderedYAMLPath()) {
 			_ = app.DockerEnv()
 			err = app.WriteDockerComposeYAML()
 			if err != nil {
@@ -70,29 +78,31 @@ running 'ddev describe <projectname>'.`,
 }
 
 // renderAppDescribe takes the map describing the app and renders it for plain-text output
-func renderAppDescribe(app *ddevapp.DdevApp, desc map[string]interface{}) (string, error) {
+func renderAppDescribe(app *ddevapp.DdevApp, desc map[string]any) (string, error) {
+	dockerIP, _ := dockerutil.GetDockerIP()
+	if dockerIP == "" {
+		dockerIP = "127.0.0.1"
+	}
+
 	var out bytes.Buffer
 
 	t := table.NewWriter()
 	t.SetOutputMirror(&out)
 	styles.SetGlobalTableStyle(t, false)
-	tWidth, _ := nodeps.GetTerminalWidthHeight()
-	urlPortWidth := float64(35)
-	infoWidth := 30
-	urlPortWidthFactor := float64(2.5)
-	if tWidth != 0 {
-		urlPortWidth = float64(tWidth) / urlPortWidthFactor
-		infoWidth = tWidth / 4
-	}
-	if !globalconfig.DdevGlobalConfig.SimpleFormatting {
+	tWidth, _ := nodeps.GetTerminalWidthHeight(os.Stdout)
+	urlPortWidth := float64(tWidth) / 2.5
+	infoWidth := tWidth / 4
+	if !globalconfig.DdevGlobalConfig.SimpleFormatting && isatty.IsTerminal(os.Stdout.Fd()) {
 		t.SetColumnConfigs([]table.ColumnConfig{
 			{
 				Name:     "Service",
 				WidthMax: 12,
 			},
 			{
-				Name: "URL/Port",
-				//WidthMax: int(urlPortWidth),
+				Name:     "URL/Port",
+				WidthMax: int(urlPortWidth),
+				// Wrap each embedded line individually to preserve intentional line breaks
+				WidthMaxEnforcer: ddevapp.FitTableCell,
 			},
 			{
 				Name:     "Info",
@@ -102,7 +112,7 @@ func renderAppDescribe(app *ddevapp.DdevApp, desc map[string]interface{}) (strin
 	}
 	dockerPlatform, err := version.GetDockerPlatform()
 	if err != nil {
-		util.Warning("Unable to determine Docker platform: %v", err)
+		dockerPlatform = util.ColorizeText(err.Error(), "red")
 	}
 
 	router := globalconfig.DdevGlobalConfig.Router
@@ -110,13 +120,13 @@ func renderAppDescribe(app *ddevapp.DdevApp, desc map[string]interface{}) (strin
 		router = "disabled"
 	}
 
-	t.SetTitle(fmt.Sprintf("Project: %s %s %s\nDocker platform: %s\nRouter: %s\nDDEV version: %s", app.Name, desc["shortroot"].(string), app.GetPrimaryURL(), dockerPlatform, router, versionconstants.DdevVersion))
+	t.SetTitle(fmt.Sprintf("Project: %s %s %s\nDocker platform: %s\nRouter: %s\nDDEV version: %s", app.Name, output.Hyperlink(output.FileURL(app.GetAppRoot()), desc["shortroot"].(string)), output.Hyperlink(app.GetPrimaryURL(), app.GetPrimaryURL()), dockerPlatform, router, versionconstants.DdevVersion))
 	t.AppendHeader(table.Row{"Service", "Stat", "URL/Port", "Info"})
 
 	// Only show extended status for running sites.
 	serviceNames := []string{}
 	// Get a list of services in the order we want them, with web and db first
-	serviceMap := desc["services"].(map[string]map[string]interface{})
+	serviceMap := desc["services"].(map[string]map[string]any)
 	for k := range serviceMap {
 		if k != "web" && k != "db" {
 			serviceNames = append(serviceNames, k)
@@ -139,43 +149,47 @@ func renderAppDescribe(app *ddevapp.DdevApp, desc map[string]interface{}) (strin
 		// Normal case, using ddev-router based URLs
 		case !ddevapp.IsRouterDisabled(app):
 			if httpsURL, ok := v["https_url"].(string); ok && !app.CanUseHTTPOnly() {
-				urlPortParts = append(urlPortParts, netutil.NormalizeURL(httpsURL))
+				u := netutil.NormalizeURL(httpsURL)
+				urlPortParts = append(urlPortParts, output.Hyperlink(u, u))
 			} else if httpURL, ok = v["http_url"].(string); ok {
-				urlPortParts = append(urlPortParts, netutil.NormalizeURL(httpURL))
+				u := netutil.NormalizeURL(httpURL)
+				urlPortParts = append(urlPortParts, output.Hyperlink(u, u))
 			}
 
-		// Codespaces, web container only, using port proxied by Codespaces
-		case nodeps.IsCodespaces() && k == "web":
-			urlPortParts = append(urlPortParts, app.GetPrimaryURL())
+		// Codespaces, web container only, using port proxied by Codespaces/Devcontainer
+		case nodeps.IsDevcontainer() && k == "web":
+			urlPortParts = append(urlPortParts, output.Hyperlink(app.GetPrimaryURL(), app.GetPrimaryURL()))
 
 		// Router disabled, but not because of Codespaces, use direct http url
 		case ddevapp.IsRouterDisabled(app):
 			if httpURL, ok := v["host_http_url"].(string); ok && httpURL != "" {
-				urlPortParts = append(urlPortParts, netutil.NormalizeURL(httpURL))
+				u := netutil.NormalizeURL(httpURL)
+				urlPortParts = append(urlPortParts, output.Hyperlink(u, u))
 			}
 		}
 
-		portStr := "InDocker"
+		var portStr strings.Builder
+		portStr.WriteString("InDocker")
 		var portMappingDockerHost = map[string]string{}
 		if p, ok := v["host_ports_mapping"].([]map[string]string); ok && len(p) != 0 {
-			portStr += " -> Host"
+			portStr.WriteString(" -> Host")
 			for _, portMapping := range p {
 				portMappingDockerHost[portMapping["exposed_port"]] = portMapping["host_port"]
 			}
 		}
-		portStr += ":"
+		portStr.WriteString(":")
 
 		if p, ok := v["exposed_ports"].(string); ok {
 			if p != "" {
-				for _, exposedPort := range strings.Split(p, ",") {
-					portStr += "\n - " + v["short_name"].(string) + ":" + exposedPort
+				for exposedPort := range strings.SplitSeq(p, ",") {
+					portStr.WriteString("\n - " + v["short_name"].(string) + ":" + exposedPort)
 					if host, ok := portMappingDockerHost[exposedPort]; ok {
-						portStr += " -> 127.0.0.1:" + host
+						portStr.WriteString(" -> " + dockerIP + ":" + host)
 					}
 				}
-				urlPortParts = append(urlPortParts, portStr)
+				urlPortParts = append(urlPortParts, portStr.String())
 			} else {
-				urlPortParts = append(urlPortParts, portStr+" "+v["short_name"].(string))
+				urlPortParts = append(urlPortParts, portStr.String()+" "+v["short_name"].(string))
 			}
 		}
 
@@ -224,34 +238,35 @@ func renderAppDescribe(app *ddevapp.DdevApp, desc map[string]interface{}) (strin
 		if _, ok := desc["mailpit_https_url"]; ok && !app.CanUseHTTPOnly() {
 			mailpitURL = desc["mailpit_https_url"].(string)
 		}
-		t.AppendRow(table.Row{"Mailpit", "", fmt.Sprintf("Mailpit: %s\nLaunch: ddev mailpit", mailpitURL)})
+		t.AppendRow(table.Row{"Mailpit", "", fmt.Sprintf("Mailpit: %s\nLaunch: ddev mailpit", output.Hyperlink(mailpitURL, mailpitURL))})
 
 		ddevapp.SyncGenericWebserverPortsWithRouterPorts(app)
 
 		//WebExtraExposedPorts stanza
 		for _, extraPort := range app.WebExtraExposedPorts {
+			scheme, port := "https", extraPort.HTTPSPort
 			if app.CanUseHTTPOnly() {
-				url := netutil.NormalizeURL(fmt.Sprintf("http://%s:%d", app.GetHostname(), extraPort.HTTPPort))
-				t.AppendRow(table.Row{extraPort.Name, "", fmt.Sprintf("%s\nInDocker: web:%d", url, extraPort.WebContainerPort)})
-			} else {
-				url := netutil.NormalizeURL(fmt.Sprintf("https://%s:%d", app.GetHostname(), extraPort.HTTPSPort))
-				t.AppendRow(table.Row{extraPort.Name, "", fmt.Sprintf("%s\nInDocker: web:%d", url, extraPort.WebContainerPort)})
+				scheme, port = "http", extraPort.HTTPPort
 			}
+			url := netutil.NormalizeURL(fmt.Sprintf("%s://%s:%d", scheme, app.GetHostname(), port))
+			t.AppendRow(table.Row{extraPort.Name, "", fmt.Sprintf("%s\nInDocker: web:%d", output.Hyperlink(url, url), extraPort.WebContainerPort)})
 		}
 
-		// All URLs stanza
+		// All URLs stanza, one per line so each stays an intact clickable link
 		_, _, urls := app.GetAllURLs()
 		if len(urls) > 0 {
-			s := strings.Join(urls, ", ")
-			urlString := text.WrapSoft(s, int(urlPortWidth))
-			t.AppendRow(table.Row{"Project URLs", "", urlString})
+			linkedURLs := make([]string, len(urls))
+			for i, u := range urls {
+				linkedURLs[i] = output.Hyperlink(u, u)
+			}
+			t.AppendRow(table.Row{"Project URLs", "", strings.Join(linkedURLs, "\n")})
 		}
 	}
 	bindInfo := []string{}
-	if app.BindAllInterfaces {
+	if app.BindAllInterfaces || dockerutil.IsRemoteDockerHost() {
 		bindInfo = append(bindInfo, "bind-all-interfaces ENABLED")
 	}
-	if globalconfig.DdevGlobalConfig.RouterBindAllInterfaces && !ddevapp.IsRouterDisabled(app) {
+	if (globalconfig.DdevGlobalConfig.RouterBindAllInterfaces || dockerutil.IsRemoteDockerHost()) && !ddevapp.IsRouterDisabled(app) {
 		bindInfo = append(bindInfo, "router-bind-all-interfaces ENABLED")
 	}
 	if len(bindInfo) > 0 {
@@ -272,6 +287,6 @@ func renderAppDescribe(app *ddevapp.DdevApp, desc map[string]interface{}) (strin
 	return out.String(), nil
 }
 
-func init() {
+func registerDescribeCmd() {
 	RootCmd.AddCommand(DescribeCommand)
 }

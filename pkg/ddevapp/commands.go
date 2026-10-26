@@ -5,11 +5,17 @@ import (
 	"os"
 	"path/filepath"
 
-	dockerImages "github.com/ddev/ddev/pkg/docker"
 	"github.com/ddev/ddev/pkg/dockerutil"
+	"github.com/ddev/ddev/pkg/fileutil"
 	"github.com/ddev/ddev/pkg/globalconfig"
 	"github.com/ddev/ddev/pkg/nodeps"
+	"github.com/ddev/ddev/pkg/util"
+	"github.com/ddev/ddev/pkg/versionconstants"
 )
+
+// globalCommandsHashFile is the name of the file that stores the fingerprint
+// of the global commands directory to avoid unnecessary re-copying.
+const globalCommandsHashFile = ".global-commands-hash"
 
 // PopulateGlobalCustomCommandFiles sets up the custom command files in the project
 // directories where they need to go.
@@ -20,25 +26,46 @@ func PopulateGlobalCustomCommandFiles() error {
 		return nil
 	}
 
-	// Remove contents of the directory, if the directory exists and has some contents
-	commandDirInVolume := "/mnt/ddev-global-cache/global-commands/"
-	_, _, err = performTaskInContainer([]string{"rm", "-rf", commandDirInVolume})
+	// Check if the source directory has changed since last copy.
+	// If not, skip the expensive container operations.
+	currentHash, err := fileutil.HashDir(sourceGlobalCommandPath)
 	if err != nil {
-		return fmt.Errorf("unable to rm %s: %v", commandDirInVolume, err)
+		util.Warning("unable to hash global commands directory: %v", err)
+	}
+	// Include the volume's creation timestamp in the cache key so that deleting
+	// and recreating the volume (e.g. between CI runs) always triggers a fresh copy,
+	// even when the source directory hash is unchanged.
+	volCreatedAt := dockerutil.VolumeCreatedAt("ddev-global-cache")
+	cacheKey := currentHash + "|" + volCreatedAt
+	hashFilePath := filepath.Join(globalconfig.GetGlobalDdevDir(), globalCommandsHashFile)
+	if savedKey, err := os.ReadFile(hashFilePath); err == nil && string(savedKey) == cacheKey && volCreatedAt != "" {
+		util.Verbose("PopulateGlobalCustomCommandFiles: skipping, global commands unchanged")
+		return nil
 	}
 
-	// Copy commands into container (this will create the directory if it's not there already)
+	util.Debug("PopulateGlobalCustomCommandFiles: copying, key=%q saved=%q", cacheKey, savedKeyForLog(hashFilePath))
+
+	commandDirInVolume := "/mnt/ddev-global-cache/global-commands/"
+
+	// Use CopyIntoVolume with destroyExisting=true to combine the rm + copy
+	// into a single container operation (previously these were separate).
 	uid, _, _ := dockerutil.GetContainerUser()
-	err = dockerutil.CopyIntoVolume(sourceGlobalCommandPath, "ddev-global-cache", "global-commands", uid, "host", false)
+	err = dockerutil.CopyIntoVolume(sourceGlobalCommandPath, "ddev-global-cache", "global-commands", uid, "host", true)
 	if err != nil {
 		return err
 	}
 
 	// Make sure all commands can be executed
-	_, stderr, err := performTaskInContainer([]string{"sh", "-c", "chmod -R u+rwx " + commandDirInVolume})
+	stdout, stderr, err := performTaskInContainer([]string{"sh", "-c", "chmod -R u+rwx " + commandDirInVolume + " && find " + commandDirInVolume + " -type f"})
 	if err != nil {
 		return fmt.Errorf("unable to chmod %s: %v (stderr=%s)", commandDirInVolume, err, stderr)
 	}
+
+	// Lists what landed in the volume, to diagnose commands missing after a copy.
+	util.Debug("PopulateGlobalCustomCommandFiles: volume files:\n%s", stdout)
+
+	// Save the cache key so we can skip next time if unchanged
+	_ = os.WriteFile(hashFilePath, []byte(cacheKey), 0644)
 
 	return nil
 }
@@ -63,5 +90,11 @@ func performTaskInContainer(command []string) (string, string, error) {
 	// If there is no running active site, use an anonymous container instead.
 	containerName := "performTaskInContainer" + nodeps.RandomString(12)
 	uid, _, _ := dockerutil.GetContainerUser()
-	return dockerutil.RunSimpleContainer(dockerImages.GetWebImage(), containerName, command, nil, nil, []string{"ddev-global-cache:/mnt/ddev-global-cache"}, uid, true, false, map[string]string{"com.ddev.site-name": ""}, nil, &dockerutil.NoHealthCheck)
+	return dockerutil.RunSimpleContainer(versionconstants.UtilitiesImage, containerName, command, nil, nil, []string{"ddev-global-cache:/mnt/ddev-global-cache"}, uid, true, false, nil, nil, nil)
+}
+
+// savedKeyForLog returns the stored global commands cache key, or "" if unreadable.
+func savedKeyForLog(hashFilePath string) string {
+	b, _ := os.ReadFile(hashFilePath)
+	return string(b)
 }

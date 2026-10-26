@@ -111,14 +111,32 @@ By default, DDEV is set up to contact the default port, port 9003 on your IDE. H
 
 Composer disables Xdebug even if it's enabled in DDEV. To debug Composer itself, you need to force Xdebug to stay active.
 
-According to the [Composer docs](https://getcomposer.org/doc/articles/troubleshooting.md#xdebug-impact-on-composer), set the `COMPOSER_ALLOW_XDEBUG=1` [environment variable](../extend/customization-extendibility.md#environment-variables-for-containers-and-services) to allow all Composer commands to run with Xdebug when the extension is enabled.
+According to the [Composer docs](https://getcomposer.org/doc/articles/troubleshooting.md#xdebug-impact-on-composer), set the `COMPOSER_ALLOW_XDEBUG=1` [environment variable](../configuration/environment-variables.md) to allow all Composer commands to run with Xdebug when the extension is enabled.
 
 !!!note "Debugging code in runtime"
     Composer may move some classes (like plugins) to temporary files at runtime, so IDE breakpoints may not always be triggered. Use `xdebug_break()` directly in code when needed.
 
 ## Troubleshooting Xdebug
 
-The basic thing to understand about Xdebug is that it’s a network protocol. Your IDE (like PhpStorm) will listen on the Xdebug port (port 9003). If Xdebug is enabled in the DDEV web container (`ddev xdebug on`), PHP inside that container will try to open a TCP connection to the IDE. Docker’s networking places the host-side listening IDE at `host.docker.internal:9003`, so you have to make sure the network connection is clear and can be made and everything should work. Firewalls may get in the way.
+### Use the Xdebug Diagnostics Tool
+
+The easiest way to troubleshoot Xdebug issues is to use the (experimental) built-in diagnostic tool:
+
+```bash
+ddev utility xdebug-diagnose
+```
+
+This command checks your Xdebug configuration, network connectivity, and IDE settings. For a guided step-by-step diagnostic that tests your actual IDE, use:
+
+```bash
+ddev utility xdebug-diagnose --interactive
+```
+
+The interactive mode will walk you through each step and verify that your IDE is correctly configured and responding to Xdebug connections.
+
+### Understanding the Xdebug Network Protocol
+
+The basic thing to understand about Xdebug is that it's a network protocol. Your IDE (like PhpStorm) will listen on the Xdebug port (port 9003). If Xdebug is enabled in the DDEV web container (`ddev xdebug on`), PHP inside that container will try to open a TCP connection to the IDE. Docker’s networking places the host-side listening IDE at `host.docker.internal:9003`, so you have to make sure the network connection is clear and can be made and everything should work. Firewalls may get in the way.
 
 Here are basic steps to take to sort out any difficulty:
 
@@ -127,18 +145,33 @@ Here are basic steps to take to sort out any difficulty:
 * `ddev logs` may show you something like `Xdebug: [Step Debug] Could not connect to debugging client. Tried: host.docker.internal:9003 (fallback through xdebug.client_host/xdebug.client_port) :-(`. If it does, it may mean that your firewall is blocking the connection, or in a small number of cases that `host.docker.internal` is not figured out successfully by DDEV or Docker. If it does:
     * Temporarily disable your firewall. On Windows/WSL this is typically Windows Defender; on macOS you'll find it in settings; on Debian/Ubuntu it's typically `ufw` so `sudo ufw disable`.
     * If disabling the firewall fixes the problem, re-enable the firewall and add an exception for port 9003. Your firewall will have a way to do this; on Debian/Ubuntu run `sudo ufw allow 9003`.
+    * If your machine is managed by corporate endpoint security (Cisco Secure Endpoint, CrowdStrike, etc.), it may block container → host connections even when the OS firewall is "off":
+        * If possible, temporarily disable the endpoint security agent and try again.
+        * If you can’t disable it, ask your IT/security team to allow inbound connections to your IDE on port 9003 from the container/VM subnet(s).
+        * On macOS/Linux, you can confirm whether traffic is reaching the host by watching for packets while connecting from the container:
+
+            ```bash
+            # On the host (in one terminal)
+            sudo tcpdump -ni any tcp port 9003
+        
+            # In the web container (in another terminal)
+            ddev exec nc -vz -w2 host.docker.internal 9003
+            ```
+
+            If `tcpdump` shows nothing while `nc` runs, something upstream (often endpoint security) is filtering the traffic.
+
 * Delete existing PhpStorm "servers" in settings, or recreate VS Code’s `launch.json` file exactly as shown in the instructions here.
 * Remember the standard Xdebug port is port 9003, and that's what all instructions here use. In the past some IDEs used port 9000.
 * If your `$HOME/.ddev/global_config.yaml` (see [global configuration directory](../usage/architecture.md#global-files)) has `xdebug_ide_location` set, remove that to begin with except for [very unusual situations](../configuration/config.md#xdebug_ide_location). You can set it to the default value with `ddev config global --xdebug-ide-location=""`.
 * Reboot your computer.
-* If you're running WSL2 and have PhpStorm running inside WSL2 (the Linux version of PhpStorm) then `ddev config global --xdebug-ide-location=wsl2`. (This is unusual.)
+* If you're running WSL2 and have PhpStorm running inside WSL2 (the Linux version of PhpStorm) then `ddev config global --xdebug-ide-location=wsl2`. (This is very unusual.)
 * Temporarily disable any *firewall* or *VPN* if you’re having trouble. Xdebug is a network protocol, and the PHP process inside the web container must be able to establish a TCP connection to the listening IDE (PhpStorm, for example).
 * Confirm that DDEV’s [`xdebug_ide_location`](../configuration/config.md#xdebug_ide_location) config setting is set properly, which in most cases should be set to an empty string. Check both your project's `.ddev/config.yaml` and DDEV’s global `$HOME/.ddev/global_config.yaml` (see [global configuration directory](../usage/architecture.md#global-files)).
 * Use `ddev xdebug on` to enable Xdebug when you want it, and `ddev xdebug off` when you’re done with it.
 * You can also use `ddev xdebug toggle` to easily toggle Xdebug on and off.
 * Set a breakpoint at the first executable line of your `index.php`.
 * Tell your IDE to start listening. (PhpStorm: click the bug-listen button, VS Code: run the debugger.)
-* Use `curl` or a browser to create a web request. For example, `curl https://d10.ddev.site` or run `ddev exec curl localhost`.
+* Use `curl` or a browser to create a web request. For example, `curl https://d11.ddev.site` or run `ddev exec curl localhost`.
 * `ddev ssh` into the web container. Can you run `telnet host.docker.internal 9003` and have it connect? If not, follow the instructions above about disabling firewall and adding an exception for port 9003.
 * In PhpStorm, disable the “listen for connections” button so it won’t listen. Or exit PhpStorm. With another IDE like VS Code, stop the debugger from listening.
 * `ddev ssh` into the web container. Can you run `telnet host.docker.internal 9003` and have it connect? If so, you have something else running on port 9003. On the host, use `sudo lsof -i :9003 -sTCP:LISTEN` to find out what’s there and stop it. Don’t continue debugging until your telnet command does not connect. (On Windows WSL2 you may have to look for listeners both inside WSL2 and on the Windows side.)
@@ -153,8 +186,8 @@ Here are basic steps to take to sort out any difficulty:
 
 WSL2 is a complicated environment for Xdebug, especially if you're running your IDE on the Windows side, as most people do.
 
-* With PhpStorm, consider using the "Remote Development" feature to connect to WSL. That runs an actual PhpStorm instance on WSL2 to reduce networking complexity.
-* When using an IDE inside WSL2—like you would when running PhpStorm or Visual Studio Code inside WSL2, or using PhpStorm's "Remote Development" feature—you may need to use the [`xdebug_ide_location`](../configuration/config.md#xdebug_ide_location) setting to tell Xdebug to expect the IDE under WSL2. You can do this by running `ddev config global --xdebug-ide-location=wsl2`.
+* Use `ddev utility xdebug-diagnose --interactive`, which normally will uncover any issues.
+* When using an IDE inside WSL2—like you would when running PhpStorm or Visual Studio Code inside WSL2, or using PhpStorm's "Remote Development" feature—you may need to use the [`xdebug_ide_location`](../configuration/config.md#xdebug_ide_location) setting to tell Xdebug to expect the IDE under WSL2. You can do this by running `ddev config global --xdebug-ide-location=wsl2`. This is very unusual.
 * `export DDEV_DEBUG=true && ddev start` will show you how DDEV is calculating the `host.docker.internal` IP address to be used when contacting the IDE, which may give a hint about problems you might discover in the general troubleshooting discussed above, when trying to connect to the listening IDE.
 * If you're using docker-ce and have the IDE on the Windows side, `ip -4 route show default` in the WSL2 distro is the best known way to figure out where the IDE is in the Windows networking scheme, so DDEV uses that to determine `host.docker.internal`. That value should be the same as `host.docker.internal`, so running `ddev exec ping -c 1 host.docker.internal` will show you what's actually being used. If your IDE is actually at a different address, you can tell DDEV to override the discovered value for `host.docker.internal` by running `ddev config global --xdebug-ide-location=<some_ip_address>`.
 * If you’re using PhpStorm inside WSL2 (or perhaps other Linux configurations), go to *Help* → *Edit Custom VM Options* and add an additional line: `-Djava.net.preferIPv4Stack=true` This makes PhpStorm listen for Xdebug using IPv4; the Linux version of PhpStorm seems to default to using only IPv6.
@@ -162,27 +195,5 @@ WSL2 is a complicated environment for Xdebug, especially if you're running your 
 * You can run `export DDEV_DEBUG=true` and `ddev start` to get information about how `host.docker.internal` is figured out, which can help in some situations especially with WSL2. (`host.docker.internal` inside the web container is where Xdebug thinks it should connect to your IDE. You can see what it is set to by running `ddev exec ping host.docker.internal`.)
 * On some WSL2 docker-ce systems you may have to work hard to find out the correct IP address for the Windows side. DDEV tries to figure this out for you, but it may not be able to do so. The IP address shown as `nameserver` in `/etc/resolv.conf` may be the correct one, and this used to be the recommended technique. If it's the address you need you can change the address DDEV will use for `host.docker.internal` using `ddev config global --xdebug-ide-location=<some-ip-address>`.
 * WSL2 networking can sometimes become corrupted. If `ping host.docker.internal` from inside the DDEV web container fails, and `telnet host.docker.internal 9003` also fails even when your IDE is listening, the most common cause is the Windows Firewall (see above). However, the WSL2 virtual switch or `HNS` networking layer may also be damaged. You can repair this by fully disabling and then re-enabling the Windows Subsystem for Linux and Virtual Machine Platform features. This forces Windows to rebuild the WSL2 networking stack without deleting any of your Linux distros. This is safe and does not destroy your WSL2 distro.
-
-    **Using Windows UI:**
-
-    * Open **Control Panel → Programs → Turn Windows features on or off**.
-    * Uncheck **Windows Subsystem for Linux** and **Virtual Machine Platform**.
-    * Click **OK** and reboot when prompted.
-    * Return to the same dialog and re-enable the same two features, **Windows Subsystem for Linux** and **Virtual Machine Platform**.
-    * Click **OK** and reboot again.
-
-    **Using PowerShell (Admin):**
-
-    ```powershell
-    Disable-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux -NoRestart
-    Disable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -NoRestart
-    ```
-  
-    Then reboot, and re-enable:
-
-    ```powershell
-    Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux -NoRestart
-    Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -NoRestart
-    ```
-
-    Reboot once more, and WSL2 networking (including access inside web container to `host.docker.internal`) should be restored.
+* **WSL2 Mirrored Networking Mode:** Requires `hostAddressLoopback=true` in your Windows-side `~/.wslconfig`.
+* **WSL2 VirtioProxy Networking Mode (experimental):** If you're using `networkingMode=VirtioProxy` in your Windows-side `~/.wslconfig`, DDEV supports Xdebug experimentally. On some systems where Windows creates a `vEthernet (WSL)` Hyper-V adapter, DDEV can discover the Windows host IP and a Windows-side IDE works. On most systems we've tested, though, Docker containers have no network path to the Windows host; in that case run your IDE inside WSL2: `ddev config global --xdebug-ide-location=wsl2`. Run `ddev utility xdebug-diagnose --interactive` to check your configuration.

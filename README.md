@@ -1,64 +1,104 @@
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://ddev.com/logos/dark-ddev.svg">
-  <img alt="DDEV logo with light and dark mode variants" src="https://ddev.com/logos/ddev.svg">
-</picture>
+<div align="center">
+
+<a href="https://ddev.com">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://ddev.com/logos/dark-ddev.svg">
+    <img alt="DDEV" src="https://ddev.com/logos/ddev.svg" width="320">
+  </picture>
+</a>
+
+### Docker-based local development environments, ready in minutes
+
+**Get the power of Docker without needing to know Docker.** Start PHP and Node.js projects in minutes, run many projects at the same time, and spend less time on setup.
+
+[![Website](https://img.shields.io/badge/website-ddev.com-blue)](https://ddev.com)
+[![Docs](https://img.shields.io/badge/docs-docs.ddev.com-blue)](https://docs.ddev.com)
+[![Add-on registry](https://img.shields.io/badge/add--ons-addons.ddev.com-blue)](https://addons.ddev.com)
+[![Discord](https://img.shields.io/discord/664580571770388500?logo=discord&logoColor=%23fff&label=Discord&link=https%3A%2F%2Fddev.com%2Fs%2Fdiscord)](https://ddev.com/s/discord)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
+[**Get Started**](https://ddev.com/get-started/) · [**Documentation**](https://docs.ddev.com) · [**Quickstarts**](https://docs.ddev.com/en/stable/users/quickstart/) · [**Add-on Registry**](https://addons.ddev.com) · [**Contributing**](CONTRIBUTING.md) · [**Sponsor**](https://ddev.com/sponsor)
+
+</div>
 
 ---
 
-[![ddev.com](https://img.shields.io/badge/DDEV-Website-blue)](https://ddev.com)
-[![add-on registry](https://img.shields.io/badge/DDEV-Add--on_Registry-blue)](https://addons.ddev.com)
-[![last commit](https://img.shields.io/github/last-commit/ddev/ddev)](https://github.com/ddev/ddev/commits)
-[![Discord](https://img.shields.io/discord/664580571770388500?logo=discord&logoColor=%23fff&label=Discord&link=https%3A%2F%2Fddev.com%2Fs%2Fdiscord)](https://ddev.com/s/discord)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/ddev/ddev)
-<a href="https://github.com/codespaces/new/ddev/ddev"><img src="https://github.com/codespaces/badge.svg" alt="Open in GitHub Codespaces" style="max-width: 100%; height: 20px;"></a>
+## Get started
 
-DDEV is an open-source tool for running local web development environments for PHP and Node.js, ready in minutes. Its powerful, flexible per-project environment configurations can be extended, version controlled, and shared. DDEV allows development teams to adopt a consistent Docker workflow without the complexities of bespoke configuration.
+The quickest path is the [Get Started guide](https://ddev.com/get-started/): pick your operating system and it gives you the install commands and your first project, on one page.
 
-## Documentation
+If you'd rather read the full instructions:
 
-To check out live examples, docs, contributor live training, guides and more visit [ddev.com](https://ddev.com) and [docs.ddev.com](https://docs.ddev.com/en/stable/users/support)
+1. 💻 **Check that DDEV runs where you work:** macOS, Windows 11, WSL2, Linux, and GitHub Codespaces. See the [system requirements](https://docs.ddev.com/en/stable/#system-requirements).
+2. 📥 **Install a Docker provider and DDEV:** follow the [install instructions](https://docs.ddev.com/en/stable/users/install/).
+3. 🏁 **Start your first project:** pick a [quickstart guide](https://docs.ddev.com/en/stable/users/quickstart/) for your CMS or framework, then run `ddev start`.
 
-## Questions
+Want to try DDEV first? Run it in your browser, nothing to install: <a href="https://github.com/codespaces/new/ddev/ddev"><img src="https://github.com/codespaces/badge.svg" alt="Open in GitHub Codespaces" style="max-width: 100%; height: 20px;"></a>
 
-If you need help, our friendly community provides [great support](https://docs.ddev.com/en/stable/users/support/).
+## Why DDEV?
 
-## Wonderful Sponsors
+DDEV takes care of Docker for you, so you and your team can focus on your work. It comes with good defaults for everyday use, and you can change them when you need more.
 
-DDEV is an Apache License 2.0 open-source project with its ongoing development made possible entirely by the support of these awesome backers. If you'd like to join them, please consider [sponsoring DDEV development](https://github.com/sponsors/ddev).
+- 🚀 **Ready in minutes:** good defaults and little setup. Just run `ddev start`.
+- 📦 **One setup per project:** keep it in Git and share the same environment with your whole team.
+- 🔧 **Your stack, your choice:** [Supported PHP versions](https://docs.ddev.com/en/stable/users/configuration/config/#php_version), [Nginx or Apache](https://docs.ddev.com/en/stable/users/configuration/config/#webserver_type), and [MariaDB, MySQL, or PostgreSQL](https://docs.ddev.com/en/stable/users/extend/database-types/), per project. And any version of Node.js you need.
+- 🧩 **Easy to extend:** a growing set of [add-ons](https://addons.ddev.com) for extra services and integrations, and custom commands are ordinary shell scripts.
+- 🖥️ **Runs everywhere:** macOS, Windows, WSL2, Linux, and GitHub Codespaces, on both ARM64 and AMD64.
+- 🔒 **Included out of the box:** trusted HTTPS, Xdebug, database snapshots, and hosting integrations with [Upsun (formerly Platform.sh)](https://upsun.com), [Pantheon](https://pantheon.io), [Acquia](https://www.acquia.com), and others.
+- 💙 **Run by the community:** free and open source, cared for by the nonprofit [DDEV Foundation](https://ddev.com/foundation/).
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://ddev.com/resources/featured-sponsors-darkmode.svg">
-  <img alt="DDEV Sponsor logos with light and dark mode variants" src="https://ddev.com/resources/featured-sponsors.svg">
-</picture>
+## Everyday commands
+
+- `ddev start` and `ddev stop`: run or pause a project's containers
+- `ddev import-db` and `ddev import-files`: load a database dump, or user-upload files such as Drupal `sites/default/files` and WordPress `wp-content/uploads`
+- `ddev snapshot`: save and restore database state
+- `ddev exec` and `ddev ssh`: run a command inside the web container, or open a shell in it
+- `ddev logs` and `ddev list`: read container logs, or see every project on the machine
+- `ddev share`: hand someone a temporary public URL for your local site
+
+Run `ddev` for the full [command reference](https://docs.ddev.com/en/stable/users/usage/cli/).
+
+## Community and support
+
+- 💬 [Discord](https://ddev.com/s/discord): the fastest way to get help and talk to the maintainers
+- 🧭 [Support](https://docs.ddev.com/en/stable/users/support/): every place the friendly community answers questions
+- 🐛 [Issues](https://github.com/ddev/ddev/issues): report bugs and ask for new features
+- 📚 [Documentation](https://docs.ddev.com): guides, references, and how-tos
+- 📣 [Blog](https://ddev.com/blog/): news, releases, and community updates
 
 ## Contributing
 
-See “How can I contribute to DDEV?” in the [FAQ](https://docs.ddev.com/en/stable/users/usage/faq/), and the [Contributing](CONTRIBUTING.md) page.
+- 🙋 “How can I contribute to DDEV?” in the [FAQ](https://docs.ddev.com/en/stable/users/usage/faq/): all the ways to help, code or not
+- 📄 [Contributing](CONTRIBUTING.md): issues, pull requests, and Stack Overflow
+- 🛠️ [Building, Testing, and Contributing](docs/content/developers/building-contributing.md): build the binary and run the tests
 
-![Overview of GitHub contributions](https://repobeats.axiom.co/api/embed/941b040a17921e974655fc01d7735aa350a53603.svg "Repobeats analytics image")
+## Sponsor DDEV
 
-## Get Started
+DDEV is free and open source, maintained by the nonprofit [DDEV Foundation](https://ddev.com/foundation/) and paid for by its community. If DDEV saves you time, please consider [sponsoring the project](https://ddev.com/sponsor). Sponsorships fund the maintainers and infrastructure, and keep DDEV independent.
 
-1. **Check [System Requirements](https://docs.ddev.com/):** macOS (Intel and Apple Silicon), Windows 10/11, WSL2, Linux, and [GitHub Codespaces](https://github.com/codespaces).
-2. **Install a [Docker provider and DDEV](https://docs.ddev.com/en/stable/users/install/)**.
-3. **Try a [CMS Quick Start Guide](https://docs.ddev.com/en/stable/users/quickstart/)**.
+<div align="center">
 
-Additionally, [https://ddev.com/get-started/](https://ddev.com/get-started/) provides an up-to-date getting-started guide.
+<a href="https://ddev.com/#supporters">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://ddev.com/resources/featured-sponsors-darkmode.svg">
+    <img alt="DDEV featured sponsors" src="https://ddev.com/resources/featured-sponsors.svg">
+  </picture>
+</a>
 
-## Highlighted Features
+[![Sponsor DDEV](https://img.shields.io/badge/Sponsor-DDEV-blue?style=for-the-badge&logo=githubsponsors&logoColor=white)](https://ddev.com/sponsor)
 
-* Quickly create local web development environments based on code repositories, with minimal configuration.
-* Import a database to any of your local environments.
-* Import upload files to match the project (e.g. Drupal sites/default/files or WordPress `wp-content/uploads`).
-* Customizable integration with hosting platforms like [Upsun (formerly Platform.sh)](https://upsun.com), [Pantheon](https://pantheon.io), [Acquia](https://www.acquia.com) and others.
-* Run commands within the Docker environment using `ddev exec`.
-* View logs from the web and database containers.
-* Use `ddev ssh` to explore the Linux environment inside the container.
-* List running projects with `ddev list`.
-* Snapshot databases with `ddev snapshot`.
-* Temporarily share your development website with others using `ddev share`.
-* Create custom commands as simple shell scripts.
-* Enjoy effortless, trusted HTTPS support.
-* Extend and customize environments as much (or as little!) as you need to.
+</div>
 
-Run `ddev` to see all the [commands](https://docs.ddev.com/en/stable/users/usage/cli/).
+## In-kind sponsors
+
+DDEV depends on products and services provided free of charge by the generous companies below. Thanks!
+
+| Sponsor | Contribution |
+| ------- | ------------ |
+| <a href="https://cloudsmith.com"><picture><source media="(prefers-color-scheme: dark)" srcset="https://ddev.com/logos/cloudsmith-dark.svg"><img alt="Cloudsmith" src="https://ddev.com/logos/cloudsmith.svg" height="40"></picture></a> | Linux package repository hosting is graciously provided by [Cloudsmith](https://cloudsmith.com). Cloudsmith is the only fully hosted, cloud-native, universal package management solution, that enables your organization to create, store and share packages in any format, to any place, with total confidence. |
+| <a href="https://www.jetbrains.com"><picture><source media="(prefers-color-scheme: dark)" srcset="https://ddev.com/logos/jetbrains-dark.svg"><img alt="JetBrains" src="https://ddev.com/logos/jetbrains.svg" height="40"></picture></a> | [JetBrains](https://www.jetbrains.com) provides DDEV maintainers with licenses for its IDEs. |
+| <a href="https://www.macstadium.com"><picture><source media="(prefers-color-scheme: dark)" srcset="https://ddev.com/logos/dark-mac-stadium.svg"><img alt="MacStadium" src="https://ddev.com/logos/mac-stadium.svg" height="40"></picture></a> | [MacStadium](https://www.macstadium.com) provides a cloud-hosted Apple silicon machine that DDEV uses for testing. |
+
+## License
+
+DDEV is licensed under the Apache License 2.0. See [LICENSE](LICENSE).

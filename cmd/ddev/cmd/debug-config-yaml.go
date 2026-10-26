@@ -8,6 +8,7 @@ import (
 	"github.com/ddev/ddev/pkg/output"
 	"github.com/ddev/ddev/pkg/util"
 	"github.com/spf13/cobra"
+	"go.yaml.in/yaml/v4"
 )
 
 var fullYAMLOutput bool
@@ -17,6 +18,7 @@ var omitKeys string
 var DebugConfigYamlCmd = &cobra.Command{
 	ValidArgsFunction: ddevapp.GetProjectNamesFunc("all", 1),
 	Use:               "configyaml [project]",
+	Annotations:       map[string]string{NoDockerCommand: "true"},
 	Short:             "Prints the project config.*.yaml usage",
 	Example:           "ddev utility configyaml, ddev utility configyaml <projectname>, ddev utility configyaml --full-yaml, ddev utility configyaml --omit-keys=web_environment",
 	Run: func(_ *cobra.Command, args []string) {
@@ -56,6 +58,8 @@ var DebugConfigYamlCmd = &cobra.Command{
 			}
 		}
 
+		showGlobalHooks := len(app.GlobalHooks) > 0 && !app.SkipGlobalHooks && !omitKeyMap["hooks"]
+
 		if fullYAMLOutput {
 			// Output complete processed YAML configuration
 			configYAML, err := app.GetProcessedProjectConfigYAML(omitKeyList...)
@@ -63,14 +67,22 @@ var DebugConfigYamlCmd = &cobra.Command{
 				util.Failed("Failed to get processed project configuration YAML: %v", err)
 			}
 			output.UserOut.Printf("# Complete processed project configuration:\n%s", string(configYAML))
+			// Commented out so the output stays loadable as a project config.
+			if showGlobalHooks {
+				globalYAML, err := yaml.Marshal(map[string]any{"hooks": app.GlobalHooks})
+				if err != nil {
+					util.Failed("Failed to marshal global hooks: %v", err)
+				}
+				output.UserOut.Printf("# Global hooks (from global_config.yaml):\n# %s", strings.ReplaceAll(strings.TrimSpace(string(globalYAML)), "\n", "\n# "))
+			}
 		} else {
 			// strategy from https://stackoverflow.com/a/47457022/215713
-			fields := reflect.TypeOf(*app)
+			fields := reflect.TypeFor[ddevapp.DdevApp]()
 			values := reflect.ValueOf(*app)
 
 			num := fields.NumField()
 
-			for i := 0; i < num; i++ {
+			for i := range num {
 				field := fields.Field(i)
 				v := values.Field(i)
 
@@ -79,6 +91,9 @@ var DebugConfigYamlCmd = &cobra.Command{
 				if v.CanInterface() && key[0] != "-" && !isZero(v) && !omitKeyMap[key[0]] {
 					output.UserOut.Printf("%s: %v", key[0], v)
 				}
+			}
+			if showGlobalHooks {
+				output.UserOut.Printf("global hooks (from global_config.yaml): %v", app.GlobalHooks)
 			}
 		}
 
@@ -102,8 +117,8 @@ func isZero(v reflect.Value) bool {
 		return z
 	case reflect.Struct:
 		z := true
-		for i := 0; i < v.NumField(); i++ {
-			z = z && isZero(v.Field(i))
+		for _, field := range v.Fields() {
+			z = z && isZero(field)
 		}
 		return z
 	}
@@ -112,7 +127,7 @@ func isZero(v reflect.Value) bool {
 	return v.Interface() == z.Interface()
 }
 
-func init() {
+func registerDebugConfigYamlCmd() {
 	DebugConfigYamlCmd.Flags().BoolVar(&fullYAMLOutput, "full-yaml", false, "Output complete processed YAML configuration instead of individual fields")
 	DebugConfigYamlCmd.Flags().StringVar(&omitKeys, "omit-keys", "", "Comma-separated list of keys to omit from output (e.g., web_environment)")
 	DebugCmd.AddCommand(DebugConfigYamlCmd)

@@ -3,6 +3,7 @@ package versionconstants
 import (
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime/debug"
 	"strings"
 )
@@ -16,35 +17,78 @@ var DdevVersion = "" // Note that this is overridden by make
 // Compiled with link-time variables
 var AmplitudeAPIKey = ""
 
+// BuildSource records where a build came from: on GitHub Actions, a run URL
+// with the PR number appended when triggered by a pull_request event;
+// otherwise who ran `make` and from which branch. Set via -ldflags from the
+// Makefile — see scripts/build-source.sh.
+var BuildSource = ""
+
+// unreleasedVersionPattern matches a DdevVersion that isn't a clean release
+// tag: the `git describe --tags --always --dirty` long form left by commits
+// past a tag (v1.2.3-15-gabcdef1), a dirty working tree (-dirty), or the
+// debug.BuildInfo short-hash fallback used when a build has no embedded git
+// tag info (gabcdef1).
+var unreleasedVersionPattern = regexp.MustCompile(`-\d+-g[0-9a-f]{6,}|-dirty$|^g[0-9a-f]{6,}$`)
+
+// IsUnreleasedDdevVersion returns true if version looks like it was built
+// from an untagged commit (a PR, local branch, or other dev build) rather
+// than an official release.
+func IsUnreleasedDdevVersion(version string) bool {
+	return unreleasedVersionPattern.MatchString(version)
+}
+
+// Image tags are bare content hashes (see containers/hash-paths.sh), so the
+// same image resolves to the same tag no matter which branch or repository
+// published it. Each has a companion <Name>Branch naming the branch its
+// content was built from - the readable hint a bare hash costs, shown by
+// `ddev version` and republished as a <branch>-<hash> alias in the registry.
+// All of these lines are maintained by containers/autotag.sh; running `make`
+// updates them.
+
 // WebImg defines the default web image used for applications.
 var WebImg = "ddev/ddev-webserver"
 
 // WebTag defines the default web image tag
-var WebTag = "20251208_stasadev_php85" // Note that this can be overridden by make
+var WebTag = "3f9fdba839" // 20261025_v1.25.5_images-3f9fdba839
+
+// WebTagBranch is the branch WebTag's content was built from.
+var WebTagBranch = "v1.25.5"
 
 // DBImg defines the default db image used for applications.
 var DBImg = "ddev/ddev-dbserver"
 
 // BaseDBTag is the main tag, DBTag is constructed from it
-var BaseDBTag = "20251112_deviantintegral_snapshot_zstd"
+var BaseDBTag = "4c5477115a" // 20261025_v1.25.5_images-4c5477115a
+
+// BaseDBTagBranch is the branch BaseDBTag's content was built from.
+var BaseDBTagBranch = "v1.25.5"
 
 // TraefikRouterImage is image for router
 var TraefikRouterImage = "ddev/ddev-traefik-router"
 
 // TraefikRouterTag is traefik router tag
-var TraefikRouterTag = "v1.24.10"
+var TraefikRouterTag = "ce1c55b924" // 20261025_v1.25.5_images-ce1c55b924
+
+// TraefikRouterTagBranch is the branch TraefikRouterTag's content was built from.
+var TraefikRouterTagBranch = "v1.25.5"
 
 // SSHAuthImage is image for agent
 var SSHAuthImage = "ddev/ddev-ssh-agent"
 
 // SSHAuthTag is ssh-agent auth tag
-var SSHAuthTag = "20251210_ssh_agent_trixie"
+var SSHAuthTag = "fa039f46c3" // 20261025_v1.25.5_images-fa039f46c3
+
+// SSHAuthTagBranch is the branch SSHAuthTag's content was built from.
+var SSHAuthTagBranch = "v1.25.5"
 
 // XhguiImage is image for xhgui
 var XhguiImage = "ddev/ddev-xhgui"
 
 // XhguiTag is xhgui tag
-var XhguiTag = "v1.24.10"
+var XhguiTag = "2ee77bbcd8" // 20261025_v1.25.5_images-2ee77bbcd8
+
+// XhguiTagBranch is the branch XhguiTag's content was built from.
+var XhguiTagBranch = "v1.25.5"
 
 // UtilitiesImage is used in bash scripts
 var UtilitiesImage = "ddev/ddev-utilities:latest"
@@ -56,12 +100,38 @@ var BUILDINFO = "BUILDINFO should have new info"
 var MutagenVersion = ""
 
 // RequiredMutagenVersion defines the required version of Mutagen
+// This value is a hard requirement
 const RequiredMutagenVersion = "0.18.1"
 
-// RequiredDockerComposeVersionDefault defines the required version of docker-compose
-// Keep this in sync with github.com/compose-spec/compose-go/v2 in go.mod,
-// matching the version used in https://github.com/docker/compose/blob/main/go.mod for the same tag
-const RequiredDockerComposeVersionDefault = "v2.40.3"
+// DockerBuildxMinVersion defines the minimum required version of buildx.
+// Must match buildxMinVersion in vendor/github.com/docker/compose/v5/pkg/compose/api_versions.go
+// Sync enforced by TestBuildxMinVersionInSync.
+// This value is a hard requirement
+const DockerBuildxMinVersion = "0.17.0"
+
+// DockerBuildxRecommendedVersion defines the recommended version of buildx
+// to use if the installed version doesn't match the minimum.
+// docker/buildx is not a Go dependency of ddev or (as of docker/compose v5.5.1)
+// of docker/compose, so this has no go.mod counterpart to sync against;
+// update it by hand when recommending a new buildx release.
+// This value is a recommendation, not a hard requirement
+const DockerBuildxRecommendedVersion = "0.38.1"
+
+// DockerMinVersion defines the recommended minimum version of Docker Engine
+// List of supported Docker versions: https://endoflife.date/docker-engine
+// This value is a recommendation, not a hard requirement
+const DockerMinVersion = "25.0"
+
+// DockerMinAPIVersion defines the recommended minimum API version of Docker Engine
+// Should be in sync with DockerMinVersion
+// See https://docs.docker.com/reference/api/engine/#api-version-matrix
+// This value is a recommendation, not a hard requirement
+const DockerMinAPIVersion = "1.44"
+
+// PodmanMinVersion defines the recommended minimum version of Podman.
+// Podman 4.x doesn't run properly on GitHub runners, so we recommend Podman 5.0+
+// This value is a recommendation, not a hard requirement
+const PodmanMinVersion = "5.0"
 
 // ---
 // Fallback version derivation for developer builds not using the Makefile

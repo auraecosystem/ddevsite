@@ -12,80 +12,89 @@ teardown() {
 }
 
 @test "Expression Engine Zip File Download quickstart with $(ddev --version)" {
-  # mkdir ${PROJNAME} && cd ${PROJNAME}
-  run mkdir ${PROJNAME} && cd ${PROJNAME}
-  assert_success
+  PROJNAME=my-ee-zip-site
+
+  run -0 mkdir -p ${PROJNAME}
+  cd ${PROJNAME}
 
   # Download the latest version of Expression Engine
-  run curl -o ee.zip -L $(curl -sL https://api.github.com/repos/ExpressionEngine/ExpressionEngine/releases/latest | docker run -i --rm ddev/ddev-utilities jq -r '.assets | map(select(.name | test("^ExpressionEngine.*\\.zip$")))[0].browser_download_url')
-  assert_success
+  run -0 _github_release_download "ExpressionEngine/ExpressionEngine" "^ExpressionEngine.*\\.zip$" "ee.zip"
 
-  # unzip ee.zip && rm -f ee.zip
-  run unzip ee.zip && rm -f ee.zip
-  assert_success
+  run -0 unzip ee.zip
+  rm -f ee.zip
 
-  # ddev config --database=mysql:8.0
-  run ddev config --database=mysql:8.0
-  assert_success
+  run -0 ddev config --database=mysql:8.0
 
-  # ddev start -y
-  run ddev start -y
-  assert_success
+  DDEV_DEBUG=true run -0 ddev start -y
+
+  _extra_info
 
   # validate ddev launch
-  run bash -c "DDEV_DEBUG=true ddev launch /admin.php"
-  assert_output "FULLURL https://${PROJNAME}.ddev.site/admin.php"
-  assert_success
-    # validate running project
-  run curl -sfI https://${PROJNAME}.ddev.site/admin.php
-  assert_success
-  assert_output --partial "server: nginx"
-  assert_output --partial "HTTP/2 200"
-  run curl -sf https://${PROJNAME}.ddev.site/admin.php
-  assert_success
+  DDEV_DEBUG=true run -0 ddev launch /admin.php
+  assert_output "FULLURL ${PRIMARY_URL}/admin.php"
+
+  # Diagnostic: show traefik config files in volume
+  # run docker exec ddev-router ls -la /mnt/ddev-global-cache/traefik/config/
+  # echo "# Traefik config files:" >&3
+  # printf '%s\n' "$output" | sed 's/^/# /' >&3
+
+  # run docker exec ddev-router curl -sI http://ddev-my-ee-site-web:80/admin.php
+  # echo "# curl from inside router:" >&3
+  # printf '%s\n' "$output" | sed 's/^/# /' >&3
+  # assert_line --partial "200 OK"
+
+  # Diagnostic: show traefik router API response (just router names)
+  # run docker exec ddev-router curl -s http://127.0.0.1:10999/api/http/routers
+  # echo "# Traefik routers: \n $(echo $output | jq -r)" >&3
+
+  # validate running project
+  run -0 curl -sSfI ${PRIMARY_URL}/admin.php
+  assert_line --partial "server: nginx"
+  assert_line --partial "HTTP/2 200"
+  run -0 curl -sf ${PRIMARY_URL}/admin.php
   assert_output --partial "<title>Install ExpressionEngine"
 }
 
 @test "Expression Engine Git Clone quickstart with $(ddev --version)" {
-  # mkdir ${PROJNAME} && cd ${PROJNAME}
-  run mkdir ${PROJNAME} && cd ${PROJNAME}
-  assert_success
+  PROJNAME=my-ee-git-site
 
-  # git clone --depth=1 https://github.com/ExpressionEngine/ExpressionEngine my-ee-site
-  run git clone --depth=1 https://github.com/ExpressionEngine/ExpressionEngine .
-  assert_success
+  run -0 mkdir -p ${PROJNAME}
+  cd ${PROJNAME}
 
-  # ddev config --auto
-  run ddev config --database=mysql:8.0
-  assert_success
+  run -0 git clone --depth=1 https://github.com/ExpressionEngine/ExpressionEngine .
 
-  # ddev start -y
-  run ddev start -y
-  assert_success
+  run -0 ddev config --database=mysql:8.0
 
-  # ddev composer install
-  run ddev composer install
-  assert_success
+  DDEV_DEBUG=true run -0 ddev start -y
 
-  # touch system/user/config/config.php
-  run touch system/user/config/config.php
-  assert_success
+  _extra_info
 
-  # echo "EE_INSTALL_MODE=TRUE" >.env.php
+  run -0 ddev composer install
+
+  run -0 touch system/user/config/config.php
+
   echo "EE_INSTALL_MODE=TRUE" >.env.php
-  ddev mutagen sync
+  run -0 ddev mutagen sync
   assert_file_exist .env.php
 
   # validate ddev launch
-  run bash -c "DDEV_DEBUG=true ddev launch /admin.php"
-  assert_output "FULLURL https://${PROJNAME}.ddev.site/admin.php"
-  assert_success
+  DDEV_DEBUG=true run -0 ddev launch /admin.php
+  assert_output "FULLURL ${PRIMARY_URL}/admin.php"
+
+  # Diagnostic: show traefik config files in volume
+  # run docker exec ddev-router ls -la /mnt/ddev-global-cache/traefik/config/
+  # echo "# Traefik config files:" >&3
+  # printf '%s\n' "$output" | sed 's/^/# /' >&3
+
+  # Diagnostic: show traefik router API response (just router names)
+  # run docker exec ddev-router curl -s http://127.0.0.1:10999/api/http/routers
+  # echo "# Traefik routers:" >&3
+  # printf '%s\n' "$(echo "$output" | jq -r)" | sed 's/^/# /' >&3
+
   # validate running project
-  run curl -sfI https://${PROJNAME}.ddev.site/admin.php
-  assert_success
-  assert_output --partial "server: nginx"
-  assert_output --partial "HTTP/2 200"
-  run curl -sf https://${PROJNAME}.ddev.site/admin.php
-  assert_success
+  run -0 curl -sSfI ${PRIMARY_URL}/admin.php
+  assert_line --partial "server: nginx"
+  assert_line --partial "HTTP/2 200"
+  run -0 curl -sf ${PRIMARY_URL}/admin.php
   assert_output --partial "<title>Install ExpressionEngine"
 }

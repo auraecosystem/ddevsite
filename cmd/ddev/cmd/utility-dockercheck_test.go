@@ -11,9 +11,14 @@ import (
 func TestUtilityDockercheckCmd(t *testing.T) {
 	// Basic execution test
 	out, err := exec.RunHostCommand(DdevBin, "utility", "dockercheck")
-	require.NoError(t, err)
+	require.NoError(t, err, "ddev utility dockercheck failed\n==== ddev utility dockercheck output ====\n%s\n==== end ddev utility dockercheck output ====", out)
 	require.Contains(t, out, "Docker platform:")
+	require.Contains(t, out, "Using Docker context:")
+	require.Contains(t, out, "Using Docker host:")
+	require.Regexp(t, "TLS (not configured|enabled)", out)
 	require.Contains(t, out, "docker buildx version")
 	require.Contains(t, out, "Docker version:")
+	require.Contains(t, out, "Docker API version:")
+	require.Contains(t, out, "docker buildx is working correctly")
 	require.Contains(t, out, "Docker authentication is configured correctly")
 }

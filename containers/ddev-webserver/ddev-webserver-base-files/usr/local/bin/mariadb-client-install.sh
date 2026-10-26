@@ -10,9 +10,16 @@ set -eu -o pipefail
 
 DDEV_DATABASE_FAMILY=${DDEV_DATABASE%:*}
 if [ "${DDEV_DATABASE_FAMILY}" != "mariadb" ]; then
-  echo "This script is to be used only with a project using mariadb" && exit 1
+  echo "This script is to be used only with a project using mariadb" >&2
+  exit 1
 fi
 MARIADB_VERSION=${DDEV_DATABASE#*:}
+
+# Use MariaDB 10.11 client for server versions below 11.x, because 11.4+ clients
+# enforce SSL verification that older servers don't support, causing connection failures.
+if [ "${MARIADB_VERSION%%.*}" -lt 11 ]; then
+  MARIADB_VERSION="10.11"
+fi
 
 sed -i "s|^URIs:.*|URIs: https://archive.mariadb.org/mariadb-${MARIADB_VERSION}/repo/debian|" /etc/apt/sources.list.d/mariadb-archive.sources
 
@@ -21,7 +28,7 @@ sed -i "s|^URIs:.*|URIs: https://archive.mariadb.org/mariadb-${MARIADB_VERSION}/
 # without creating a FrankenDebian system (https://wiki.debian.org/DontBreakDebian).
 # The logic for these older versions is provided as-is for those who may need it.
 # Search for CHANGE_MARIADB_CLIENT to update related code.
-if [ "${MARIADB_VERSION}" = "11.8" ]; then
+if [ "${MARIADB_VERSION}" = "12.3" ] || [ "${MARIADB_VERSION}" = "11.8" ]; then
   sed -i "s/^Suites:.*/Suites: trixie/" /etc/apt/sources.list.d/mariadb-archive.sources
 elif [ "${MARIADB_VERSION}" = "10.11" ] || [ "${MARIADB_VERSION}" = "11.4" ]; then
   sed -i "s/^Suites:.*/Suites: bookworm/" /etc/apt/sources.list.d/mariadb-archive.sources
@@ -32,9 +39,9 @@ elif [ "${MARIADB_VERSION}" = "10.1" ] || [ "${MARIADB_VERSION}" = "10.2" ] || [
 fi
 
 # Run "apt-get update" manually only for mariadb and debian repos to make it faster
-log-stderr.sh apt-get update -o Acquire::Retries=5 -o Dir::Etc::sourcelist="sources.list.d/mariadb-archive.sources" -o Dir::Etc::sourceparts="-" -o APT::Get::List-Cleanup="0" || exit $?
-log-stderr.sh apt-get update -o Acquire::Retries=5 -o Dir::Etc::sourcelist="sources.list.d/debian.sources" -o Dir::Etc::sourceparts="-" -o APT::Get::List-Cleanup="0" || exit $?
+apt-get update -o Acquire::Retries=5 -o Dir::Etc::sourcelist="sources.list.d/mariadb-archive.sources" -o Dir::Etc::sourceparts="-" -o APT::Get::List-Cleanup="0"
+apt-get update -o Acquire::Retries=5 -o Dir::Etc::sourcelist="sources.list.d/debian.sources" -o Dir::Etc::sourceparts="-" -o APT::Get::List-Cleanup="0"
 
 # Install the mariadb-client
 export DEBIAN_FRONTEND=noninteractive
-log-stderr.sh apt-get install --allow-downgrades --no-install-recommends --no-install-suggests -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" -y mariadb-client || exit $?
+apt-get install --allow-downgrades --no-install-recommends --no-install-suggests -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" -y mariadb-client

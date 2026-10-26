@@ -14,8 +14,9 @@ var checkHostnameFlag bool
 
 // HostNameCmd represents the hostname command
 var HostNameCmd = &cobra.Command{
-	Use:   "hostname [flags] [hostname] [ip]",
-	Short: "Manage your hostfile entries.",
+	Use:         "hostname [flags] [hostname] [ip]",
+	Annotations: map[string]string{NoDockerCommand: "true"},
+	Short:       "Manage your hostfile entries.",
 	Example: `
 ddev hostname junk.example.com 127.0.0.1
 ddev hostname -r junk.example.com 127.0.0.1
@@ -109,7 +110,7 @@ func removeInactiveHostnames() {
 	util.Success("Removed hosts entries for all inactive projects")
 }
 
-func init() {
+func registerHostnameCmd() {
 	HostNameCmd.Flags().BoolVarP(&removeHostnameFlag, "remove", "r", false, "Remove the provided host name - ip correlation")
 	HostNameCmd.Flags().BoolVarP(&checkHostnameFlag, "check", "c", false, "Check to see if provided hostname is already in hosts file")
 	HostNameCmd.Flags().BoolVarP(&removeInactiveFlag, "remove-inactive", "R", false, "Remove host names of inactive projects")

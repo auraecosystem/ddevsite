@@ -26,8 +26,6 @@ env:
   BUILDKIT_PROGRESS: plain
   DOCKER_CLI_EXPERIMENTAL: enabled
   DDEV_DEBUG: true
-  HOMEBREW_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
 
 permissions:
   contents: read
@@ -35,23 +33,20 @@ permissions:
 jobs:
   build:
     name: Build DDEV executables
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     env:
       AmplitudeAPIKey: ${{ secrets.AMPLITUDE_API_KEY_DEV }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           # We need to get all branches and tags for git describe to work properly
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
-      - name: Set up Homebrew
-        id: set-up-homebrew
-        uses: Homebrew/actions/setup-homebrew@main
 
       - name: Install build tools
         run: ./.github/workflows/linux-build-setup.sh
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: '>=1.23'
           check-latest: true
@@ -61,18 +56,18 @@ jobs:
       - run: "(git log --oneline | head -5) || true"
 
       - name: Build DDEV executables
-        run: make CGO_ENABLED=0 BUILDARGS="" linux_amd64 linux_arm64 darwin_amd64 darwin_arm64 windows_amd64_install windows_arm64_install wsl_amd64 wsl_arm64
+        run: make CGO_ENABLED=0 BUILDARGS="" linux_amd64 linux_arm64 darwin_amd64 darwin_arm64 windows_amd64_install windows_arm64_install wsl_amd64 wsl_arm64 mkcert
 
       - name: Generate artifacts
         run: ./.ci-scripts/generate_artifacts.sh ${{ github.workspace }}/artifacts
 
       - name: Upload all artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: all-ddev-executables
           path: ${{ github.workspace }}/artifacts/*
       - name: Upload macos-amd64 binary
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ddev-macos-amd64
           path: |
@@ -80,7 +75,7 @@ jobs:
             .gotmp/bin/darwin_amd64/ddev-hostname
             .gotmp/bin/darwin_amd64/mkcert
       - name: Upload macos-arm64 binary
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ddev-macos-arm64
           path: |
@@ -88,7 +83,7 @@ jobs:
             .gotmp/bin/darwin_arm64/ddev-hostname
             .gotmp/bin/darwin_arm64/mkcert
       - name: Upload linux-arm64 binary
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ddev-linux-arm64
           path: |
@@ -96,7 +91,7 @@ jobs:
             .gotmp/bin/linux_arm64/ddev-hostname
             .gotmp/bin/linux_arm64/mkcert
       - name: Upload linux-amd64 binary
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ddev-linux-amd64
           path: |
@@ -104,7 +99,7 @@ jobs:
             .gotmp/bin/linux_amd64/ddev-hostname
             .gotmp/bin/linux_amd64/mkcert
       - name: Upload windows-amd64 binary
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ddev-windows-amd64
           path: |
@@ -112,12 +107,12 @@ jobs:
             .gotmp/bin/windows_amd64/ddev-hostname.exe
             .gotmp/bin/windows_amd64/mkcert.exe
       - name: Upload windows_amd64 installer
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ddev-windows-amd64-installer
           path: .gotmp/bin/windows_amd64/ddev_windows_amd64_installer.exe
       - name: Upload windows-arm64 binary
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ddev-windows-arm64
           path: |
@@ -125,7 +120,7 @@ jobs:
             .gotmp/bin/windows_arm64/ddev-hostname.exe
             .gotmp/bin/windows_arm64/mkcert.exe
       - name: Upload windows_arm64 installer
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ddev-windows-arm64-installer
           path: .gotmp/bin/windows_arm64/ddev_windows_arm64_installer.exe

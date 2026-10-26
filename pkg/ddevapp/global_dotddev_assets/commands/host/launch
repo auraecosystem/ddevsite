@@ -2,9 +2,9 @@
 
 ## #ddev-generated: If you want to edit and own this file, remove this line.
 ## Description: Launch a browser with the current site
-## Usage: launch [path] [-m|--mailpit]
-## Example: "ddev launch" or "ddev launch /admin/reports/status/php" or "ddev launch phpinfo.php" or "ddev launch https://your.ddev.site" or "ddev launch :3000", for Mailpit "ddev launch -m"
-## Flags: [{"Name":"mailpit","Shorthand":"m","Usage":"ddev launch -m launches the mailpit UI"}]
+## Usage: launch [path] [-m|--mailpit] [--print-url] [--qr]
+## Example: "ddev launch" or "ddev launch /admin/reports/status/php" or "ddev launch phpinfo.php" or "ddev launch https://your.ddev.site" or "ddev launch :3000", for Mailpit "ddev launch -m", for a QR code "ddev launch --qr"
+## Flags: [{"Name":"mailpit","Shorthand":"m","Usage":"ddev launch -m launches the mailpit UI"},{"Name":"print-url","Usage":"print the URL instead of opening a browser"},{"Name":"qr","Usage":"print the URL and its QR code instead of opening a browser"}]
 
 if [ "${DDEV_PROJECT_STATUS}" != "running" ] && [ -z "$no_recursion" ]; then
   echo "Project ${DDEV_PROJECT} is not running, starting it"
@@ -66,6 +66,14 @@ while :; do
     fi
     ;;
 
+  --print-url)
+    DDEV_LAUNCH_PRINT_URL=true
+    ;;
+
+  --qr)
+    show_qr=true
+    ;;
+
   --) # End of all options.
     shift
     break
@@ -109,18 +117,41 @@ if [ -n "${1:-}" ]; then
   fi
 fi
 
-if [[ "${FULLURL}" =~ ^http:// ]]; then
-  echo "HTTP may redirect to HTTPS in your browser"
-  echo "See https://docs.ddev.com/en/stable/users/usage/commands/#launch"
+# Print the URL instead of opening a browser: explicitly requested via
+# --print-url or DDEV_LAUNCH_PRINT_URL=true (inherited by nested `ddev launch`
+# invocations, e.g. from custom commands that call launch internally).
+# Print only the URL itself, with no prefix, so the output can be used
+# directly without parsing.
+if [ "${DDEV_LAUNCH_PRINT_URL:-}" = "true" ]; then
+    printf "%s\n" "$FULLURL"
+    exit 0
 fi
 
+if [ "${show_qr:-}" = "true" ]; then
+    "${DDEV_EXECUTABLE:-ddev}" utility hyperlink "$FULLURL" 2>/dev/null || printf "%s\n" "$FULLURL"
+    qr_format=ansi256utf8
+    if [ -n "${NO_COLOR:-}" ]; then
+        qr_format=utf8
+    fi
+    # --raw keeps "&" in the URL from being interpreted by bash in the container
+    ddev exec --raw --skip-hooks qrencode -m 2 -t "${qr_format}" "${FULLURL}"
+    exit $?
+fi
+
+if [[ "${FULLURL}" =~ ^http:// ]]; then
+  echo "HTTP may redirect to HTTPS in your browser"
+  echo "See https://docs.ddev.com/en/stable/users/usage/commands/#launch" | { "${DDEV_EXECUTABLE:-ddev}" utility hyperlink 2>/dev/null || cat; }
+fi
+
+# Long-standing DDEV_DEBUG/DDEV_VERBOSE behavior, kept for compatibility
+# (including ddev's own tests and external tooling that greps FULLURL).
 if [ "${DDEV_DEBUG:-}" = "true" ] || [ "${DDEV_VERBOSE:-}" = "true" ]; then
     printf "FULLURL %s\n" "$FULLURL"
     exit 0
 fi
 
 case $OSTYPE in
-  linux-gnu)
+  "linux"*)
     if command -v explorer.exe >/dev/null; then explorer.exe ${FULLURL} || true;
     elif command -v xdg-open >/dev/null; then xdg-open ${FULLURL};
     else
@@ -131,7 +162,11 @@ case $OSTYPE in
   "darwin"*)
     open ${FULLURL}
     ;;
-  "win*"* | "msys"*)
+  "win"* | "msys"* | "cygwin")
     start ${FULLURL}
+    ;;
+  *)
+    echo "OS type '$OSTYPE' not identified, known types: linux*, darwin*, win*, msys*, cygwin."
+    exit 1
     ;;
 esac

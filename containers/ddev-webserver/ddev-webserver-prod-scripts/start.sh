@@ -9,7 +9,7 @@ if pkill -0 supervisord; then
   supervisorctl stop all || true
   supervisorctl shutdown || true
 fi
-rm -f /var/run/supervisor.sock
+rm -f /var/run/supervisor/supervisor.sock
 
 export DDEV_WEB_ENTRYPOINT=/mnt/ddev_config/web-entrypoint.d
 
@@ -25,27 +25,27 @@ DDEV_PHP_VERSION="${DDEV_PHP_VERSION:-$PHP_DEFAULT_VERSION}"
 # If DDEV_WEBSERVER_TYPE isn't set, use a reasonable default
 DDEV_WEBSERVER_TYPE="${DDEV_WEBSERVER_TYPE:-nginx-fpm}"
 
-# Update the default PHP and FPM versions a DDEV_PHP_VERSION like '5.6' or '7.0' is provided
+# Update the default PHP and FPM versions when DDEV_PHP_VERSION is provided
 # Otherwise it will use the default version configured in the Dockerfile
 if [ -n "$DDEV_PHP_VERSION" ] ; then
   update-alternatives --set php /usr/bin/php${DDEV_PHP_VERSION}
-  ln -sf /usr/sbin/php-fpm${DDEV_PHP_VERSION} /usr/sbin/php-fpm
+  update-alternatives --set php-fpm /usr/sbin/php-fpm${DDEV_PHP_VERSION}
   export PHP_INI=/etc/php/${DDEV_PHP_VERSION}/fpm/php.ini
 fi
 
 # Set PHP timezone to configured $TZ if there is one
 if [ ! -z ${TZ} ]; then
-    perl -pi -e "s%date.timezone *=.*$%date.timezone = $TZ%g" $(find /etc/php -name php.ini)
+  perl -pi -e "s%date.timezone *=.*$%date.timezone = $TZ%g" $(find /etc/php -name php.ini)
 fi
 
 # If the user has provided custom PHP configuration, copy it into a directory
 # where PHP will automatically include it.
 if [ -d /mnt/ddev_config/php ] ; then
-    # If there are files in the mount
-    if [ -n "$(ls -A /mnt/ddev_config/php/*.ini 2>/dev/null)" ]; then
-        cp /mnt/ddev_config/php/*.ini /etc/php/${DDEV_PHP_VERSION}/cli/conf.d/
-        cp /mnt/ddev_config/php/*.ini /etc/php/${DDEV_PHP_VERSION}/fpm/conf.d/
-    fi
+  # If there are files in the mount
+  if [ -n "$(ls -A /mnt/ddev_config/php/*.ini 2>/dev/null)" ]; then
+    cp /mnt/ddev_config/php/*.ini /etc/php/${DDEV_PHP_VERSION}/cli/conf.d/
+    cp /mnt/ddev_config/php/*.ini /etc/php/${DDEV_PHP_VERSION}/fpm/conf.d/
+  fi
 fi
 
 if [ -d /mnt/ddev_config/nginx_full ]; then
@@ -58,29 +58,41 @@ if [ -d /mnt/ddev_config/apache ]; then
 fi
 
 if [ "$DDEV_PROJECT_TYPE" = "backdrop" ] ; then
-    # Start can be executed when the container is already running.
-    mkdir -p ~/.drush/commands && ln -sf /var/tmp/backdrop_drush_commands ~/.drush/commands/backdrop
+  # Start can be executed when the container is already running.
+  mkdir -p ~/.drush/commands && ln -sf /var/tmp/backdrop_drush_commands ~/.drush/commands/backdrop
 fi
+
+mkdir -p "$HOME/.local/bin"
 
 if [ "${DDEV_PROJECT_TYPE}" = "drupal6" ] || [ "${DDEV_PROJECT_TYPE}" = "drupal7" ] || [ "${DDEV_PROJECT_TYPE}" = "backdrop" ]; then
-  ln -sf /usr/local/bin/drush8 /usr/local/bin/drush
+  ln -sf /usr/local/bin/drush8 "$HOME/.local/bin/drush"
 fi
 
-# Change the apache run user to current user/group
-printf "\nexport APACHE_RUN_USER=$(id -un)\nexport APACHE_RUN_GROUP=$(id -gn)\n" >>/etc/apache2/envvars
+# ~/.local/bin precedes vendor/bin in $PATH, so `composer` is the system install
+# in every shell, not just bash. Homeadditions are copied later and can override it.
+ln -sf /usr/local/bin/composer "$HOME/.local/bin/composer"
+
+# Apache refuses to run as root, but Docker rootless runs the container as root
+# to reach root-owned bind mounts. When the ddev-keep-root shim is present (DDEV
+# adds it only for this case), LD_PRELOAD it so Apache can stay root.
+if [ "$(id -u)" = "0" ] && [ -f /usr/local/lib/ddev/ddev-keep-root.so ]; then
+  printf "\nexport LD_PRELOAD=/usr/local/lib/ddev/ddev-keep-root.so\nexport DDEV_KEEP_ROOT=true\n" >>/etc/apache2/envvars
+else
+  printf "\nexport APACHE_RUN_USER=$(id -un)\nexport APACHE_RUN_GROUP=$(id -gn)\n" >>/etc/apache2/envvars
+fi
 
 a2enmod access_compat alias auth_basic authn_core authn_file authz_core authz_host authz_user autoindex deflate dir env filter mime mpm_event negotiation reqtimeout rewrite setenvif status
 a2enconf charset localized-error-pages other-vhosts-access-log security serve-cgi-bin
 
 if [ "$DDEV_WEBSERVER_TYPE" = "apache-fpm" ] ; then
-    a2enmod proxy_fcgi
-    a2enconf php${DDEV_PHP_VERSION}-fpm
-    a2dissite 000-default
+  a2enmod proxy_fcgi
+  a2enconf php${DDEV_PHP_VERSION}-fpm
+  a2dissite 000-default
 fi
 
 # Disable xdebug by default. Users can enable with /usr/local/bin/enable_xdebug
 if [ "$DDEV_XDEBUG_ENABLED" = "true" ]; then
-  enable_xdebug
+  enable_xdebug || true
 else
   disable_xdebug
 fi
@@ -92,17 +104,13 @@ ls /var/www/html >/dev/null || (echo "/var/www/html does not seem to be healthy/
 
 mkdir -p /mnt/ddev-global-cache/{bashhistory/${HOSTNAME},mysqlhistory/${HOSTNAME},n_prefix/${HOSTNAME},npm,yarn/classic,yarn/berry,corepack}
 
-if [ "${N_PREFIX:-}" != "" ] && [ "${N_INSTALL_VERSION:-}" != "" ]; then
-  n-install.sh || true
-fi
-
 # The following ensures a persistent and shared "global" cache for
 # yarn classic (frozen v1) and yarn berry (active). In the case of berry, the global cache
 # will only be used if the project is configured to use it through it's own
 # enableGlobalCache configuration option. Assumes ~/.yarn/berry as the default
 # global folder.
 (if cd ~ || (echo "unable to cd to home directory"; exit 22); then
-  yarn config set cache-folder /mnt/ddev-global-cache/yarn/classic >/dev/null || true
+  timeout 1 yarn config set cache-folder /mnt/ddev-global-cache/yarn/classic >/dev/null || echo 'cache-folder "/mnt/ddev-global-cache/yarn/classic"' >> ~/.yarnrc || true
 fi)
 # ensure default yarn berry global folder is there to symlink cache afterwards
 mkdir -p ~/.yarn/berry
@@ -112,7 +120,7 @@ ln -sf /mnt/ddev-global-cache/yarn/berry ~/.yarn/berry/cache
 # chown -R "$(id -u):$(id -g)" /mnt/ddev-global-cache/
 
 if [ -d /mnt/ddev_config/.homeadditions ]; then
-    cp -r /mnt/ddev_config/.homeadditions/. ~/
+  cp -r /mnt/ddev_config/.homeadditions/. ~/
 fi
 
 # It's possible CAROOT does not exist or is not writeable (if host-side mkcert -install not run yet)
@@ -129,12 +137,5 @@ unset PHP_IDE_CONFIG
 
 # Run any custom init scripts (.ddev/.web-entrypoint.d/*.sh)
 ddev_custom_init_scripts
-
-# Make sure /var/tmp/logpipe gets logged; only for standalone non-ddev usages
-logpipe=/var/tmp/logpipe
-if [[ ! -p ${logpipe} ]]; then
-    mkfifo ${logpipe}
-    cat < ${logpipe} >/proc/1/fd/1 &
-fi
 
 exec /usr/bin/supervisord -n -c "/etc/supervisor/supervisord-${DDEV_WEBSERVER_TYPE}.conf"

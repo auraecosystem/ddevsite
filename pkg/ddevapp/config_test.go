@@ -36,6 +36,131 @@ func isSemver(s string) bool {
 	return err == nil
 }
 
+// TestValidateDocroot verifies that ValidateDocroot rejects paths that escape the project root.
+func TestValidateDocroot(t *testing.T) {
+	assert := asrt.New(t)
+
+	valid := []string{"", ".", "docroot", "web", "public/web", "web/../public"}
+	for _, docroot := range valid {
+		assert.NoError(ddevapp.ValidateDocroot(docroot), "expected docroot %q to be valid", docroot)
+	}
+
+	invalid := []string{"..", "../foo", "web/../..", "web/../../etc", string(filepath.Separator) + "etc/passwd"}
+	for _, docroot := range invalid {
+		assert.Error(ddevapp.ValidateDocroot(docroot), "expected docroot %q to be rejected", docroot)
+	}
+}
+
+// TestValidateNodeJSRoot verifies that ValidateNodeJSRoot rejects paths that escape the project root.
+func TestValidateNodeJSRoot(t *testing.T) {
+	valid := []string{"", ".", "frontend", "web/themes/custom/mytheme", "web/../frontend"}
+	for _, nodeJSRoot := range valid {
+		require.NoError(t, ddevapp.ValidateNodeJSRoot(nodeJSRoot), "expected nodejs_root %q to be valid", nodeJSRoot)
+	}
+
+	invalid := []string{"..", "../foo", "web/../..", "web/../../etc", string(filepath.Separator) + "etc/passwd"}
+	for _, nodeJSRoot := range invalid {
+		require.Error(t, ddevapp.ValidateNodeJSRoot(nodeJSRoot), "expected nodejs_root %q to be rejected", nodeJSRoot)
+	}
+}
+
+// TestValidateNodeJSRootAndVersion verifies that nodejs_root requires nodejs_version
+// auto or engine, and that those two require a version file to read.
+func TestValidateNodeJSRootAndVersion(t *testing.T) {
+	appRoot := t.TempDir()
+	nodeJSRootDir := filepath.Join(appRoot, "frontend")
+	require.NoError(t, os.MkdirAll(nodeJSRootDir, 0755))
+
+	require.Error(t, ddevapp.ValidateNodeJSRootAndVersion(appRoot, "frontend", "auto"), "expected an empty nodejs_root directory to be rejected")
+
+	require.NoError(t, os.WriteFile(filepath.Join(nodeJSRootDir, ".nvmrc"), []byte("20\n"), 0644))
+	require.NoError(t, ddevapp.ValidateNodeJSRootAndVersion(appRoot, "frontend", "auto"))
+
+	// engine reads only engines.node, so .nvmrc alone does not satisfy it.
+	require.Error(t, ddevapp.ValidateNodeJSRootAndVersion(appRoot, "frontend", "engine"))
+	require.NoError(t, os.WriteFile(filepath.Join(nodeJSRootDir, "package.json"), []byte(`{"engines":{"node":"20"}}`), 0644))
+	require.NoError(t, ddevapp.ValidateNodeJSRootAndVersion(appRoot, "frontend", "engine"))
+
+	require.Error(t, ddevapp.ValidateNodeJSRootAndVersion(appRoot, "missing", "auto"), "expected a nonexistent nodejs_root directory to be rejected")
+
+	// A project root with no version file cannot satisfy auto or engine either.
+	for _, nodeJSVersion := range []string{"auto", "engine"} {
+		require.Error(t, ddevapp.ValidateNodeJSRootAndVersion(appRoot, "", nodeJSVersion), "expected nodejs_version %q with no version file to be rejected", nodeJSVersion)
+	}
+
+	// Versions that read no version file need none, but they rule out nodejs_root.
+	for _, nodeJSVersion := range []string{"", nodeps.NodeJSDefault, "16.0.0"} {
+		require.NoError(t, ddevapp.ValidateNodeJSRootAndVersion(appRoot, "", nodeJSVersion), "expected nodejs_version %q to need no version file", nodeJSVersion)
+		require.Error(t, ddevapp.ValidateNodeJSRootAndVersion(appRoot, "frontend", nodeJSVersion), "expected nodejs_root with nodejs_version %q to be rejected", nodeJSVersion)
+	}
+}
+
+// TestLoadConfigYamlFile verifies that LoadConfigYamlFile correctly loads config and overrides.
+func TestLoadConfigYamlFile(t *testing.T) {
+	assert := asrt.New(t)
+	testDir := testcommon.CreateTmpDir(t.Name())
+	origDir, _ := os.Getwd()
+
+	err := os.Chdir(testDir)
+	assert.NoError(err)
+
+	t.Cleanup(func() {
+		err = os.Chdir(origDir)
+		assert.NoError(err)
+		_ = os.RemoveAll(testDir)
+	})
+
+	// Create a main config.yaml within .ddev directory
+	ddevDir := filepath.Join(testDir, ".ddev")
+	err = os.MkdirAll(ddevDir, 0755)
+	assert.NoError(err)
+
+	mainConfig := `name: mainproject
+type: drupal10
+php_version: "8.1"
+web_environment:
+  - MAIN_VAR=main
+`
+	err = os.WriteFile(filepath.Join(ddevDir, "config.yaml"), []byte(mainConfig), 0644)
+	assert.NoError(err)
+
+	// Create an override config.mac.yaml
+	overrideConfig := `php_version: "8.2"
+web_environment:
+  - OVERRIDE_VAR=override
+`
+	err = os.WriteFile(filepath.Join(ddevDir, "config.mac.yaml"), []byte(overrideConfig), 0644)
+	assert.NoError(err)
+
+	// We don't need to manually construct app, Init() will do it.
+	// But we need a dummy app to call Init() on if we want to follow that pattern,
+	// or just call NewApp. Init() is method on DdevApp.
+	app := &ddevapp.DdevApp{}
+
+	// Helper to init the app structure
+	err = app.Init(testDir)
+	assert.NoError(err)
+
+	// We MUST manually load config if we want to test LoadConfigYamlFile specifically,
+	// BUT Init() -> NewApp() -> ReadConfig() should have ALREADY loaded it if ReadConfig works!
+	// However, LoadConfigYamlFile is specifically for overrides or reloading.
+	// Let's verify LoadConfigYamlFile works even if Init loaded it (it should reload/override).
+	// Also app.ConfigPath is set by Init to .ddev/config.yaml
+
+	err = app.LoadConfigYamlFile(app.ConfigPath)
+	assert.NoError(err)
+
+	assert.Equal("mainproject", app.Name)
+	assert.Equal(nodeps.AppTypeDrupal10, app.Type)
+	// Check single-file behavior (php_version should STILL be 8.1 because LoadConfigYamlFile doesn't load overrides)
+	assert.Equal("8.1", app.PHPVersion)
+
+	// Now check that ReadConfig(true) DOES load the override
+	_, err = app.ReadConfig(true)
+	assert.NoError(err)
+	assert.Equal("8.2", app.PHPVersion)
+}
+
 // TestNewConfig tests functionality around creating a new config, writing it to disk, and reading the resulting config.
 func TestNewConfig(t *testing.T) {
 	assert := asrt.New(t)
@@ -244,16 +369,67 @@ func TestWriteDockerComposeYaml(t *testing.T) {
 	err = app.WriteDockerComposeYAML()
 	assert.NoError(err)
 
-	// Ensure we can read from the file and that it's a regular file with the expected name.
+	// Ensure we can read from the base file and that it's a regular file with the expected name.
 	fileinfo, err := os.Stat(app.DockerComposeYAMLPath())
 	assert.NoError(err)
 	assert.False(fileinfo.IsDir())
-	assert.Equal(fileinfo.Name(), filepath.Base(app.DockerComposeYAMLPath()))
+	assert.Equal(".ddev-docker-compose-base.yaml", fileinfo.Name())
 
 	composeBytes, err := os.ReadFile(app.DockerComposeYAMLPath())
 	assert.NoError(err)
 	contentString := string(composeBytes)
+	assert.Contains(contentString, "ddev_default")
+	assert.Contains(contentString, "IS_DDEV_PROJECT")
+
+	// Ensure we can read from the full file and that it's a regular file with the expected name.
+	fileinfo, err = os.Stat(app.DockerComposeFullRenderedYAMLPath())
+	assert.NoError(err)
+	assert.False(fileinfo.IsDir())
+	assert.Equal(".ddev-docker-compose-full.yaml", fileinfo.Name())
+
+	composeBytes, err = os.ReadFile(app.DockerComposeFullRenderedYAMLPath())
+	assert.NoError(err)
+	contentString = string(composeBytes)
+	assert.Contains(contentString, app.GetComposeProjectName())
 	assert.Contains(contentString, app.Type)
+}
+
+// TestPHPIDEConfigLowercase verifies that PHP_IDE_CONFIG uses a lowercase project name,
+// ensuring PhpStorm server name matching works for projects with uppercase names.
+// See https://github.com/ddev/ddev/issues/8225.
+func TestPHPIDEConfigLowercase(t *testing.T) {
+	assert := asrt.New(t)
+	origDir, _ := os.Getwd()
+	testDir := testcommon.CreateTmpDir(t.Name())
+
+	app, err := ddevapp.NewApp(testDir, true)
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		err = app.Stop(true, false)
+		assert.NoError(err)
+		err = os.Chdir(origDir)
+		assert.NoError(err)
+		_ = os.RemoveAll(testDir)
+	})
+
+	app.Name = "ISSUE-123"
+	app.Type = ddevapp.GetValidAppTypes()[0]
+
+	err = app.WriteConfig()
+	require.NoError(t, err)
+	_ = app.DockerEnv()
+	err = app.WriteDockerComposeYAML()
+	require.NoError(t, err)
+
+	composeBytes, err := os.ReadFile(app.DockerComposeYAMLPath())
+	require.NoError(t, err)
+	contentString := string(composeBytes)
+
+	// PHP_IDE_CONFIG serverName must be lowercase to match the server name nginx sends,
+	// so PhpStorm can match CLI and web-request debugging sessions to the same server.
+	assert.Contains(contentString, "PHP_IDE_CONFIG=serverName=issue-123.")
+	assert.NotContains(contentString, "PHP_IDE_CONFIG=serverName=ISSUE-123.")
 }
 
 // TestConfigCommand tests the interactive config options.
@@ -266,6 +442,7 @@ func TestConfigCommand(t *testing.T) {
 	const phpVersionPos = 1
 	testMatrix := map[string][]string{
 		"magentophpversion":  {nodeps.AppTypeMagento, nodeps.PHPDefault},
+		"mahophpversion":     {nodeps.AppTypeMaho, nodeps.PHPDefault},
 		"drupal7phpversion":  {nodeps.AppTypeDrupal7, nodeps.PHP82},
 		"Drupal11phpversion": {nodeps.AppTypeDrupal11, nodeps.PHPDefault},
 	}
@@ -510,6 +687,7 @@ func TestReadConfig(t *testing.T) {
 	assert.Equal(app.Type, nodeps.AppTypeDrupal8)
 	assert.Equal(app.Docroot, "test")
 	assert.Equal(app.WebImage, "test/testimage:latest")
+	assert.Equal(app.DBImage, "test/testdbimage:latest")
 }
 
 // TestReadConfigCRLF tests reading config values from a file with Windows
@@ -538,7 +716,7 @@ func TestReadConfigCRLF(t *testing.T) {
 
 // TestConfigValidate tests validation of configuration values.
 func TestConfigValidate(t *testing.T) {
-	if os.Getenv("DDEV_RUN_TEST_ANYWAY") != "true" && (nodeps.IsMacOS() || nodeps.IsWindows()) {
+	if nodeps.IsEnvFalse("DDEV_RUN_TEST_ANYWAY") && (nodeps.IsMacOS() || nodeps.IsWindows()) {
 		t.Skip("Skipping on macOS/Windows")
 	}
 
@@ -628,32 +806,63 @@ func TestConfigValidate(t *testing.T) {
 	err = app.ValidateConfig()
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not a valid project name")
-
 	app.Name = appName
+
 	app.Type = "potato"
 	err = app.ValidateConfig()
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "invalid app type")
-
 	app.Type = appType
+
 	app.PHPVersion = "1.1"
 	err = app.ValidateConfig()
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unsupported PHP")
-
 	app.PHPVersion = nodeps.PHPDefault
+
 	app.WebserverType = "server"
 	err = app.ValidateConfig()
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unsupported webserver type")
-
 	app.WebserverType = nodeps.WebserverDefault
+
+	// PHP <= 7.3 can't authenticate against MySQL 9+, which removed the
+	// mysql_native_password plugin that those old PHP mysqlnd builds require.
+	appDatabase := app.Database
+	app.Database = ddevapp.DatabaseDesc{Type: nodeps.MySQL, Version: nodeps.MySQL97}
+	for _, phpVersion := range []string{nodeps.PHP56, nodeps.PHP70, nodeps.PHP71, nodeps.PHP72, nodeps.PHP73} {
+		app.PHPVersion = phpVersion
+		err = app.ValidateConfig()
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "mysql_native_password")
+	}
+	app.PHPVersion = nodeps.PHP74
+	err = app.ValidateConfig()
+	require.NoError(t, err)
+	app.Database = ddevapp.DatabaseDesc{Type: nodeps.MySQL, Version: nodeps.MySQL84}
+	app.PHPVersion = nodeps.PHP73
+	err = app.ValidateConfig()
+	require.NoError(t, err)
+	app.Database = appDatabase
+	app.PHPVersion = nodeps.PHPDefault
+
+	app.NodeJSVersion = "  "
+	err = app.ValidateConfig()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid nodejs_version")
+	app.NodeJSVersion = nodeps.NodeJSDefault
+
+	app.NodeJSVersion = ""
+	err = app.ValidateConfig()
+	require.NoError(t, err)
+	app.NodeJSVersion = nodeps.NodeJSDefault
+
 	app.AdditionalHostnames = []string{"good", "b@d"}
 	err = app.ValidateConfig()
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "invalid hostname")
-
 	app.AdditionalHostnames = []string{}
+
 	// web_extra_exposed_ports shouldn't allow duplicate names for different config items
 	app.WebExtraExposedPorts = []ddevapp.WebExposedPort{
 		{Name: "foo", WebContainerPort: 3000, HTTPPort: 3000, HTTPSPort: 3001},
@@ -723,14 +932,14 @@ func TestConfigValidate(t *testing.T) {
 	err = app.ValidateConfig()
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "duplicate 'https_port: 3000'")
-
 	app.WebExtraExposedPorts = nil
+
 	app.AdditionalFQDNs = []string{"good.com", "b@d.com"}
 	err = app.ValidateConfig()
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "invalid hostname")
-
 	app.AdditionalFQDNs = []string{}
+
 	// Timezone validation isn't possible on Windows.
 	if !nodeps.IsWindows() {
 		app.Timezone = "xxx"
@@ -739,6 +948,7 @@ func TestConfigValidate(t *testing.T) {
 		app.Timezone = "America/Chicago"
 		err = app.ValidateConfig()
 		require.NoError(t, err)
+		app.Timezone = ""
 	}
 
 	// Make sure that wildcards work
@@ -773,6 +983,7 @@ func TestConfigValidate(t *testing.T) {
 	app.AdditionalHostnames = []string{"x", "*"}
 	err = app.ValidateConfig()
 	require.Error(t, err)
+	app.AdditionalHostnames = []string{}
 }
 
 // TestWriteConfig tests writing config values to file
@@ -871,29 +1082,32 @@ func TestConfigOverrideDetection(t *testing.T) {
 
 	require.NoError(t, startErr, "app.Start() did not succeed: output:\n=====\n%s\n===== health:\n========= health =======\n%s\n========\n===== logs:\n========= logs =======\n%s\n========\n", stdout, health, logs)
 
+	// start prints this only with DDEV_VERBOSE under DDEV_NONINTERACTIVE, as in CI.
+	customConfig, _ := app.CheckCustomConfig(false)
+
 	for _, configFile := range []string{"mysql-collation.cnf", "php-override.ini", "web-entrypoint-dosomething.sh", "Dockerfile.something", "Dockerfile", "pre.Dockerfile.somethingelse"} {
-		require.Contains(t, stdout, configFile, "did not find %s listed in custom configuration", configFile)
+		require.Contains(t, customConfig, configFile, "did not find %s listed in custom configuration", configFile)
 	}
 
 	switch app.WebserverType {
 	case nodeps.WebserverApacheFPM:
-		require.Contains(t, stdout, "apache-site.conf")
-		require.NotContains(t, stdout, "nginx-site.conf")
-		require.NotContains(t, stdout, "nginx-snippet.conf")
+		require.Contains(t, customConfig, "apache-site.conf")
+		require.NotContains(t, customConfig, "nginx-site.conf")
+		require.NotContains(t, customConfig, "nginx-snippet.conf")
 
 	case nodeps.WebserverNginxFPM:
-		require.Contains(t, stdout, "nginx-site.conf")
-		require.Contains(t, stdout, "nginx-snippet.conf")
-		require.NotContains(t, stdout, "apache-site.conf")
+		require.Contains(t, customConfig, "nginx-site.conf")
+		require.Contains(t, customConfig, "nginx-snippet.conf")
+		require.NotContains(t, customConfig, "apache-site.conf")
 
 	default:
 		t.Fatalf("Unknown WebserverType: %s", app.WebserverType)
 	}
 
 	if app.IsMutagenEnabled() {
-		require.Contains(t, stdout, "mutagen.yml")
+		require.Contains(t, customConfig, "mutagen.yml")
 	}
-	require.Contains(t, stdout, "Custom configuration is updated")
+	require.Contains(t, customConfig, "Custom configuration is updated")
 }
 
 // TestPHPOverrides tests to make sure that PHP overrides work in all webservers.
@@ -957,7 +1171,9 @@ func TestPHPOverrides(t *testing.T) {
 
 	err = app.MutagenSyncFlush()
 	require.NoError(t, err, "failed to flush Mutagen sync")
-	_, _ = testcommon.EnsureLocalHTTPContent(t, app.GetHTTPURL()+"/phpinfo.php", `max_input_time</td><td class="v">999`, 60)
+	testcommon.AssertLocalHTTPContent(t, app.GetHTTPURL()+"/phpinfo.php", `max_input_time</td><td class="v">999`,
+		testcommon.WithMessagef("phpinfo should reflect the max_input_time=999 PHP override"),
+	)
 }
 
 // TestPHPConfig checks some key PHP configuration items
@@ -965,6 +1181,10 @@ func TestPHPConfig(t *testing.T) {
 	if dockerutil.IsColima() || dockerutil.IsLima() || dockerutil.IsRancherDesktop() {
 		t.Skip("skipping on Lima/Colima/Rancher because of unpredictable behavior, unable to connect")
 	}
+	if nodeps.IsAppleSilicon() && dockerutil.IsDockerDesktop() && nodeps.IsEnvFalse("DDEV_RUN_TEST_ANYWAY") {
+		t.Skip("Skipping on Docker Desktop/Apple Silicon to ignore problems with 'connection reset by peer'")
+	}
+	testcommon.SkipUnlessDefaultEnvironment(t)
 	assert := asrt.New(t)
 	origDir, _ := os.Getwd()
 	app := &ddevapp.DdevApp{}
@@ -987,12 +1207,21 @@ func TestPHPConfig(t *testing.T) {
 	// so we can subtract those if GOTEST_SHORT==""
 	phpKeys := nodeps.GetValidPHPVersions()
 	exclusions := []string{nodeps.PHP56, nodeps.PHP70, nodeps.PHP71, nodeps.PHP72, nodeps.PHP73, nodeps.PHP74, nodeps.PHP80, nodeps.PHP81}
-	if os.Getenv("GOTEST_SHORT") != "" {
+	if testcommon.IsGotestShort(t) {
 		phpKeys = util.SubtractSlices(phpKeys, exclusions)
 	}
 
-	//TODO: php8.5: Remove this exclusion when php85 has solr
-	phpKeys = util.SubtractSlices(phpKeys, []string{nodeps.PHP85})
+	// Skip the PHP versions listed in DDEV_EMBARGO_PHP_VERSIONS, e.g. "8.4|8.3"
+	var embargoedVersions []string
+	for _, v := range phpKeys {
+		if util.IsPHPVersionEmbargoed(v) {
+			embargoedVersions = append(embargoedVersions, v)
+		}
+	}
+	if len(embargoedVersions) > 0 {
+		t.Logf("Skipping PHP versions embargoed by DDEV_EMBARGO_PHP_VERSIONS=%s: %v", os.Getenv("DDEV_EMBARGO_PHP_VERSIONS"), embargoedVersions)
+		phpKeys = util.SubtractSlices(phpKeys, embargoedVersions)
+	}
 
 	sort.Strings(phpKeys)
 
@@ -1004,6 +1233,10 @@ func TestPHPConfig(t *testing.T) {
 	for _, v := range phpKeys {
 		app.PHPVersion = v
 		app.WebImageExtraPackages = []string{"php" + app.PHPVersion + "-solr"}
+		// TODO: php8.6: Remove when php8.6-solr is available
+		if v == nodeps.PHP86 {
+			app.WebImageExtraPackages = nil
+		}
 		err = app.Restart()
 		require.NoError(t, err)
 
@@ -1037,6 +1270,10 @@ func TestPHPConfig(t *testing.T) {
 
 		// This list does not contain all expected, as php5.6 is missing some, etc.
 		expectedExtensions := []string{"apcu", "bcmath", "bz2", "curl", "gd", "imagick", "intl", "ldap", "mbstring", "pgsql", "readline", "soap", "sqlite3", "uploadprogress", "xml", "xmlrpc", "zip"}
+		// TODO: php8.6: Remove when these extensions are packaged for php8.6
+		if v == nodeps.PHP86 {
+			expectedExtensions = util.SubtractSlices(expectedExtensions, []string{"apcu", "imagick", "uploadprogress", "xmlrpc"})
+		}
 		for _, e := range expectedExtensions {
 			assert.Contains(out, fmt.Sprintf(`,%s,`, e))
 		}
@@ -1129,14 +1366,55 @@ func TestExtraPackages(t *testing.T) {
 		_, _ = exec.RunCommand("bash", []string{"-c", command})
 	})
 
+	// Set up local apt repositories with fake packages so the test does not depend on external repos.
+	// pre.Dockerfile.fake-ddev-test runs after FROM but before the extra_packages apt-get install.
+	// dpkg-deb is part of the dpkg package (always present in Debian images) so no network is needed.
+	webBuildDir := app.GetConfigPath("web-build")
+	dbBuildDir := app.GetConfigPath("db-build")
+	err = os.MkdirAll(webBuildDir, 0755)
+	require.NoError(t, err)
+	err = os.MkdirAll(dbBuildDir, 0755)
+	require.NoError(t, err)
+
+	// fake-ddev-test-bind9-dnsutils: only needs to appear in the dpkg status database (dpkg -s check), no real binary required.
+	webPreDockerfile := `RUN mkdir -p /var/local-apt-repo /tmp/fakepkg/DEBIAN && \
+    printf 'Package: fake-ddev-test-bind9-dnsutils\nVersion: 1:9.18.0-1\nArchitecture: all\nMaintainer: fake\nDescription: fake\n' > /tmp/fakepkg/DEBIAN/control && \
+    dpkg-deb --build /tmp/fakepkg /var/local-apt-repo/fake-ddev-test-bind9-dnsutils.deb && \
+    size=$(stat -c%s /var/local-apt-repo/fake-ddev-test-bind9-dnsutils.deb) && \
+    md5=$(md5sum /var/local-apt-repo/fake-ddev-test-bind9-dnsutils.deb | awk '{print $1}') && \
+    sha256=$(sha256sum /var/local-apt-repo/fake-ddev-test-bind9-dnsutils.deb | awk '{print $1}') && \
+    printf "Package: fake-ddev-test-bind9-dnsutils\nVersion: 1:9.18.0-1\nArchitecture: all\nFilename: fake-ddev-test-bind9-dnsutils.deb\nSize: ${size}\nMD5sum: ${md5}\nSHA256: ${sha256}\nDescription: fake\n\n" > /var/local-apt-repo/Packages && \
+    gzip -c /var/local-apt-repo/Packages > /var/local-apt-repo/Packages.gz && \
+    rm -rf /etc/apt/sources.list /etc/apt/sources.list.d && mkdir -p /etc/apt/sources.list.d && \
+    printf 'Types: deb\nURIs: file:///var/local-apt-repo\nSuites: ./\nTrusted: yes\n' > /etc/apt/sources.list.d/fake-ddev-test.sources
+`
+	err = os.WriteFile(filepath.Join(webBuildDir, "pre.Dockerfile.fake-ddev-test"), []byte(webPreDockerfile), 0644)
+	require.NoError(t, err)
+
+	// fake-ddev-test-sudo: needs an actual binary at /usr/bin/fake-ddev-test-sudo because the test runs "command -v <pkg>".
+	dbPreDockerfile := `RUN mkdir -p /var/local-apt-repo /tmp/fakepkg/DEBIAN /tmp/fakepkg/usr/bin && \
+    printf 'Package: fake-ddev-test-sudo\nVersion: 1.9.0-1\nArchitecture: all\nMaintainer: fake\nDescription: fake\n' > /tmp/fakepkg/DEBIAN/control && \
+    printf '#!/bin/sh\nexec "$@"\n' > /tmp/fakepkg/usr/bin/fake-ddev-test-sudo && chmod 755 /tmp/fakepkg/usr/bin/fake-ddev-test-sudo && \
+    dpkg-deb --build /tmp/fakepkg /var/local-apt-repo/fake-ddev-test-sudo.deb && \
+    size=$(stat -c%s /var/local-apt-repo/fake-ddev-test-sudo.deb) && \
+    md5=$(md5sum /var/local-apt-repo/fake-ddev-test-sudo.deb | awk '{print $1}') && \
+    sha256=$(sha256sum /var/local-apt-repo/fake-ddev-test-sudo.deb | awk '{print $1}') && \
+    printf "Package: fake-ddev-test-sudo\nVersion: 1.9.0-1\nArchitecture: all\nFilename: fake-ddev-test-sudo.deb\nSize: ${size}\nMD5sum: ${md5}\nSHA256: ${sha256}\nDescription: fake\n\n" > /var/local-apt-repo/Packages && \
+    gzip -c /var/local-apt-repo/Packages > /var/local-apt-repo/Packages.gz && \
+    rm -rf /etc/apt/sources.list /etc/apt/sources.list.d && mkdir -p /etc/apt/sources.list.d && \
+    printf 'Types: deb\nURIs: file:///var/local-apt-repo\nSuites: ./\nTrusted: yes\n' > /etc/apt/sources.list.d/fake-ddev-test.sources
+`
+	err = os.WriteFile(filepath.Join(dbBuildDir, "pre.Dockerfile.fake-ddev-test"), []byte(dbPreDockerfile), 0644)
+	require.NoError(t, err)
+
 	// Start and make sure that the packages don't exist already
 	err = app.Start()
 	require.NoError(t, err)
 
-	addedDBPackage := "sudo"
-	addedWebPackage := "bind9-dnsutils"
+	addedDBPackage := "fake-ddev-test-sudo"
+	addedWebPackage := "fake-ddev-test-bind9-dnsutils"
 
-	// Test db container to make sure no sudo in there at beginning
+	// Test db container to make sure the fake package is not in there at beginning
 	_, _, err = app.Exec(&ddevapp.ExecOpts{
 		Service: "db",
 		Cmd:     fmt.Sprintf("command -v %s 2>/dev/null", addedDBPackage),
@@ -1166,7 +1444,7 @@ func TestExtraPackages(t *testing.T) {
 
 	stdout, _, err = app.Exec(&ddevapp.ExecOpts{
 		Service: "db",
-		Cmd:     "command -v sudo",
+		Cmd:     "command -v " + addedDBPackage,
 	})
 	assert.NoError(err)
 	assert.Equal(fmt.Sprintf("/usr/bin/%s", addedDBPackage), strings.Trim(stdout, "\r\n"))
@@ -1275,7 +1553,8 @@ func TestTimezoneConfig(t *testing.T) {
 	require.Regexp(t, regexp.MustCompile("timezone=CES?T"), inDBContainerTZData)
 
 	// With timezone set, TZ env should be used if app.Timezone is empty
-	t.Setenv("TZ", "Europe/Rome")
+	// US/Eastern is a legacy name for America/New_York but should still work
+	t.Setenv("TZ", "US/Eastern")
 	app.Timezone = ""
 	err = app.Start()
 	require.NoError(t, err)
@@ -1284,24 +1563,23 @@ func TestTimezoneConfig(t *testing.T) {
 		Cmd:     "printf \"timezone=$(date +%Z)\n\" && php -r 'print \"phptz=\" . date_default_timezone_get();'",
 	})
 	require.NoError(t, err)
-	require.Regexp(t, regexp.MustCompile("timezone=CES?T\nphptz=Europe/Rome"), inWebContainerTZData)
+	require.Regexp(t, regexp.MustCompile("timezone=E[SD]T\nphptz=US/Eastern"), inWebContainerTZData)
 
-	// Make sure db container is also working with CET
+	// Make sure db container is also working with US/Eastern
 	inDBContainerTZData, _, err = app.Exec(&ddevapp.ExecOpts{
 		Service: "db",
 		Cmd:     "echo -n timezone=$(date +%Z)",
 	})
 	require.NoError(t, err)
-	require.Regexp(t, regexp.MustCompile("timezone=CES?T"), inDBContainerTZData)
+	require.Regexp(t, regexp.MustCompile("timezone=E[SD]T"), inDBContainerTZData)
 
 	runTime()
 }
 
 // TestComposerVersionConfig tests to make sure setting Composer version takes effect in the container.
 func TestComposerVersionConfig(t *testing.T) {
-	if dockerutil.IsColima() || dockerutil.IsLima() || dockerutil.IsRancherDesktop() {
-		t.Skip("Skipping on Lima/Colima/Rancher, lots of network connections failed")
-	}
+	testcommon.SkipIfGotestShort(t)
+
 	assert := asrt.New(t)
 	app := &ddevapp.DdevApp{}
 
@@ -1324,7 +1602,7 @@ func TestComposerVersionConfig(t *testing.T) {
 		assert.NoError(err)
 	})
 
-	for _, testVersion := range []string{"2", "2.2", "2.5.5", "1", "stable", "preview", "snapshot"} {
+	for _, testVersion := range []string{"2", "2.2", "2.5.5", "stable", "preview", "snapshot"} {
 		app.ComposerVersion = testVersion
 		err = app.Start()
 		assert.NoError(err)
@@ -1359,6 +1637,10 @@ func TestCustomBuildDockerfiles(t *testing.T) {
 	site := TestSites[0]
 	switchDir := site.Chdir()
 	defer switchDir()
+
+	// Create temporary XDG_CONFIG_HOME for isolated testing
+	tmpXdgConfigHomeDir := testcommon.CopyGlobalDdevDir(t)
+	defer testcommon.ResetGlobalDdevDir(t, tmpXdgConfigHomeDir)
 
 	runTime := util.TimeTrackC(fmt.Sprintf("%s TestCustomBuildDockerfiles", site.Name))
 
@@ -1430,6 +1712,16 @@ FROM $BASE_IMAGE AS test5
 COPY --from=stage /tmp/`+"added-by-busybox-"+item+"-stage.txt /var/tmp/"+"added-by-busybox-"+item+"-stage.txt"+`
 COPY --from=test5 /var/tmp/`+"added-by-"+item+"-test5.txt /var/tmp/"+"added-by-"+item+"-test5.txt"))
 		assert.NoError(err)
+
+		// Testing global ~/.ddev/<service>-build/pre.Dockerfile support,
+		// including a context file added via COPY from the global build directory.
+		// WriteImageDockerfile is called first so it creates the directory.
+		err = ddevapp.WriteImageDockerfile(filepath.Join(globalconfig.GetGlobalDdevDir(), item+"-build", "pre.Dockerfile.global"), []byte(`
+COPY global-junkfile /var/tmp/global-junkfile-`+item+`
+RUN touch /var/tmp/`+"added-by-"+item+"-global-pre.txt"))
+		assert.NoError(err)
+		err = fileutil.TemplateStringToFile("global-context-file", nil, filepath.Join(globalconfig.GetGlobalDdevDir(), item+"-build", "global-junkfile"))
+		assert.NoError(err)
 	}
 
 	// Make sure that DDEV_PHP_VERSION gets into the web build
@@ -1437,6 +1729,17 @@ COPY --from=test5 /var/tmp/`+"added-by-"+item+"-test5.txt /var/tmp/"+"added-by-"
 	err = ddevapp.WriteImageDockerfile(app.GetConfigPath("web-build/Dockerfile.ddev-php-version"), []byte(`
 RUN touch /var/tmp/running-php-${DDEV_PHP_VERSION}
 RUN mkdir -p "/var/tmp/my-arch-info-is-${TARGETOS}-${TARGETARCH}-${TARGETPLATFORM}"
+`))
+	require.NoError(t, err)
+
+	// Make sure that the GitHub token gets into the web build as the github_token secret,
+	// with the random value keeping a cached layer from passing
+	t.Setenv("DDEV_GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+	githubToken := util.RandString(16)
+	t.Setenv("GITHUB_TOKEN", githubToken)
+	err = ddevapp.WriteImageDockerfile(app.GetConfigPath("web-build/Dockerfile.github-token"), []byte(`
+RUN --mount=type=secret,id=github_token echo `+util.RandString(16)+` && cat /run/secrets/github_token >/var/tmp/github-token
 `))
 	require.NoError(t, err)
 
@@ -1533,6 +1836,18 @@ RUN mkdir -p "/var/tmp/my-arch-info-is-${TARGETOS}-${TARGETARCH}-${TARGETPLATFOR
 			Cmd:     "ls /tmp/added-by-busybox-" + item + "-stage-other.txt 2>/dev/null",
 		})
 		assert.Error(err)
+
+		// Global pre.Dockerfile and its context file should have been applied
+		_, _, err = app.Exec(&ddevapp.ExecOpts{
+			Service: item,
+			Cmd:     "ls /var/tmp/added-by-" + item + "-global-pre.txt >/dev/null",
+		})
+		assert.NoError(err)
+		_, _, err = app.Exec(&ddevapp.ExecOpts{
+			Service: item,
+			Cmd:     "ls /var/tmp/global-junkfile-" + item + " >/dev/null",
+		})
+		assert.NoError(err)
 	}
 
 	// Dockerfiles should not be copied
@@ -1543,6 +1858,12 @@ RUN mkdir -p "/var/tmp/my-arch-info-is-${TARGETOS}-${TARGETARCH}-${TARGETPLATFOR
 		Cmd: fmt.Sprintf("ls /var/tmp/running-php-%s >/dev/null", app.PHPVersion),
 	})
 	assert.NoError(err)
+
+	out, stderr, err := app.Exec(&ddevapp.ExecOpts{
+		Cmd: "cat /var/tmp/github-token",
+	})
+	require.NoError(t, err, "out=%s stderr=%s", out, stderr)
+	require.Equal(t, githubToken, out)
 }
 
 // TestConfigLoadingOrder verifies that configs load in lexicographical order
@@ -1706,6 +2027,9 @@ func TestConfigFunctionality(t *testing.T) {
 	if dockerutil.IsRancherDesktop() {
 		t.Skip("Skipping on Rancher Desktop, host ports fail sometimes. On Windows 'Get \"http://127.0.0.1:19998/readme.html\": read tcp 127.0.0.1:59065->127.0.0.1:19998: wsarecv: An existing connection was forcibly closed by the remote host.'")
 	}
+	if nodeps.IsAppleSilicon() && dockerutil.IsDockerDesktop() && nodeps.IsEnvFalse("DDEV_RUN_TEST_ANYWAY") {
+		t.Skip("Skipping on Docker Desktop/Apple Silicon to ignore problems with 'connection reset by peer'")
+	}
 	origDir, _ := os.Getwd()
 
 	site := TestSites[0]
@@ -1744,21 +2068,22 @@ func TestConfigFunctionality(t *testing.T) {
 	require.Equal(t, hostHTTPSPort, app.HostHTTPSPort)
 
 	safeURL := "http://127.0.0.1:" + hostHTTPPort + site.Safe200URIWithExpectation.URI
-	out, _, err := testcommon.GetLocalHTTPResponse(t, safeURL, 60)
-	assert.NoError(err)
-	assert.Contains(out, site.Safe200URIWithExpectation.Expect)
+	testcommon.AssertLocalHTTPContent(t, safeURL, site.Safe200URIWithExpectation.Expect,
+		testcommon.WithMessagef("safe URL should serve the expected static content"),
+	)
 
 	// This isn't very important, and is unusual
 	// On some WSL2 systems (tb-wsldd-05) it works fine locally, can't work in buildkite.
-	if !dockerutil.IsColima() && !nodeps.IsWSL2() {
+	// On Windows (tb-win11-06) the cert reload race with Traefik causes intermittent failures.
+	if !dockerutil.IsColima() && !nodeps.IsWSL2() && !nodeps.IsWindows() {
 		safeURL = "https://127.0.0.1:" + hostHTTPSPort + site.Safe200URIWithExpectation.URI
-		out, _, err = testcommon.GetLocalHTTPResponse(t, safeURL, 60)
-		assert.NoError(err)
-		assert.Contains(out, site.Safe200URIWithExpectation.Expect)
+		testcommon.AssertLocalHTTPContent(t, safeURL, site.Safe200URIWithExpectation.Expect,
+			testcommon.WithMessagef("HTTPS safe URL should serve the expected static content"),
+		)
 	}
 
 	// Make sure that the db port is configured
-	out, err = exec.RunHostCommand("mysql", "-uroot", "-proot", "--database=db", "--host=127.0.0.1", "--port="+hostDBPort, "-e", "SHOW TABLES;")
+	out, err := exec.RunHostCommand("mysql", "-uroot", "-proot", "--database=db", "--host=127.0.0.1", "--port="+hostDBPort, "-e", "SHOW TABLES;")
 	require.NoError(t, err, "failed host-side mysql command, output='%v'", out)
 }
 
@@ -1839,9 +2164,9 @@ func TestConfigDefaultContainerTimeout(t *testing.T) {
 		require.NotEqual(t, container.InspectResponse{}, c)
 		expectedWaitTime, _ := strconv.Atoi(maxWaitTime)
 		require.Equal(t, expectedWaitTime, int(c.Config.Healthcheck.StartPeriod.Seconds()), "db container healthcheck should have been %v with default_container_timeout set to %v", maxWaitTime, app.DefaultContainerTimeout)
-		_, err = app.Snapshot(t.Name() + maxWaitTime)
+		_, err = app.Snapshot(t.Name()+maxWaitTime, false)
 		require.NoError(t, err)
-		err = app.RestoreSnapshot(t.Name() + maxWaitTime)
+		err = app.RestoreSnapshot(t.Name()+maxWaitTime, false)
 		require.NoError(t, err)
 
 		// Inspect container that results from snapshot restore
@@ -1856,4 +2181,43 @@ func TestConfigDefaultContainerTimeout(t *testing.T) {
 		}
 		require.Equal(t, expectedWaitTime, int(c.Config.Healthcheck.StartPeriod.Seconds()), "db container healthcheck should have been %v with default_container_timeout set to %v", maxWaitTime, app.DefaultContainerTimeout)
 	}
+}
+
+// TestLogStderrShownOnStart verifies that warnings captured by log-stderr.sh during
+// the image build are shown to the user on `ddev start`
+func TestLogStderrShownOnStart(t *testing.T) {
+	origDir, _ := os.Getwd()
+	site := TestSites[0]
+	err := os.Chdir(site.Dir)
+	require.NoError(t, err)
+
+	app, err := ddevapp.NewApp(site.Dir, true)
+	require.NoError(t, err)
+
+	webBuildDir := app.GetConfigPath("web-build")
+	dockerfileFoobar := filepath.Join(webBuildDir, "Dockerfile.foobar")
+
+	t.Cleanup(func() {
+		_ = os.RemoveAll(dockerfileFoobar)
+		_ = app.Stop(true, false)
+		_ = os.Chdir(origDir)
+	})
+
+	// A failing command run through log-stderr.sh produces a build warning.
+	// `|| true` keeps the build itself successful.
+	err = os.MkdirAll(webBuildDir, 0755)
+	require.NoError(t, err)
+	err = os.WriteFile(dockerfileFoobar, []byte("RUN log-stderr.sh foobar || true\n"), 0644)
+	require.NoError(t, err)
+
+	captureErr := util.CaptureUserErr()
+	startErr := app.Start()
+	warnings := captureErr()
+	require.NoError(t, startErr)
+
+	// The warning from the failed `foobar` command must be shown to the user,
+	// along with the trailing "not installed properly" summary.
+	require.Contains(t, warnings, "foobar", "expected the failed 'foobar' command warning")
+	require.Contains(t, warnings, "failed with exit code", "expected the log-stderr.sh failure header")
+	require.Contains(t, warnings, "were not installed properly", "expected the trailing summary warning")
 }

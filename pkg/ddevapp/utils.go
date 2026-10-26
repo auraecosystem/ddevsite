@@ -20,13 +20,14 @@ import (
 	"github.com/ddev/ddev/pkg/output"
 	"github.com/ddev/ddev/pkg/util"
 	"github.com/ddev/ddev/pkg/versionconstants"
+	"github.com/docker/compose/v5/pkg/api"
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/moby/moby/client"
 	"github.com/spf13/cobra"
 )
 
 // GetActiveProjects returns an array of DDEV projects
-// that are currently live in docker.
+// that are currently running in docker (excludes paused/stopped projects).
 func GetActiveProjects() []*DdevApp {
 	apps := make([]*DdevApp, 0)
 	labels := map[string]string{
@@ -38,9 +39,13 @@ func GetActiveProjects() []*DdevApp {
 
 	if err == nil {
 		for _, siteContainer := range containers {
+			// Skip containers that are not running (e.g., paused projects)
+			if siteContainer.State != "running" {
+				continue
+			}
 			approot, ok := siteContainer.Labels["com.ddev.approot"]
 			if !ok {
-				break
+				continue
 			}
 
 			app, err := NewApp(approot, true)
@@ -60,7 +65,7 @@ func GetActiveProjects() []*DdevApp {
 }
 
 // RenderAppRow will add an application row to an existing table for describe and list output.
-func RenderAppRow(t table.Writer, row map[string]interface{}) {
+func RenderAppRow(t table.Writer, row map[string]any) {
 	status := fmt.Sprint(row["status_desc"])
 	urls := ""
 	mutagenStatus := ""
@@ -81,8 +86,13 @@ func RenderAppRow(t table.Writer, row map[string]interface{}) {
 
 	status = FormatSiteStatus(status)
 
+	// Hyperlink targets are invisible to the table's width calculation, so
+	// even when the visible text is truncated the full URL/path is clickable.
+	urls = output.Hyperlink(urls, urls)
+	location := output.Hyperlink(output.FileURL(fmt.Sprint(row["approot"])), fmt.Sprint(row["shortroot"]))
+
 	t.AppendRow(table.Row{
-		row["name"], status, row["shortroot"], urls, row["type"],
+		row["name"], status, location, urls, row["type"],
 	})
 }
 
@@ -104,13 +114,19 @@ func Cleanup(app *DdevApp) error {
 	// There can be awkward cases where we're doing an app.Stop() but the rendered
 	// yaml does not exist, all in testing situations.
 	if fileutil.FileExists(app.DockerComposeFullRenderedYAMLPath()) {
-		_, _, err := dockerutil.ComposeCmd(&dockerutil.ComposeCmdOpts{
-			ComposeFiles: []string{app.DockerComposeFullRenderedYAMLPath()},
-			Profiles:     []string{`*`},
-			Action:       []string{"down"},
+		project, loadErr := dockerutil.LoadComposeProject([]string{app.DockerComposeFullRenderedYAMLPath()}, api.ProjectLoadOptions{
+			ProjectName: app.GetComposeProjectName(),
+			Profiles:    []string{`*`},
 		})
-		if err != nil {
-			util.Warning("Failed to docker-compose down: %v", err)
+		if loadErr != nil {
+			util.Warning("Failed to load compose project for down: %v", loadErr)
+		} else {
+			downCtx, svc, svcErr := dockerutil.NewComposeService()
+			if svcErr != nil {
+				util.Warning("Failed to create compose service: %v", svcErr)
+			} else if downErr := svc.Down(downCtx, project.Name, api.DownOptions{Project: project, RemoveOrphans: true}); downErr != nil {
+				util.Warning("Failed to docker-compose down: %v", downErr)
+			}
 		}
 	}
 
@@ -121,13 +137,14 @@ func Cleanup(app *DdevApp) error {
 	}
 	// First, try stopping the listed containers if they are running.
 	for i := range containers {
-		containerName := containers[i].Names[0][1:len(containers[i].Names[0])]
+		containerName := dockerutil.ContainerName(&containers[i])
 		removeOpts := client.ContainerRemoveOptions{
 			RemoveVolumes: true,
 			Force:         true,
 		}
 		output.UserOut.Printf("Removing container: %s", containerName)
-		if _, err = apiClient.ContainerRemove(ctx, containers[i].ID, removeOpts); err != nil {
+		// A concurrent stop or poweroff may have removed it since the lookup.
+		if _, err = apiClient.ContainerRemove(ctx, containers[i].ID, removeOpts); err != nil && !dockerutil.IsErrNotFound(err) {
 			return fmt.Errorf("could not remove container %s: %v", containerName, err)
 		}
 	}
@@ -138,8 +155,7 @@ func Cleanup(app *DdevApp) error {
 		_ = dockerutil.RemoveVolume(volName)
 	}
 
-	err = StopRouterIfNoContainers()
-	return err
+	return nil
 }
 
 // CheckForConf checks for a config.yaml at the cwd or parent dirs.
@@ -156,29 +172,14 @@ func CheckForConf(confPath string) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("no %s file was found in this directory or any parent", filepath.Join(".ddev", "config.yaml"))
+	return "", ErrNoProjectConfig
 }
 
-// ddevContainersRunning determines if any ddev-controlled containers are currently running.
-func ddevContainersRunning() (bool, error) {
-	labels := map[string]string{
-		"com.ddev.platform": "ddev",
-	}
-	containers, err := dockerutil.FindContainersByLabels(labels)
-	if err != nil {
-		return false, err
-	}
-
-	for _, container := range containers {
-		if _, ok := container.Labels["com.ddev.platform"]; ok {
-			return true, nil
-		}
-	}
-	return false, nil
-}
+// ErrNoProjectConfig is returned when no .ddev/config.yaml exists in a directory or any parent.
+var ErrNoProjectConfig = fmt.Errorf("no %s file was found in this directory or any parent", filepath.Join(".ddev", "config.yaml"))
 
 // getTemplateFuncMap will return a map of useful template functions.
-func getTemplateFuncMap() map[string]interface{} {
+func getTemplateFuncMap() map[string]any {
 	// Use sprig's template function map as a base
 	m := sprig.FuncMap()
 
@@ -202,6 +203,11 @@ func templateCanUse(feature string) bool {
 	return false
 }
 
+// osGeneratedFiles are OS-generated metadata files that should neither be tracked in git
+// nor trigger custom-config warnings. The list is used both when creating .ddev/.gitignore
+// and when detecting custom configuration.
+var osGeneratedFiles = []string{".DS_Store", "Thumbs.db", "desktop.ini"}
+
 // gitIgnoreTemplate will write a .gitignore file.
 // This template expects string slice to be provided, with each string corresponding to
 // a line in the resulting .gitignore.
@@ -218,8 +224,10 @@ type ignoreTemplateContents struct {
 }
 
 // CreateGitIgnore will create a .gitignore file in the target directory if one does not exist.
-// Each value in ignores will be added as a new line to the .gitignore.
-func CreateGitIgnore(targetDir string, ignores ...string) error {
+// Each value in ignores will be added as a new line to the .gitignore, unless the
+// user took over the file it names by removing #ddev-generated.
+// An entry listed in alwaysIgnores as well is added without that check.
+func CreateGitIgnore(targetDir string, alwaysIgnores []string, ignores ...string) error {
 	gitIgnoreFilePath := filepath.Join(targetDir, ".gitignore")
 	existingContent := ""
 
@@ -255,6 +263,10 @@ func CreateGitIgnore(targetDir string, ignores ...string) error {
 	// Get the content for the .gitignore file.
 	var generatedIgnores []string
 	for _, p := range ignores {
+		if slices.Contains(alwaysIgnores, p) {
+			generatedIgnores = append(generatedIgnores, p)
+			continue
+		}
 		pFullPath := filepath.Join(targetDir, p)
 		sigFound, err := fileutil.FgrepStringInFile(pFullPath, nodeps.DdevFileSignature)
 		if sigFound || err != nil {
@@ -294,7 +306,7 @@ func CreateGitIgnore(targetDir string, ignores ...string) error {
 
 // isTar determines whether the object at the filepath is a .tar archive.
 func isTar(filePath string) bool {
-	tarSuffixes := []string{".tar", ".tar.gz", ".tar.bz2", ".tar.xz", ".tgz"}
+	tarSuffixes := []string{".tar", ".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst", ".tgz"}
 	for _, suffix := range tarSuffixes {
 		if strings.HasSuffix(filePath, suffix) {
 			return true
@@ -407,8 +419,9 @@ func GetProjects(activeOnly bool) ([]*DdevApp, error) {
 	return appSlice, nil
 }
 
-// GetInactiveProjects returns projects that are currently running
+// GetInactiveProjects returns projects that are not currently running
 func GetInactiveProjects() ([]*DdevApp, error) {
+	defer dockerutil.CacheContainers()()
 	var inactiveApps []*DdevApp
 
 	apps, err := GetProjects(false)
@@ -544,8 +557,10 @@ func (app *DdevApp) HasCustomCert() bool {
 // CanUseHTTPOnly returns true if the project can be accessed via http only
 func (app *DdevApp) CanUseHTTPOnly() bool {
 	switch {
-	// Codespaces has its own router with TLS termination
+	// Codespaces/Devcontainer has its own router with TLS termination
 	case nodeps.IsCodespaces():
+		return false
+	case nodeps.IsDevcontainer():
 		return false
 	// If we have no router, then no https otherwise
 	case IsRouterDisabled(app):
@@ -579,7 +594,7 @@ func CheckDdevVersionConstraint(constraint string, errorPrefix string, errorSuff
 		// Pre-releases need '-0' added for validation
 		normalizedConstraint = normalizeConstraint(constraint)
 	}
-	util.Debug("Comparing constraint '%s' against version '%s'", normalizedConstraint, versionconstants.DdevVersion)
+	util.Verbose("Comparing constraint '%s' against version '%s'", normalizedConstraint, versionconstants.DdevVersion)
 	if errorPrefix == "" {
 		errorPrefix = "error"
 	}

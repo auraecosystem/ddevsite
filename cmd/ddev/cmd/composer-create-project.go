@@ -89,7 +89,9 @@ ddev composer create-project --prefer-dist --no-interaction --no-dev psr/log .
 		// this slice will be used for nested composer commands
 		validCreateArgs := createArgs
 
-		if !slices.Contains(createArgs, "--no-plugins") {
+		// Remember if --no-plugins was provided by the user
+		noPluginsPresent := slices.Contains(createArgs, "--no-plugins")
+		if !noPluginsPresent {
 			// Don't run plugin events for "composer create-project", but run them for "composer run-script" and "composer install"
 			createArgs = append(createArgs, "--no-plugins")
 		}
@@ -244,47 +246,13 @@ ddev composer create-project --prefer-dist --no-interaction --no-dev psr/log .
 				RawCmd:  composerCmd,
 				Dir:     getComposerRootInContainer(app),
 				Tty:     isatty.IsTerminal(os.Stdin.Fd()),
-				Env:     []string{"XDEBUG_MODE=off"},
+				// Disable security blocking to allow installing any packages,
+				// this is a new feature in Composer 2.9+
+				Env: []string{"XDEBUG_MODE=off", "COMPOSER_NO_BLOCKING=1", "COMPOSER_NO_SECURITY_BLOCKING=1"},
 			})
 
 			if err != nil {
-				util.Warning("Failed to install project: %v\nstderr=%v", err, stderr)
-				// Try to run composer update instead.
-				output.UserOut.Println("Trying 'composer update' instead of 'composer install'...")
-
-				composerCmd = []string{
-					"composer",
-					"update",
-				}
-
-				for i, validCreateArg := range validCreateArgs {
-					if isValidComposerOption(app, "update", validCreateArg) {
-						composerCmd = append(composerCmd, validCreateArg)
-					} else if strings.HasPrefix(validCreateArg, "-") && i+1 < len(validCreateArgs) && !strings.HasPrefix(validCreateArgs[i+1], "-") {
-						// If this is an option with a value, add it.
-						if isValidComposerOption(app, "update", validCreateArg+" "+validCreateArgs[i+1]) {
-							composerCmd = append(composerCmd, validCreateArg, validCreateArgs[i+1])
-						}
-					}
-				}
-
-				composerCmd = wrapTTYCommandWithStdin(inputData, composerCmd)
-				// Run update command.
-				output.UserOut.Printf("Executing Composer command: %v\n", composerCmd)
-
-				stdout, stderr, err = app.Exec(&ddevapp.ExecOpts{
-					Service: "web",
-					RawCmd:  composerCmd,
-					Dir:     getComposerRootInContainer(app),
-					Tty:     isatty.IsTerminal(os.Stdin.Fd()),
-					// Disable security blocking to allow installing any packages,
-					// this is a new feature in Composer 2.9+, which may break `composer install`.
-					Env: []string{"XDEBUG_MODE=off", "COMPOSER_NO_SECURITY_BLOCKING=1"},
-				})
-
-				if err != nil {
-					util.Failed("Failed to install project: %v\nstderr=%v", err, stderr)
-				}
+				util.Failed("Failed to install project: %v\nstderr=%v", err, stderr)
 			}
 
 			if len(stdout) > 0 {
@@ -304,7 +272,8 @@ ddev composer create-project --prefer-dist --no-interaction --no-dev psr/log .
 			util.Failed("Failed to read composer.json: %v", err)
 		}
 
-		if !noScriptsPresent && composerManifest.HasPostCreateProjectCmdScript() {
+		if (!noScriptsPresent && composerManifest.HasPostCreateProjectCmdScript()) ||
+			(!noPluginsPresent && hasPostCreateProjectCmdEvent(app)) {
 			// Try to run post-create-project-cmd.
 			composerCmd = []string{
 				"composer",
@@ -366,7 +335,7 @@ ddev composer create-project --prefer-dist --no-interaction --no-dev psr/log .
 func checkForComposerCreateAllowedPaths(app *ddevapp.DdevApp) {
 	appRoot := app.GetAbsAppRoot(false)
 	composerRoot := filepath.Join(app.GetComposerRoot(false, false), composerDirectoryArg)
-	skipDirs := []string{".ddev", ".DS_Store", ".git", ".idea", ".tarballs", ".vscode"}
+	skipDirs := []string{".claude", ".ddev", ".devcontainer", ".DS_Store", ".git", ".idea", ".tarballs", ".vscode"}
 	composerCreateAllowedPaths, _ := app.GetComposerCreateAllowedPaths()
 	err := filepath.Walk(composerRoot,
 		func(walkPath string, walkInfo os.FileInfo, err error) error {
@@ -493,28 +462,59 @@ func isValidComposerOption(app *ddevapp.DdevApp, command string, option string) 
 	validateCmd := []string{"composer", command}
 	validateCmd = append(validateCmd, strings.Split(option, " ")...)
 	validateCmd = append(validateCmd, "--dry-run")
-	userOutFunc := util.CaptureUserOut()
-	_, _, err := app.Exec(&ddevapp.ExecOpts{
+	_, stderr, err := app.Exec(&ddevapp.ExecOpts{
 		Service: "web",
 		Dir:     getComposerRootInContainer(app),
 		RawCmd:  validateCmd,
 		Env:     []string{"XDEBUG_MODE=off"},
 	})
-	out := userOutFunc()
 	if err == nil {
 		return true
 	}
 	// If it's an error for the "--dry-run" we use in validateCmd, then the option is valid.
-	if option != "--dry-run" && strings.Contains(out, `"--dry-run" option does not exist`) {
+	if option != "--dry-run" && strings.Contains(stderr, `"--dry-run" option does not exist`) {
 		return true
 	}
 	// We only care about the "option does not exist" error for "create-project",
 	// and if there are other errors, the user should see them.
 	if command == "create-project" {
-		return !strings.Contains(out, fmt.Sprintf(`"%s" option does not exist`, option))
+		return !strings.Contains(stderr, fmt.Sprintf(`"%s" option does not exist`, option))
 	}
 	// The option is not valid for other commands on any error.
 	return false
+}
+
+// hasPostCreateProjectCmdEvent checks if any installed Composer plugin subscribes
+// to the post-create-project-cmd event. It parses the verbose output of
+// `composer run-script --list` to extract plugin class names, then uses PHP
+// reflection to check each plugin's getSubscribedEvents() method for the event.
+// Returns true if any plugin handles post-create-project-cmd, false otherwise.
+func hasPostCreateProjectCmdEvent(app *ddevapp.DdevApp) bool {
+	userOutFunc := util.CaptureUserOut()
+	_, _, err := app.Exec(&ddevapp.ExecOpts{
+		Service: "web",
+		Dir:     getComposerRootInContainer(app),
+		Cmd: `
+			composer run-script --list -vvv 2>&1 |
+			grep -i 'Loading plugin' |
+			awk '{print $3}' |
+			while IFS= read -r class; do
+				php -r "
+					require 'vendor/autoload.php';
+					\$pluginClass = '$class';
+					if (method_exists(\$pluginClass, 'getSubscribedEvents')) {
+						\$events = \$pluginClass::getSubscribedEvents();
+						foreach (array_keys(\$events) as \$eventName) {
+							echo \$eventName . PHP_EOL;
+						}
+					}
+				"
+			done | grep -q '^post-create-project-cmd$'
+		`,
+		Env: []string{"XDEBUG_MODE=off"},
+	})
+	_ = userOutFunc()
+	return err == nil
 }
 
 // getComposerRootInContainer returns the composer root in the container
@@ -605,7 +605,7 @@ var ComposerCreateCmd = &cobra.Command{
 	},
 }
 
-func init() {
+func registerComposerCreateProjectCmd() {
 	ComposerCmd.AddCommand(ComposerCreateProjectCmd)
 	ComposerCmd.AddCommand(ComposerCreateCmd)
 }

@@ -64,9 +64,11 @@ exec -a $mariadb_binary $mariadb_binary "\$@"
 EOF
 
   chmod +x "$script_path"
+  INSTALLED_WRAPPERS+=("$mysql_binary")
 }
 
-add_or_remove_mariadb_wrapper mariabackup mariadb-backup
+INSTALLED_WRAPPERS=()
+
 add_or_remove_mariadb_wrapper mysql mariadb
 add_or_remove_mariadb_wrapper mysql_convert_table_format mariadb-convert-table-format
 add_or_remove_mariadb_wrapper mysql_find_rows mariadb-find-rows
@@ -97,8 +99,10 @@ add_or_remove_mariadb_wrapper mysqlrepair mariadb-check
 add_or_remove_mariadb_wrapper mysqlshow mariadb-show
 add_or_remove_mariadb_wrapper mysqlslap mariadb-slap
 
-if [ "${ADD_WRAPPER}" = "true" ]; then
-  echo "MariaDB compatibility wrappers installed, using ${DDEV_DATABASE}"
+if [ "${ADD_WRAPPER}" = "false" ]; then
+  echo "MariaDB compatibility wrappers removed for ${DDEV_DATABASE}"
+elif [ ${#INSTALLED_WRAPPERS[@]} -gt 0 ]; then
+  echo "MariaDB compatibility wrappers installed for ${DDEV_DATABASE}: ${INSTALLED_WRAPPERS[*]}"
 else
-  echo "MariaDB compatibility wrappers removed, using ${DDEV_DATABASE}"
+  echo "MariaDB compatibility wrappers already present for ${DDEV_DATABASE}"
 fi

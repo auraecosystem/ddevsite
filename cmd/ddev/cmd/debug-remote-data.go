@@ -20,29 +20,32 @@ var dataType string
 
 // DebugRemoteDataCmd implements the ddev utility remote-data command
 var DebugRemoteDataCmd = &cobra.Command{
-	Use:    "remote-data",
-	Short:  "Download and display remote configuration and sponsorship data",
-	Hidden: true,
+	Use:         "remote-data",
+	Annotations: map[string]string{NoDockerCommand: "true"},
+	Short:       "Download and display remote configuration and sponsorship data",
+	Hidden:      true,
 	Long: `Download and display remote data used by DDEV from GitHub repositories.
 
 This command can download various data types:
   - remote-config: DDEV remote configuration (from ddev/remote-config repository)
   - sponsorship-data: DDEV sponsorship information (from ddev/sponsorship-data repository)
+  - addon-data: DDEV add-on registry (from addons.ddev.com)
 
 The downloaded content is displayed as formatted JSON to stdout.
 Optionally updates the local cached storage file (enabled by default).
 
 This is a developer/debugging tool and is hidden from normal help output.`,
 	Example: `ddev utility remote-data --type=remote-config
-ddev utility remote-data --type=sponsorship-data --update-storage=false`,
+ddev utility remote-data --type=sponsorship-data --update-storage=false
+ddev utility remote-data --type=addon-data`,
 	Args: cobra.NoArgs,
 	RunE: func(_ *cobra.Command, args []string) error {
 		// Ensure global config is loaded
 		globalconfig.EnsureGlobalConfig()
 
 		// Validate type parameter
-		if dataType != "remote-config" && dataType != "sponsorship-data" {
-			return fmt.Errorf("invalid data type. Must be 'remote-config' or 'sponsorship-data'")
+		if dataType != "remote-config" && dataType != "sponsorship-data" && dataType != "addon-data" {
+			return fmt.Errorf("invalid data type. Must be 'remote-config', 'sponsorship-data', or 'addon-data'")
 		}
 
 		// Download and display the data
@@ -62,6 +65,8 @@ func downloadAndDisplayJSON(url, dataType string, updateLocalStorage bool) error
 		return downloadRemoteConfig(url, updateLocalStorage)
 	case "sponsorship-data":
 		return downloadSponsorshipData(url, updateLocalStorage)
+	case "addon-data":
+		return downloadAddonData(url, updateLocalStorage)
 	default:
 		return fmt.Errorf("unsupported data type: %s", dataType)
 	}
@@ -169,9 +174,64 @@ func updateSponsorshipDataStorage(data types.SponsorshipData) error {
 	return sponsorshipStorage.Write(&data)
 }
 
-func init() {
-	DebugRemoteDataCmd.Flags().StringVarP(&dataType, "type", "t", "remote-config", "Type of data to download (remote-config|sponsorship-data)")
-	_ = DebugRemoteDataCmd.RegisterFlagCompletionFunc("type", configCompletionFunc([]string{"remote-config", "sponsorship-data"}))
+// downloadAddonData downloads add-on registry data
+func downloadAddonData(url string, updateLocalStorage bool) error {
+	if url != "" {
+		return fmt.Errorf("custom URLs are not supported, use default add-on data source")
+	}
+
+	// Use configured add-on data source from global config
+	config := globalconfig.DdevGlobalConfig.RemoteConfig
+	addonDataURL := config.AddonDataURL
+	if addonDataURL == "" {
+		addonDataURL = globalconfig.DefaultAddonDataURL
+	}
+	d := downloader.NewURLJSONCDownloader(addonDataURL)
+
+	output.UserErr.Printf("Downloading add-on data from: %s\n", addonDataURL)
+
+	ctx := context.Background()
+	var addonData types.AddonData
+	err := d.Download(ctx, &addonData)
+	if err != nil {
+		return fmt.Errorf("downloading add-on data: %w", err)
+	}
+
+	// Display as JSON
+	jsonData, err := json.MarshalIndent(addonData, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling to JSON: %w", err)
+	}
+
+	output.UserOut.Printf("%s\n", string(jsonData))
+
+	// Update local storage if requested
+	if updateLocalStorage {
+		err = updateAddonDataStorage(addonData)
+		if err != nil {
+			output.UserErr.Printf("Warning: Failed to update local storage: %v\n", err)
+		} else {
+			output.UserErr.Printf("Local add-on data storage updated successfully\n")
+		}
+	}
+
+	return nil
+}
+
+// updateAddonDataStorage updates the local add-on data cache
+func updateAddonDataStorage(data types.AddonData) error {
+	globalDir := globalconfig.GetGlobalDdevDir()
+	// Ensure the directory exists
+	if err := os.MkdirAll(globalDir, 0755); err != nil {
+		return err
+	}
+	addonStorage := storage.NewAddonFileStorage(filepath.Join(globalDir, ".addon-data"))
+	return addonStorage.Write(&data)
+}
+
+func registerDebugRemoteDataCmd() {
+	DebugRemoteDataCmd.Flags().StringVarP(&dataType, "type", "t", "remote-config", "Type of data to download (remote-config|sponsorship-data|addon-data)")
+	_ = DebugRemoteDataCmd.RegisterFlagCompletionFunc("type", configCompletionFunc([]string{"remote-config", "sponsorship-data", "addon-data"}))
 	DebugRemoteDataCmd.Flags().BoolVar(&updateStorage, "update-storage", true, "Update local cached storage file")
 	_ = DebugRemoteDataCmd.RegisterFlagCompletionFunc("update-storage", configCompletionFunc([]string{"true", "false"}))
 	DebugCmd.AddCommand(DebugRemoteDataCmd)

@@ -7,7 +7,7 @@ on:
         description: 'Runner to use'
         required: false
         type: string
-        default: 'ubuntu-24.04'
+        default: 'ubuntu-26.04'
       ddev_test_webserver_type:
         description: 'DDEV_TEST_WEBSERVER_TYPE value'
         required: false
@@ -28,13 +28,13 @@ on:
         required: false
         type: string
         default: 'false'
-      ddev_test_podman_root:
-        description: 'DDEV_TEST_PODMAN_ROOT value'
+      ddev_test_docker_rootless:
+        description: 'DDEV_TEST_DOCKER_ROOTLESS value'
         required: false
         type: string
         default: 'false'
-      ddev_test_docker_rootless:
-        description: 'DDEV_TEST_DOCKER_ROOTLESS value'
+      ddev_run_download_ddev_test:
+        description: 'DDEV_RUN_DOWNLOAD_DDEV_TEST value (run the download-ddev live download test)'
         required: false
         type: string
         default: 'false'
@@ -48,13 +48,18 @@ on:
         required: false
         type: string
         default: ''
+      makeargs:
+        description: 'Extra make arguments: TESTPKG=./pkg/util (for testonepkg) or TESTFILE=./pkg/util/utils_test.go (for testonefile)'
+        required: false
+        type: string
+        default: ''
       testargs:
         description: 'TESTARGS value'
         required: false
         type: string
-        default: '-failfast'
+        default: ''
       gotest_short:
-        description: 'GOTEST_SHORT value'
+        description: 'GOTEST_SHORT value (16=drupal11 only)'
         required: false
         type: string
         default: '16' # 16 is drupal11; means in TestFullSiteSetup we only use drupal11 by default
@@ -74,7 +79,7 @@ on:
         type: string
         default: 'true'
       debug_enabled:
-        description: 'Run the build with tmate set "debug_enabled"'
+        description: 'Run the build with upterm set "debug_enabled"'
         required: false
         type: boolean
         default: false
@@ -91,11 +96,11 @@ jobs:
     runs-on: ${{ inputs.runner }}
 
     env:
+      DOCKER_ORG: "${{ vars.DOCKER_ORG || (github.repository_owner == 'ddev-test' && 'ddevhq' || 'ddev') }}"
       BUILDKIT_PROGRESS: plain
       DOCKER_CLI_EXPERIMENTAL: enabled
       DDEV_DEBUG: true
       DDEV_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      HOMEBREW_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       CGO_ENABLED: ${{ inputs.cgo_enabled }}
       DDEV_NONINTERACTIVE: "true"
       DDEV_SKIP_NODEJS_TEST: ${{ inputs.ddev_skip_nodejs_test }}
@@ -103,18 +108,40 @@ jobs:
       MAKE_TARGET: ${{ inputs.make_target }}
       TESTARGS: ${{ inputs.testargs }}
       BUILDARGS: ${{ inputs.buildargs }}
+      MAKEARGS: ${{ inputs.makeargs }}
       DDEV_TEST_WEBSERVER_TYPE: ${{ inputs.ddev_test_webserver_type }}
       DDEV_TEST_USE_MUTAGEN: ${{ inputs.ddev_test_use_mutagen }}
       DDEV_TEST_NO_BIND_MOUNTS: ${{ inputs.ddev_test_no_bind_mounts }}
       DDEV_TEST_PODMAN_ROOTLESS: ${{ inputs.ddev_test_podman_rootless }}
-      DDEV_TEST_PODMAN_ROOT: ${{ inputs.ddev_test_podman_root }}
       DDEV_TEST_DOCKER_ROOTLESS: ${{ inputs.ddev_test_docker_rootless }}
+      # Picked up by the Makefile's gotest macro (see Makefile) so `make test`
+      # runs through gotestsum and writes per-test JSON events here, for the
+      # CI test-runtime collector (perf/collector/README.md).
+      GOTESTSUM_JSONFILE_DIR: test-results
+      DDEV_RUN_DOWNLOAD_DDEV_TEST: ${{ inputs.ddev_run_download_ddev_test }}
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           # We need to get all branches and tags for git describe to work properly
           fetch-depth: 0
+
+      - name: Load variables from public-variables branch
+        if: github.event_name != 'workflow_dispatch'
+        run: |
+          git fetch --depth=1 --no-tags https://github.com/ddev/ddev public-variables:refs/public-variables-tmp
+          while IFS= read -r varname; do
+            [[ "$varname" == "README.md" ]] && continue
+            value=$(git show "refs/public-variables-tmp:.github/public-variables/$varname" | tr -d '\r' | paste -s -d '|' -)
+            echo "$varname=${value}"
+            echo "$varname=$value" >> $GITHUB_ENV
+          done < <(git ls-tree --name-only refs/public-variables-tmp:.github/public-variables/)
+          git update-ref -d refs/public-variables-tmp
+
+      - name: Wait for pushed images
+        # This runner holds no push credentials, so it can race
+        # image-push.yml's approval/build/push - see containers/wait-for-images.sh.
+        run: containers/wait-for-images.sh
 
       - name: Get Date
         id: get-date
@@ -122,7 +149,7 @@ jobs:
           echo "date=$(/bin/date -u "+%Y%V")" >> $GITHUB_OUTPUT
 
       - name: DDEV test cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         if: ${{ github.ref == 'refs/heads/main' && inputs.gotest_short == '' }}
         with:
           path: ~/.ddev/testcache/tarballs
@@ -131,7 +158,7 @@ jobs:
             ddev-test-cache-
 
       - name: DDEV test cache/restore
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v6
         if: ${{ github.ref != 'refs/heads/main' || inputs.gotest_short != '' }}
         with:
           path: ~/.ddev/testcache/tarballs
@@ -142,6 +169,8 @@ jobs:
       - name: Set up Homebrew
         id: set-up-homebrew
         uses: Homebrew/actions/setup-homebrew@main
+        with:
+          brew-gh-api-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Remove unnecessary items on disk
         uses: jlumbroso/free-disk-space@main
@@ -157,14 +186,14 @@ jobs:
       - name: Install Docker and deps (Linux)
         run: ./.github/workflows/linux-setup.sh
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: '>=1.23'
           check-latest: true
 
       - name: Load 1password secret(s) for pull-push-providers
         if: ${{ inputs.pull_push_providers == 'true' && env.OP_SERVICE_ACCOUNT_TOKEN != '' }}
-        uses: 1password/load-secrets-action@v3
+        uses: 1password/load-secrets-action@v5
         with:
           export-env: true
         env:
@@ -181,21 +210,23 @@ jobs:
       - name: Confirm environment variables
         run: |
           echo "BUILDARGS=${BUILDARGS}"
+          echo "MAKEARGS=${MAKEARGS}"
           echo "TESTARGS=${TESTARGS}"
           echo "CGO_ENABLED=${CGO_ENABLED}"
           echo "GOTEST_SHORT=${GOTEST_SHORT}"
           echo "DDEV_SKIP_NODEJS_TEST=${DDEV_SKIP_NODEJS_TEST}"
+          echo "DDEV_EMBARGO_TESTS=${DDEV_EMBARGO_TESTS}"
+          echo "DDEV_EMBARGO_PHP_VERSIONS=${DDEV_EMBARGO_PHP_VERSIONS}"
           echo "DDEV_TEST_USE_MUTAGEN=${DDEV_TEST_USE_MUTAGEN}"
           echo "DDEV_TEST_WEBSERVER_TYPE=${DDEV_TEST_WEBSERVER_TYPE}"
           echo "DDEV_TEST_NO_BIND_MOUNTS=${DDEV_TEST_NO_BIND_MOUNTS}"
           echo "DDEV_TEST_PODMAN_ROOTLESS=${DDEV_TEST_PODMAN_ROOTLESS}"
-          echo "DDEV_TEST_PODMAN_ROOT=${DDEV_TEST_PODMAN_ROOT}"
           echo "DDEV_TEST_DOCKER_ROOTLESS=${DDEV_TEST_DOCKER_ROOTLESS}"
           echo "MAKE_TARGET=${MAKE_TARGET}"
 
-      - name: Setup tmate session
+      - name: Setup upterm session
         if: ${{ inputs.debug_enabled }}
-        uses: mxschmitt/action-tmate@v3
+        uses: owenthereal/action-upterm@v1
         with:
           limit-access-to-actor: true
 
@@ -206,7 +237,22 @@ jobs:
           if [ "${CGO_ENABLED}" != "${cgo}" ]; then
             echo "CGO_ENABLED=${CGO_ENABLED} but built cgo=${cgo}" && exit 5
           fi
-          make CGO_ENABLED="${CGO_ENABLED}" BUILDARGS="${BUILDARGS}" TESTARGS="${TESTARGS}" ${MAKE_TARGET}
+          make CGO_ENABLED="${CGO_ENABLED}" BUILDARGS="${BUILDARGS}" TESTARGS="${TESTARGS}" ${MAKE_TARGET} ${MAKEARGS}
+
+      # Consumed by perf/collector/'s nightly test-runtime rollup, not by
+      # anyone reading this run directly -- see perf/collector/README.md.
+      # Named per (run, attempt, make_target) because some callers (podman
+      # rootless, podman rootless mutagen, WSL2 NAT) invoke this reusable
+      # workflow twice in the same run, once per make_target, which would
+      # otherwise collide on upload.
+      - name: Upload gotestsum results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-${{ github.run_id }}-${{ github.run_attempt }}-${{ env.MAKE_TARGET }}
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 90
 
       - name: Clean up Homebrew
         continue-on-error: true

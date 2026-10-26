@@ -14,6 +14,7 @@ const (
 	PHP83 = "8.3"
 	PHP84 = "8.4"
 	PHP85 = "8.5"
+	PHP86 = "8.6"
 )
 
 // PHPDefault is the default PHP version, overridden by $DDEV_PHP_VERSION
@@ -34,15 +35,17 @@ var ValidPHPVersions = map[string]bool{
 	PHP83: true,
 	PHP84: true,
 	PHP85: true,
+	PHP86: true,
 }
 
-// PreinstalledPHPVersions is list of preinstalled versions (already in ddev-php-base and ddev-webserver
+// PreinstalledPHPVersions is list of preinstalled versions (already in ddev-webserver)
 var PreinstalledPHPVersions = map[string]bool{
 	PHP82: true,
 	PHP83: true,
 	PHP84: true,
 	PHP85: true,
+	PHP86: true,
 }
 
-// Composer version default - will get latest Composer v2
+// ComposerDefault will get latest Composer v2
 var ComposerDefault = "2"

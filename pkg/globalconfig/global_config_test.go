@@ -5,63 +5,20 @@ import (
 	"errors"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
 
-	"github.com/ddev/ddev/pkg/dockerutil"
-	"github.com/ddev/ddev/pkg/exec"
 	"github.com/ddev/ddev/pkg/globalconfig"
 	"github.com/ddev/ddev/pkg/nodeps"
 	"github.com/ddev/ddev/pkg/testcommon"
-	"github.com/ddev/ddev/pkg/versionconstants"
 	asrt "github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func init() {
 	globalconfig.EnsureGlobalConfig()
-}
-
-// TestGetFreePort checks GetFreePort() to make sure it respects
-// ports reserved in DdevGlobalConfig.UsedHostPorts
-// and that the port can actually be bound.
-func TestGetFreePort(t *testing.T) {
-	dockerIP, err := dockerutil.GetDockerIP()
-	require.NoError(t, err)
-
-	// Find out a starting port the OS is likely to give us.
-	startPort, err := globalconfig.GetFreePort(dockerIP)
-	require.NoError(t, err)
-
-	// Put 100 used ports in the UsedHostPorts
-	i, err := strconv.Atoi(startPort)
-	i = i + 1
-	maximum := i + 100
-	require.NoError(t, err)
-	ports := []string{}
-	for ; i < maximum; i++ {
-		ports = append(ports, strconv.Itoa(i))
-	}
-	// Make sure we have a global config set up.
-	_ = globalconfig.ReadGlobalConfig()
-	err = globalconfig.ReservePorts(t.Name(), ports)
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		_ = globalconfig.RemoveProjectInfo(t.Name())
-	})
-
-	for try := 0; try < 5; try++ {
-		port, err := globalconfig.GetFreePort(dockerIP)
-		require.NoError(t, err)
-		require.NotContains(t, globalconfig.DdevProjectList["TestGetFreePort"].UsedHostPorts, port)
-
-		// Make sure we can actually use the port.
-		dockerCommand := []string{"run", "--rm", "-p" + dockerIP + ":" + port + ":" + port, versionconstants.UtilitiesImage}
-		out, err := exec.RunCommand("docker", dockerCommand)
-
-		require.NoError(t, err, "failed to 'docker %v': %v, output='%v'", dockerCommand, err, out)
-	}
 }
 
 // TestSetProjectAppRoot tests behavior of SetProjectAppRoot
@@ -125,6 +82,23 @@ func TestSetProjectAppRoot(t *testing.T) {
 
 	project = globalconfig.GetProject(t.Name())
 	assert.Equal(tmpDir, project.AppRoot)
+}
+
+// TestReadProjectListDropsRemovedProjects checks that rereading the project
+// list forgets projects another process removed from the file.
+func TestReadProjectListDropsRemovedProjects(t *testing.T) {
+	origList := globalconfig.DdevProjectList
+	t.Setenv("DDEV_XDG_CONFIG_HOME", t.TempDir())
+	t.Cleanup(func() { globalconfig.DdevProjectList = origList })
+
+	globalconfig.DdevProjectList = map[string]*globalconfig.ProjectInfo{
+		"kept":    {AppRoot: "/kept"},
+		"removed": {AppRoot: "/removed"},
+	}
+	require.NoError(t, os.WriteFile(globalconfig.GetProjectListPath(), []byte("kept:\n  approot: /kept\n"), 0644))
+
+	require.NoError(t, globalconfig.ReadProjectList())
+	require.Equal(t, map[string]*globalconfig.ProjectInfo{"kept": {AppRoot: "/kept"}}, globalconfig.DdevProjectList)
 }
 
 type internetActiveNetResolverStub struct {
@@ -205,25 +179,111 @@ func TestIsInternetActive(t *testing.T) {
 
 // TestCheckForMultipleGlobalDdevDirs tests CheckForMultipleGlobalDdevDirs behavior
 func TestCheckForMultipleGlobalDdevDirs(t *testing.T) {
-	// Test 1: No conflict - only one directory exists
-	t.Run("NoConflict", func(t *testing.T) {
-		tmpHome := testcommon.CreateTmpDir("TestCheckMultipleDirs_NoConflict")
+	// ===== Happy path: a single recognized location is in use, no warning =====
+
+	// Only the default ~/.ddev exists.
+	t.Run("OnlyDefaultExists", func(t *testing.T) {
+		tmpHome := testcommon.CreateTmpDir("TestCheckMultipleDirs_Default")
 		defer os.RemoveAll(tmpHome)
 
-		t.Setenv("HOME", tmpHome)
-		t.Setenv("XDG_CONFIG_HOME", "")
+		testcommon.SetTestHome(t, tmpHome)
+		t.Setenv("DDEV_XDG_CONFIG_HOME", "")
 
-		// Create only XDG directory
-		xdgDir := tmpHome + "/.config/ddev"
-		err := os.MkdirAll(xdgDir, 0755)
+		defaultDir := filepath.Join(tmpHome, ".ddev")
+		err := os.MkdirAll(defaultDir, 0755)
 		require.NoError(t, err)
 
-		// Should not return error as ~/.ddev doesn't exist
 		err = globalconfig.CheckForMultipleGlobalDdevDirs()
 		require.NoError(t, err)
 	})
 
-	// Test 2: Conflict - both directories exist (Linux only)
+	// Only ~/.config/ddev exists (the Linux fallback), ~/.ddev does not.
+	t.Run("OnlyConfigDdevExists", func(t *testing.T) {
+		tmpHome := testcommon.CreateTmpDir("TestCheckMultipleDirs_NoConflict")
+		defer os.RemoveAll(tmpHome)
+
+		testcommon.SetTestHome(t, tmpHome)
+		t.Setenv("DDEV_XDG_CONFIG_HOME", "")
+
+		xdgDir := filepath.Join(tmpHome, ".config", "ddev")
+		err := os.MkdirAll(xdgDir, 0755)
+		require.NoError(t, err)
+
+		err = globalconfig.CheckForMultipleGlobalDdevDirs()
+		require.NoError(t, err)
+	})
+
+	// XDG_CONFIG_HOME pointing at ~/.config on Linux
+	// doesn't trigger a warning because we recognize ~/.config/ddev
+	t.Run("XDGConfigHomeIsConventionalDefault", func(t *testing.T) {
+		if !nodeps.IsLinux() {
+			t.Skip("~/.config/ddev fallback only applies on Linux")
+		}
+
+		tmpHome := testcommon.CreateTmpDir("TestCheckMultipleDirs_XDGDefault")
+		defer os.RemoveAll(tmpHome)
+
+		testcommon.SetTestHome(t, tmpHome)
+		t.Setenv("DDEV_XDG_CONFIG_HOME", "")
+		t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpHome, ".config"))
+
+		xdgDir := filepath.Join(tmpHome, ".config", "ddev")
+		err := os.MkdirAll(xdgDir, 0755)
+		require.NoError(t, err)
+
+		err = globalconfig.CheckForMultipleGlobalDdevDirs()
+		require.NoError(t, err)
+	})
+
+	// DDEV_XDG_CONFIG_HOME takes precedence over XDG_CONFIG_HOME, so a leftover
+	// XDG_CONFIG_HOME/ddev must not be reported when both are set.
+	t.Run("DDEVXDGConfigHomeSuppressesXDGLeftover", func(t *testing.T) {
+		tmpHome := testcommon.CreateTmpDir("TestCheckMultipleDirs_BothHome")
+		defer os.RemoveAll(tmpHome)
+
+		tmpDdevXdg := testcommon.CreateTmpDir("TestCheckMultipleDirs_BothDDEVXDG")
+		defer os.RemoveAll(tmpDdevXdg)
+
+		tmpXdg := testcommon.CreateTmpDir("TestCheckMultipleDirs_BothXDG")
+		defer os.RemoveAll(tmpXdg)
+
+		testcommon.SetTestHome(t, tmpHome)
+		t.Setenv("DDEV_XDG_CONFIG_HOME", tmpDdevXdg)
+		t.Setenv("XDG_CONFIG_HOME", tmpXdg)
+
+		xdgDir := filepath.Join(tmpXdg, "ddev")
+		err := os.MkdirAll(xdgDir, 0755)
+		require.NoError(t, err)
+
+		err = globalconfig.CheckForMultipleGlobalDdevDirs()
+		require.NoError(t, err)
+	})
+
+	// XDG_CONFIG_HOME is set but has no ddev directory under it, so there is
+	// nothing to recover and no warning.
+	t.Run("XDGConfigHomeWithoutDdevDir", func(t *testing.T) {
+		tmpHome := testcommon.CreateTmpDir("TestCheckMultipleDirs_XDGEmpty")
+		defer os.RemoveAll(tmpHome)
+
+		tmpXdg := testcommon.CreateTmpDir("TestCheckMultipleDirs_XDGNoDdev")
+		defer os.RemoveAll(tmpXdg)
+
+		testcommon.SetTestHome(t, tmpHome)
+		t.Setenv("DDEV_XDG_CONFIG_HOME", "")
+		t.Setenv("XDG_CONFIG_HOME", tmpXdg)
+
+		defaultDir := filepath.Join(tmpHome, ".ddev")
+		err := os.MkdirAll(defaultDir, 0755)
+		require.NoError(t, err)
+
+		err = globalconfig.CheckForMultipleGlobalDdevDirs()
+		require.NoError(t, err)
+	})
+
+	// ===== Error path: config exists in a location other than the one in use =====
+
+	// Both Linux standard locations exist; ~/.ddev wins by precedence and the
+	// message must explain that either can be removed, not name only one.
 	t.Run("ConflictBothExist", func(t *testing.T) {
 		if !nodeps.IsLinux() {
 			t.Skip("This test only runs on Linux")
@@ -232,65 +292,193 @@ func TestCheckForMultipleGlobalDdevDirs(t *testing.T) {
 		tmpHome := testcommon.CreateTmpDir("TestCheckMultipleDirs_Conflict")
 		defer os.RemoveAll(tmpHome)
 
-		t.Setenv("HOME", tmpHome)
-		t.Setenv("XDG_CONFIG_HOME", "")
+		testcommon.SetTestHome(t, tmpHome)
+		t.Setenv("DDEV_XDG_CONFIG_HOME", "")
 
-		// Create both directories
-		defaultDir := tmpHome + "/.ddev"
+		defaultDir := filepath.Join(tmpHome, ".ddev")
 		err := os.MkdirAll(defaultDir, 0755)
 		require.NoError(t, err)
 
-		xdgDir := tmpHome + "/.config/ddev"
+		xdgDir := filepath.Join(tmpHome, ".config", "ddev")
 		err = os.MkdirAll(xdgDir, 0755)
 		require.NoError(t, err)
 
-		// Should detect conflict
+		err = globalconfig.CheckForMultipleGlobalDdevDirs()
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "multiple global DDEV configurations found")
+		require.Contains(t, err.Error(), "takes precedence")
+		require.Contains(t, err.Error(), "To use "+strconv.Quote(xdgDir)+" instead, remove "+strconv.Quote(defaultDir))
+	})
+
+	// DDEV_XDG_CONFIG_HOME is in use while a stale ~/.ddev exists (all platforms).
+	t.Run("DDEVXDGConfigHomeSet", func(t *testing.T) {
+		tmpHome := testcommon.CreateTmpDir("TestCheckMultipleDirs_DDEVXDGHome")
+		defer os.RemoveAll(tmpHome)
+
+		tmpXdg := testcommon.CreateTmpDir("TestCheckMultipleDirs_DDEVXDG")
+		defer os.RemoveAll(tmpXdg)
+
+		testcommon.SetTestHome(t, tmpHome)
+		t.Setenv("DDEV_XDG_CONFIG_HOME", tmpXdg)
+
+		defaultDir := filepath.Join(tmpHome, ".ddev")
+		err := os.MkdirAll(defaultDir, 0755)
+		require.NoError(t, err)
+
+		ddevXdgDir := filepath.Join(tmpXdg, "ddev")
+		err = os.MkdirAll(ddevXdgDir, 0755)
+		require.NoError(t, err)
+
 		err = globalconfig.CheckForMultipleGlobalDdevDirs()
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "multiple global DDEV configurations found")
 	})
 
-	// Test 3: XDG_CONFIG_HOME set - should detect conflict
-	t.Run("XDGConfigHomeSet", func(t *testing.T) {
+	// Leftover XDG_CONFIG_HOME/ddev that DDEV no longer honors (any platform, when
+	// it is not the ~/.config/ddev fallback on Linux). The warning must tell the
+	// user to set DDEV_XDG_CONFIG_HOME or remove it.
+	t.Run("XDGConfigHomeLeftover", func(t *testing.T) {
 		tmpHome := testcommon.CreateTmpDir("TestCheckMultipleDirs_XDGHome")
 		defer os.RemoveAll(tmpHome)
 
 		tmpXdg := testcommon.CreateTmpDir("TestCheckMultipleDirs_XDG")
 		defer os.RemoveAll(tmpXdg)
 
-		t.Setenv("HOME", tmpHome)
+		testcommon.SetTestHome(t, tmpHome)
+		t.Setenv("DDEV_XDG_CONFIG_HOME", "")
 		t.Setenv("XDG_CONFIG_HOME", tmpXdg)
 
-		// Create both directories
-		defaultDir := tmpHome + "/.ddev"
+		defaultDir := filepath.Join(tmpHome, ".ddev")
 		err := os.MkdirAll(defaultDir, 0755)
 		require.NoError(t, err)
 
-		xdgDir := tmpXdg + "/ddev"
+		xdgDir := filepath.Join(tmpXdg, "ddev")
 		err = os.MkdirAll(xdgDir, 0755)
 		require.NoError(t, err)
 
-		// Should detect conflict between XDG and default
 		err = globalconfig.CheckForMultipleGlobalDdevDirs()
 		require.Error(t, err)
-		require.Contains(t, err.Error(), "multiple global DDEV configurations found")
+		require.Contains(t, err.Error(), "DDEV no longer honors XDG_CONFIG_HOME")
+		require.Contains(t, err.Error(), "DDEV_XDG_CONFIG_HOME="+strconv.Quote(tmpXdg))
+	})
+}
+
+// TestGlobalConfigHooksRoundTrip tests that hooks in global_config.yaml survive being read and rewritten.
+func TestGlobalConfigHooksRoundTrip(t *testing.T) {
+	origConfig := globalconfig.DdevGlobalConfig
+	tmpHome := testcommon.CreateTmpDir("TestGlobalConfigHooksRoundTrip")
+	testcommon.SetTestHome(t, tmpHome)
+	t.Setenv("DDEV_XDG_CONFIG_HOME", "")
+	t.Cleanup(func() {
+		globalconfig.DdevGlobalConfig = origConfig
+		_ = os.RemoveAll(tmpHome)
 	})
 
-	// Test 4: Only default directory exists
-	t.Run("OnlyDefaultExists", func(t *testing.T) {
-		tmpHome := testcommon.CreateTmpDir("TestCheckMultipleDirs_Default")
-		defer os.RemoveAll(tmpHome)
+	globalDir := filepath.Join(tmpHome, ".ddev")
+	require.NoError(t, os.MkdirAll(globalDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(globalDir, "global_config.yaml"), []byte("hooks:\n  post-start:\n    - exec: echo hi\n      service: db\n    - exec-host: echo host\n"), 0644))
 
-		t.Setenv("HOME", tmpHome)
-		t.Setenv("XDG_CONFIG_HOME", "")
+	globalconfig.DdevGlobalConfig = globalconfig.New()
+	require.NoError(t, globalconfig.ReadGlobalConfig())
+	expected := map[string][]map[string]any{"post-start": {{"exec": "echo hi", "service": "db"}, {"exec-host": "echo host"}}}
+	require.Equal(t, expected, globalconfig.DdevGlobalConfig.Hooks)
 
-		// Create only default directory
-		defaultDir := tmpHome + "/.ddev"
-		err := os.MkdirAll(defaultDir, 0755)
-		require.NoError(t, err)
+	require.NoError(t, globalconfig.WriteGlobalConfig(globalconfig.DdevGlobalConfig))
+	globalconfig.DdevGlobalConfig = globalconfig.New()
+	require.NoError(t, globalconfig.ReadGlobalConfig())
+	require.Equal(t, expected, globalconfig.DdevGlobalConfig.Hooks)
+}
 
-		// Should not return error
-		err = globalconfig.CheckForMultipleGlobalDdevDirs()
-		require.NoError(t, err)
+// TestGlobalConfigOverrides tests that global_config.*.yaml files are merged over
+// global_config.yaml in lexical order, and that saving the global config does not
+// copy their values into global_config.yaml.
+func TestGlobalConfigOverrides(t *testing.T) {
+	origConfig := globalconfig.DdevGlobalConfig
+	tmpHome := testcommon.CreateTmpDir("TestGlobalConfigOverrides")
+	testcommon.SetTestHome(t, tmpHome)
+	t.Setenv("DDEV_XDG_CONFIG_HOME", "")
+	t.Cleanup(func() {
+		globalconfig.DdevGlobalConfig = origConfig
+		_ = os.RemoveAll(tmpHome)
 	})
+
+	globalDir := filepath.Join(tmpHome, ".ddev")
+	require.NoError(t, os.MkdirAll(globalDir, 0755))
+	mainFile := filepath.Join(globalDir, "global_config.yaml")
+	require.NoError(t, os.WriteFile(mainFile, []byte("project_tld: main.test\nomit_containers: [ddev-ssh-agent]\nweb_environment: [A=main]\n"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(globalDir, "global_config.a.yaml"), []byte("project_tld: a.test\nomit_containers: [ddev-router]\n"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(globalDir, "global_config.b.yaml"), []byte("project_tld: b.test\n"), 0644))
+
+	globalconfig.DdevGlobalConfig = globalconfig.New()
+	require.NoError(t, globalconfig.ReadGlobalConfig())
+	require.Equal(t, "b.test", globalconfig.DdevGlobalConfig.ProjectTldGlobal)
+	require.ElementsMatch(t, []string{"ddev-ssh-agent", "ddev-router"}, globalconfig.DdevGlobalConfig.OmitContainersGlobal)
+	require.Equal(t, []string{"A=main"}, globalconfig.DdevGlobalConfig.WebEnvironment)
+
+	// A change to a field no override sets is saved; the overridden values are not.
+	globalconfig.DdevGlobalConfig.WebEnvironment = []string{"A=changed"}
+	require.NoError(t, globalconfig.WriteGlobalConfig(globalconfig.DdevGlobalConfig))
+	written, err := os.ReadFile(mainFile)
+	require.NoError(t, err)
+	require.Contains(t, string(written), "project_tld: main.test")
+	require.NotContains(t, string(written), "b.test")
+	require.Contains(t, string(written), "omit_containers: [ddev-ssh-agent]")
+	require.Contains(t, string(written), "A=changed")
+
+	// `ddev config global` reads twice before writing; override keys missing
+	// from global_config.yaml must still stay out of it.
+	require.NoError(t, os.WriteFile(filepath.Join(globalDir, "global_config.b.yaml"), []byte("project_tld: b.test\ndeveloper_mode: true\n"), 0644))
+	globalconfig.DdevGlobalConfig = globalconfig.New()
+	require.NoError(t, globalconfig.ReadGlobalConfig())
+	require.NoError(t, globalconfig.ReadGlobalConfig())
+	require.True(t, globalconfig.DdevGlobalConfig.DeveloperMode)
+	globalconfig.DdevGlobalConfig.TableStyle = "bold"
+	require.NoError(t, globalconfig.WriteGlobalConfig(globalconfig.DdevGlobalConfig))
+	written, err = os.ReadFile(mainFile)
+	require.NoError(t, err)
+	require.NotRegexp(t, `(?m)^developer_mode:`, string(written))
+	require.NotContains(t, string(written), "b.test")
+
+	// Changing a list an override extends saves only the change, not the override's items.
+	require.NoError(t, os.WriteFile(filepath.Join(globalDir, "global_config.b.yaml"), []byte("web_environment: [FROM_OVERRIDE=1]\n"), 0644))
+	globalconfig.DdevGlobalConfig = globalconfig.New()
+	require.NoError(t, globalconfig.ReadGlobalConfig())
+	require.Equal(t, []string{"A=changed", "FROM_OVERRIDE=1"}, globalconfig.DdevGlobalConfig.WebEnvironment)
+	globalconfig.DdevGlobalConfig.WebEnvironment = []string{"FROM_OVERRIDE=1", "MINE=1"}
+	require.NoError(t, globalconfig.WriteGlobalConfig(globalconfig.DdevGlobalConfig))
+	written, err = os.ReadFile(mainFile)
+	require.NoError(t, err)
+	require.Contains(t, string(written), "web_environment:\n    - MINE=1\n")
+	require.NotContains(t, string(written), "FROM_OVERRIDE")
+
+	// With override_config: true, a list in the override replaces the one from global_config.yaml.
+	require.NoError(t, os.WriteFile(filepath.Join(globalDir, "global_config.b.yaml"), []byte("override_config: true\nomit_containers: [ddev-router]\n"), 0644))
+	require.NoError(t, os.Remove(filepath.Join(globalDir, "global_config.a.yaml")))
+	globalconfig.DdevGlobalConfig = globalconfig.New()
+	require.NoError(t, globalconfig.ReadGlobalConfig())
+	require.Equal(t, []string{"ddev-router"}, globalconfig.DdevGlobalConfig.OmitContainersGlobal)
+}
+
+// TestReadProjectListUnparseable checks that an unparseable project list is
+// set aside instead of blocking every command.
+func TestReadProjectListUnparseable(t *testing.T) {
+	origProjectList := globalconfig.DdevProjectList
+	t.Cleanup(func() {
+		globalconfig.DdevProjectList = origProjectList
+	})
+	t.Setenv("DDEV_XDG_CONFIG_HOME", t.TempDir())
+
+	projectListPath := globalconfig.GetProjectListPath()
+	garbage := []byte("{{{ not: [yaml\n")
+	require.NoError(t, os.WriteFile(projectListPath, garbage, 0644))
+
+	require.NoError(t, globalconfig.ReadProjectList())
+	require.Empty(t, globalconfig.DdevProjectList)
+
+	saved, err := os.ReadFile(projectListPath + ".bad")
+	require.NoError(t, err)
+	require.Equal(t, garbage, saved)
+
+	require.NoError(t, globalconfig.ReadProjectList())
+	require.NotNil(t, globalconfig.DdevProjectList)
 }

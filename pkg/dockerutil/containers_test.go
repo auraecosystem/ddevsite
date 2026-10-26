@@ -20,6 +20,7 @@ import (
 	"github.com/ddev/ddev/pkg/testcommon"
 	"github.com/ddev/ddev/pkg/util"
 	"github.com/ddev/ddev/pkg/versionconstants"
+	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
 	asrt "github.com/stretchr/testify/assert"
@@ -80,7 +81,7 @@ func testMain(m *testing.M) int {
 		if foundContainer != nil {
 			err = dockerutil.RemoveContainer(foundContainer.ID)
 			if err != nil {
-				output.UserErr.Errorf("-- FAIL: dockerutils_test failed to remove test container: %v", err)
+				output.UserErr.Warningf("-- FAIL: dockerutils_test failed to remove test container '%v': %v", foundContainer, err)
 			}
 		}
 	}()
@@ -164,32 +165,39 @@ func TestGetContainerUser(t *testing.T) {
 
 	defer util.TimeTrackC(fmt.Sprintf("%s %s", projName, t.Name()))()
 
-	err = app.Start()
+	err = app.Restart()
 	require.NoError(t, err)
 
 	uid, gid, username := dockerutil.GetContainerUser()
 
 	for _, service := range []string{"web", "db"} {
+		expectedUID, expectedGID, expectedUsername := uid, gid, username
+		// Rootless Docker maps the host user to UID 0 inside the container's user namespace,
+		// so the web service is explicitly set to 0:0 when bind mounts are active (see compose_yaml.go).
+		if service == "web" && dockerutil.IsDockerRootless() && !globalconfig.DdevGlobalConfig.NoBindMounts {
+			expectedUID, expectedGID, expectedUsername = "0", "0", "root"
+		}
+
 		out, _, err := app.Exec(&ddevapp.ExecOpts{
 			Service: service,
 			Cmd:     "id -un",
 		})
 		require.NoError(t, err)
-		require.Equal(t, username, strings.Trim(out, "\r\n"))
+		require.Equal(t, expectedUsername, strings.Trim(out, "\r\n"))
 
 		out, _, err = app.Exec(&ddevapp.ExecOpts{
 			Service: service,
 			Cmd:     "id -u",
 		})
 		require.NoError(t, err)
-		require.Equal(t, uid, strings.Trim(out, "\r\n"))
+		require.Equal(t, expectedUID, strings.Trim(out, "\r\n"))
 
 		out, _, err = app.Exec(&ddevapp.ExecOpts{
 			Service: service,
 			Cmd:     "id -g",
 		})
 		require.NoError(t, err)
-		require.Equal(t, gid, strings.Trim(out, "\r\n"))
+		require.Equal(t, expectedGID, strings.Trim(out, "\r\n"))
 	}
 }
 
@@ -235,13 +243,13 @@ func TestGetContainerHealth(t *testing.T) {
 	status, log := dockerutil.GetContainerHealth(c)
 	assert.Equal("healthy", status, "container should be healthy; log=%v", log)
 
-	// Now break the container and make sure it's unhealthy
+	// Now stop the container and make sure it's exited
 	timeout := 10
 	_, err = apiClient.ContainerStop(ctx, c.ID, client.ContainerStopOptions{Timeout: &timeout})
 	assert.NoError(err)
 
 	status, log = dockerutil.GetContainerHealth(c)
-	assert.Equal("unhealthy", status, "container should be unhealthy; log=%v", log)
+	assert.Equal("exited", status, "container should be exited; log=%v", log)
 	assert.NoError(err)
 }
 
@@ -343,12 +351,76 @@ func TestContainerWait(t *testing.T) {
 	require.NoError(t, err, "output=%s", out)
 }
 
+func TestContainerWaitShowsLogsInCI(t *testing.T) {
+	origDebug := globalconfig.DdevDebug
+	globalconfig.DdevDebug = false
+	t.Cleanup(func() { globalconfig.DdevDebug = origDebug })
+
+	labels := map[string]string{"test": "failedlogsinci"}
+	_ = dockerutil.RemoveContainersByLabels(labels)
+	cID, _, err := dockerutil.RunSimpleContainer(versionconstants.UtilitiesImage, t.Name()+"-"+util.RandString(5), []string{"sh", "-c", "echo FAILED_CONTAINER_MARKER; exit 1"}, nil, nil, nil, "0", false, true, labels, nil, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = dockerutil.RemoveContainer(cID) })
+
+	for _, ci := range []string{"true", "false"} {
+		t.Setenv("CI", ci)
+		capture := util.CaptureUserErr()
+		_, err = dockerutil.ContainerWait(5, labels)
+		out := capture()
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "container exited")
+		if ci == "true" {
+			require.Contains(t, out, "Logs from failed")
+			require.Contains(t, out, "FAILED_CONTAINER_MARKER")
+		} else {
+			require.NotContains(t, out, "FAILED_CONTAINER_MARKER")
+		}
+	}
+}
+
 // TestGetAppContainers looks for container with sitename dockerutils-test
 func TestGetAppContainers(t *testing.T) {
 	assert := asrt.New(t)
 	containers, err := dockerutil.GetAppContainers(testContainerName)
 	assert.NoError(err)
 	assert.Contains(containers[0].Image, versionconstants.WebImg)
+}
+
+// TestCacheContainers checks that cached lookups find what Docker finds
+func TestCacheContainers(t *testing.T) {
+	lookups := []map[string]string{
+		{"com.ddev.site-name": testContainerName, "com.docker.compose.service": "web"},
+		{"com.ddev.site-name": testContainerName, "com.docker.compose.oneoff": ""},
+		{"com.ddev.site-name": testContainerName, "com.docker.compose.service": "db"},
+		{"com.ddev.site-name": testContainerName, "no.such.label": ""},
+	}
+	names := []string{testContainerName, testContainerName[:len(testContainerName)-1], "no-such-container"}
+	find := func() (ids []string) {
+		for _, labels := range lookups {
+			containers, err := dockerutil.FindContainersByLabels(labels)
+			require.NoError(t, err)
+			ids = append(ids, fmt.Sprint(len(containers)))
+			for _, c := range containers {
+				ids = append(ids, c.ID)
+			}
+		}
+		for _, name := range names {
+			c, err := dockerutil.FindContainerByName(name)
+			require.NoError(t, err)
+			if c != nil {
+				ids = append(ids, c.ID)
+			}
+			ids = append(ids, "|")
+		}
+		return ids
+	}
+
+	want := find()
+	require.Equal(t, "1", want[0], "the test container should be found")
+	release := dockerutil.CacheContainers()
+	require.Equal(t, want, find())
+	release()
+	require.Equal(t, want, find())
 }
 
 // TestFindContainerByName does a simple test of FindContainerByName()
@@ -428,7 +500,7 @@ func TestRunSimpleContainer(t *testing.T) {
 	_, _, err = dockerutil.RunSimpleContainer("busybox:latest", "TestRunSimpleContainer"+basename, []string{"nocommandbythatname"}, nil, []string{"TEMPENV=someenv"}, []string{testdata + ":/tempmount"}, "25", true, false, nil, nil, nil)
 	require.Error(t, err)
 	if err != nil {
-		require.Contains(t, err.Error(), "failed to StartContainer")
+		require.Contains(t, err.Error(), "failed to start container")
 	}
 
 	// Try the case of running a script that fails
@@ -453,6 +525,37 @@ func TestRunSimpleContainer(t *testing.T) {
 	}
 }
 
+// TestRunSimpleContainerExtended tests the timeout and detach behavior of RunSimpleContainerExtended.
+func TestRunSimpleContainerExtended(t *testing.T) {
+	basename := util.RandString(6)
+
+	// timeout=0 means detach: should return immediately without waiting for the container to finish.
+	err := dockerutil.Pull("busybox:latest")
+	require.NoError(t, err)
+	containerName := "TestRunSimpleContainerExtended-detach-" + basename
+	start := time.Now()
+	cID, _, err := dockerutil.RunSimpleContainerExtended(containerName, &container.Config{
+		Image: "busybox:latest",
+		Cmd:   []string{"sleep", "30"},
+	}, &container.HostConfig{}, false, 0)
+	require.NoError(t, err)
+	require.NotEmpty(t, cID)
+	t.Cleanup(func() { _ = dockerutil.RemoveContainer(cID) })
+	require.Less(t, time.Since(start), 10*time.Second, "detach should return immediately, not wait for container")
+	// Container should still be running since we didn't wait.
+	info, err := dockerutil.InspectContainer(containerName)
+	require.NoError(t, err)
+	require.True(t, info.State.Running)
+
+	// A short timeout should expire and return a timeout error for a container that sleeps longer.
+	_, _, err = dockerutil.RunSimpleContainerExtended("TestRunSimpleContainerExtended-timeout-"+basename, &container.Config{
+		Image: "busybox:latest",
+		Cmd:   []string{"sleep", "30"},
+	}, &container.HostConfig{}, true, 1*time.Second)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "timed out after")
+}
+
 // TestGetBoundHostPorts() checks to see that the ports expected
 // to be exposed on a container actually are exposed.
 func TestGetBoundHostPorts(t *testing.T) {
@@ -468,6 +571,29 @@ func TestGetBoundHostPorts(t *testing.T) {
 	assert.NoError(err)
 	assert.NotNil(ports)
 	assert.Equal([]string{"8889", "8890"}, ports)
+}
+
+// TestGetRouterNetworkAliases() checks that network aliases can be retrieved from a container
+func TestGetRouterNetworkAliases(t *testing.T) {
+	assert := asrt.New(t)
+
+	// Test with invalid container ID - should return error
+	_, err := dockerutil.GetRouterNetworkAliases("nonexistent-container-id")
+	assert.Error(err)
+
+	// Test with a real container - should not error
+	// (aliases may be empty if container isn't on ddev_default network)
+	testContainer, err := dockerutil.FindContainerByLabels(map[string]string{
+		"com.ddev.site-name":        testContainerName,
+		"com.docker.compose.oneoff": "False",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, testContainer)
+	aliases, err := dockerutil.GetRouterNetworkAliases(testContainer.ID)
+	assert.NoError(err)
+	assert.NotNil(aliases)
+	// The test container may or may not have network aliases, so we just verify
+	// the function returns without error and returns a valid (possibly empty) slice
 }
 
 // TestDockerExec() checks docker.Exec()
@@ -536,8 +662,8 @@ hi this is a test file
 // local directory
 func TestCopyFromContainer(t *testing.T) {
 	assert := asrt.New(t)
-	containerSourceDir := "/var/tmp/backdrop_drush_commands/backdrop-drush-extension"
-	containerExpectedFile := "backdrop.drush.inc"
+	containerSourceDir := "/etc/skel"
+	containerExpectedFile := ".bashrc"
 	cid, err := dockerutil.FindContainerByName(testContainerName)
 	require.NoError(t, err)
 	require.NotNil(t, cid)

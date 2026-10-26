@@ -8,11 +8,12 @@ import (
 
 	"github.com/ddev/ddev/pkg/ddevapp"
 	"github.com/ddev/ddev/pkg/fileutil"
+	"github.com/ddev/ddev/pkg/github"
 	"github.com/ddev/ddev/pkg/globalconfig"
 	"github.com/ddev/ddev/pkg/testcommon"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.yaml.in/yaml/v3"
+	"go.yaml.in/yaml/v4"
 )
 
 // processTestAddon is a helper function to process addon install.yaml files from testdata
@@ -118,6 +119,45 @@ func TestProcessAddonActionPHPDetection(t *testing.T) {
 
 		require.True(t, strings.HasPrefix(strings.TrimSpace(phpAction), "<?php"))
 	})
+}
+
+func TestGetAddonDdevInteractive(t *testing.T) {
+	tests := []struct {
+		name   string
+		action string
+		want   bool
+	}{
+		{
+			name: "interactive directive",
+			action: `
+#ddev-description: Configure credentials
+#ddev-interactive
+read -p "Enter token: " TOKEN
+`,
+			want: true,
+		},
+		{
+			name: "directive must be full line",
+			action: `
+echo "#ddev-interactive is only documentation here"
+`,
+			want: false,
+		},
+		{
+			name: "no interactive directive",
+			action: `
+#ddev-description: Configure credentials
+echo "done"
+`,
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, ddevapp.GetAddonDdevInteractive(tt.action))
+		})
+	}
 }
 
 func TestValidatePHPIncludesAndRequires(t *testing.T) {
@@ -773,4 +813,238 @@ project_files:
 	require.False(t, fileutil.FileExists(app.GetConfigPath("dependency-config.yaml")), "Dependency config file should be removed")
 	manifests = ddevapp.GetInstalledAddons(app)
 	require.Len(t, manifests, 0, "Should have no addons remaining")
+}
+
+// TestGetInstalledAddonRepositories verifies that GetInstalledAddonRepositories
+// stays index-aligned with GetInstalledAddonNames, and reports an empty string
+// for add-ons installed from a non-GitHub source (directory/tarball/URL).
+func TestGetInstalledAddonRepositories(t *testing.T) {
+	site := testcommon.CreateTmpDir(t.Name() + "_site")
+	defer func() {
+		err := os.RemoveAll(site)
+		assert.NoError(t, err)
+	}()
+
+	app, err := ddevapp.NewApp(site, false)
+	require.NoError(t, err)
+
+	addonMetadataDir := app.GetConfigPath("addon-metadata")
+	err = os.RemoveAll(addonMetadataDir)
+	require.NoError(t, err)
+
+	ddevDir := app.GetConfigPath("")
+	err = os.RemoveAll(ddevDir)
+	require.NoError(t, err)
+	err = os.MkdirAll(ddevDir, 0755)
+	require.NoError(t, err)
+
+	githubAddonDir := testcommon.CreateTmpDir(t.Name() + "_github")
+	defer func() {
+		err := os.RemoveAll(githubAddonDir)
+		assert.NoError(t, err)
+	}()
+	err = fileutil.TemplateStringToFile("name: github-addon\nproject_files: [github-config.yaml]\n", nil, filepath.Join(githubAddonDir, "install.yaml"))
+	require.NoError(t, err)
+	err = fileutil.TemplateStringToFile("#ddev-generated\n", nil, filepath.Join(githubAddonDir, "github-config.yaml"))
+	require.NoError(t, err)
+	err = ddevapp.InstallAddonFromDirectory(app, githubAddonDir, "owner/github-addon", "v1.0.0", false)
+	require.NoError(t, err)
+
+	localAddonDir := testcommon.CreateTmpDir(t.Name() + "_local")
+	defer func() {
+		err := os.RemoveAll(localAddonDir)
+		assert.NoError(t, err)
+	}()
+	err = fileutil.TemplateStringToFile("name: local-addon\nproject_files: [local-config.yaml]\n", nil, filepath.Join(localAddonDir, "install.yaml"))
+	require.NoError(t, err)
+	err = fileutil.TemplateStringToFile("#ddev-generated\n", nil, filepath.Join(localAddonDir, "local-config.yaml"))
+	require.NoError(t, err)
+	// A directory-sourced install records the local path as the repository,
+	// which is not a clean "owner/repo" reference.
+	err = ddevapp.InstallAddonFromDirectory(app, localAddonDir, localAddonDir, "unknown", false)
+	require.NoError(t, err)
+
+	names := ddevapp.GetInstalledAddonNames(app)
+	repositories := ddevapp.GetInstalledAddonRepositories(app)
+	require.Len(t, repositories, len(names))
+
+	for i, name := range names {
+		switch name {
+		case "github-addon":
+			require.Equal(t, "owner/github-addon", repositories[i])
+		case "local-addon":
+			require.Equal(t, "", repositories[i])
+		default:
+			t.Fatalf("unexpected addon name %q", name)
+		}
+	}
+}
+
+// TestGetAddonTarballURL tests the GetAddonTarballURL function
+func TestGetAddonTarballURL(t *testing.T) {
+	if !github.HasGitHubToken() {
+		t.Skip("Skipping because DDEV_GITHUB_TOKEN is not set")
+	}
+	// The test should succeed without real GitHub tokens
+	// GetAddonTarballURL can call GetGitHubRelease under the hood
+	t.Setenv("DDEV_GITHUB_TOKEN", "dummy-token")
+	t.Setenv("GH_TOKEN", "dummy-token")
+	t.Setenv("GITHUB_TOKEN", "dummy-token")
+
+	tests := []struct {
+		name            string
+		ownerRepo       string
+		gitRef          string
+		defaultBranch   bool
+		prNumber        int
+		expectedURL     string
+		expectedVersion string
+		expectError     bool
+	}{
+		{
+			name:            "with specific version tag",
+			ownerRepo:       "ddev/ddev-redis",
+			gitRef:          "v1.2.3",
+			defaultBranch:   false,
+			prNumber:        0,
+			expectedURL:     "https://github.com/ddev/ddev-redis/tarball/v1.2.3",
+			expectedVersion: "v1.2.3",
+			expectError:     false,
+		},
+		{
+			name:            "with branch name",
+			ownerRepo:       "ddev/ddev-redis",
+			gitRef:          "main",
+			defaultBranch:   false,
+			prNumber:        0,
+			expectedURL:     "https://github.com/ddev/ddev-redis/tarball/main",
+			expectedVersion: "main",
+			expectError:     false,
+		},
+		{
+			name:            "with commit SHA",
+			ownerRepo:       "ddev/ddev-redis",
+			gitRef:          "b50ac77",
+			defaultBranch:   false,
+			prNumber:        0,
+			expectedURL:     "https://github.com/ddev/ddev-redis/tarball/b50ac77",
+			expectedVersion: "b50ac77",
+			expectError:     false,
+		},
+		{
+			name:            "with PR number",
+			ownerRepo:       "ddev/ddev-redis",
+			gitRef:          "",
+			defaultBranch:   false,
+			prNumber:        54,
+			expectedURL:     "https://github.com/ddev/ddev-redis/tarball/refs/pull/54/head",
+			expectedVersion: "pr-54",
+			expectError:     false,
+		},
+		{
+			name:            "with defaultBranch flag and specific version (version takes precedence)",
+			ownerRepo:       "ddev/ddev-redis",
+			gitRef:          "v2.0.0",
+			defaultBranch:   true,
+			prNumber:        0,
+			expectedURL:     "https://github.com/ddev/ddev-redis/tarball/v2.0.0",
+			expectedVersion: "v2.0.0",
+			expectError:     false,
+		},
+		{
+			name:            "with defaultBranch flag and PR number (PR takes precedence)",
+			ownerRepo:       "ddev/ddev-redis",
+			gitRef:          "",
+			defaultBranch:   true,
+			prNumber:        42,
+			expectedURL:     "https://github.com/ddev/ddev-redis/tarball/refs/pull/42/head",
+			expectedVersion: "pr-42",
+			expectError:     false,
+		},
+		{
+			name:            "invalid owner/repo format",
+			ownerRepo:       "invalid",
+			gitRef:          "",
+			defaultBranch:   false,
+			prNumber:        0,
+			expectedURL:     "",
+			expectedVersion: "",
+			expectError:     true,
+		},
+		{
+			name:            "invalid owner/repo with too many slashes",
+			ownerRepo:       "owner/repo/extra",
+			gitRef:          "",
+			defaultBranch:   false,
+			prNumber:        0,
+			expectedURL:     "",
+			expectedVersion: "",
+			expectError:     true,
+		},
+		{
+			name:            "empty owner/repo",
+			ownerRepo:       "",
+			gitRef:          "",
+			defaultBranch:   false,
+			prNumber:        0,
+			expectedURL:     "",
+			expectedVersion: "",
+			expectError:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tarballURL, version, err := ddevapp.GetAddonTarballURL(tt.ownerRepo, tt.gitRef, tt.defaultBranch, tt.prNumber)
+
+			if tt.expectError {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, tt.expectedURL, tarballURL, "tarball URL should match")
+				require.Equal(t, tt.expectedVersion, version, "version should match")
+			}
+		})
+	}
+}
+
+func TestFixObsoleteAddons(t *testing.T) {
+	addonDir := testcommon.CreateTmpDir(t.Name() + "_addon")
+	site := testcommon.CreateTmpDir(t.Name() + "_site")
+	t.Cleanup(func() {
+		_ = os.RemoveAll(addonDir)
+		_ = os.RemoveAll(site)
+	})
+	err := os.WriteFile(filepath.Join(addonDir, "install.yaml"), []byte("name: qr\nproject_files:\n  - config.qr.yaml\n"), 0644)
+	require.NoError(t, err)
+	err = os.WriteFile(filepath.Join(addonDir, "config.qr.yaml"), []byte("#ddev-generated\nwebimage_extra_packages:\n  - qrencode\n"), 0644)
+	require.NoError(t, err)
+
+	app, err := ddevapp.NewApp(site, false)
+	require.NoError(t, err)
+	err = app.WriteConfig()
+	require.NoError(t, err)
+
+	for repository, removed := range map[string]bool{"ddev/ddev-qr": true, "DDEV/ddev-qr": true, "someone/ddev-qr": false} {
+		t.Run(repository, func(t *testing.T) {
+			err := ddevapp.InstallAddonFromDirectory(app, addonDir, repository, "v1.0.0", false)
+			require.NoError(t, err)
+			app, err := ddevapp.NewApp(site, true)
+			require.NoError(t, err)
+			require.Contains(t, app.WebImageExtraPackages, "qrencode")
+
+			app.FixObsolete()
+
+			if removed {
+				require.NoFileExists(t, app.GetConfigPath("config.qr.yaml"))
+				require.Empty(t, ddevapp.GetInstalledAddonNames(app))
+				require.NotContains(t, app.WebImageExtraPackages, "qrencode")
+			} else {
+				require.FileExists(t, app.GetConfigPath("config.qr.yaml"))
+				require.Equal(t, []string{"qr"}, ddevapp.GetInstalledAddonNames(app))
+				err = ddevapp.RemoveAddon(app, "qr", false, true)
+				require.NoError(t, err)
+			}
+		})
+	}
 }

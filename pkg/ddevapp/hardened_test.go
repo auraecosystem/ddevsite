@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/ddev/ddev/pkg/config/types"
 	"github.com/ddev/ddev/pkg/ddevapp"
@@ -20,11 +21,12 @@ import (
 
 // TestHardenedStart makes sure we can do a start and basic use with hardened images
 func TestHardenedStart(t *testing.T) {
-	if globalconfig.DdevGlobalConfig.NoBindMounts {
-		t.Skip("Skipping TestHardenedStart because NoBindMounts is true and Mutagen is incompatible with hardened images")
+	testcommon.UsesAllTestSites(t)
+	if nodeps.IsEnvFalse("DDEV_RUN_TEST_ANYWAY") && (nodeps.IsWSL2() || dockerutil.IsRancherDesktop()) {
+		t.Skip("Skipping TestHardenedStart because of useless failures to connect on some platforms")
 	}
-	if os.Getenv("DDEV_RUN_TEST_ANYWAY") != "true" && (nodeps.IsAppleSilicon() || nodeps.IsWSL2() || dockerutil.IsRancherDesktop()) {
-		t.Skip("Skipping TestHardenedStart because of useless failures to connect on some platforms, no need to test hardened on arm64")
+	if nodeps.IsAppleSilicon() && dockerutil.IsDockerDesktop() && nodeps.IsEnvFalse("DDEV_RUN_TEST_ANYWAY") {
+		t.Skip("Skipping on Docker Desktop/Apple Silicon to ignore problems with 'connection reset by peer'")
 	}
 
 	assert := asrt.New(t)
@@ -33,8 +35,8 @@ func TestHardenedStart(t *testing.T) {
 	origDir, _ := os.Getwd()
 
 	testSite := 0
-	// Prefer the drupal7 project, as it does ln -s into /usr/local/bin, possibly
-	// requiring sudo, which isn't installed
+	// Prefer the drupal7 project, as it exercises the legacy drush alias setup
+	// without relying on write access to system binary directories.
 	if len(TestSites) >= 3 {
 		testSite = 2
 	}
@@ -76,6 +78,13 @@ func TestHardenedStart(t *testing.T) {
 	require.NoError(t, err)
 
 	app.PerformanceMode = types.PerformanceModeNone
+
+	// After PowerOff, ports may not be released yet on Lima-based systems or
+	// rootless Podman (rootlessport releases host ports asynchronously), so a
+	// subsequent Start can fail with "address already in use".
+	if dockerutil.IsRancherDesktop() || dockerutil.IsColima() || dockerutil.IsLima() || dockerutil.IsPodmanRootlessmacOS() {
+		time.Sleep(time.Second * 2)
+	}
 
 	err = app.Start()
 	require.NoError(t, err)

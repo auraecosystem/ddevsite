@@ -1,11 +1,12 @@
 package cmd
 
 import (
+	"errors"
 	"os"
-	"os/exec"
 
 	"github.com/ddev/ddev/pkg/ddevapp"
 	"github.com/ddev/ddev/pkg/util"
+	"github.com/docker/cli/cli"
 	"github.com/spf13/cobra"
 )
 
@@ -24,7 +25,7 @@ ddev ssh -s db -u root
 ddev ssh <projectname>
 ddev ssh -d /var/www/html`,
 	Args: cobra.MaximumNArgs(1),
-	Run: func(_ *cobra.Command, args []string) {
+	Run: func(cmd *cobra.Command, args []string) {
 		projects, err := getRequestedProjects(args, false)
 		if err != nil || len(projects) == 0 {
 			util.Failed("Failed to ddev ssh: %v", err)
@@ -32,28 +33,42 @@ ddev ssh -d /var/www/html`,
 		app := projects[0]
 		instrumentationApp = app
 
+		if err = app.StartAppIfNotRunning(); err != nil {
+			util.Failed("Failed to start app %s: %v", app.Name, err)
+		}
+
 		_ = app.DockerEnv()
 
 		// Use Bash for our containers, sh for 3rd-party containers
 		// that may not have Bash.
-		shell := app.GetXDdevExtension(serviceType).SSHShell
+		xDdev := app.GetXDdevExtension(serviceType)
+		shell := xDdev.SSHShell
 
-		err = app.ExecWithTty(&ddevapp.ExecOpts{
-			Service: serviceType,
-			Cmd:     shell + " -l",
-			Dir:     sshDirArg,
-			User:    serviceUser,
+		// An explicit -u wins over the service's configured container-user.
+		user := serviceUser
+		if !cmd.Flag("user").Changed {
+			user = xDdev.ContainerUser
+		}
+
+		_, _, err = app.Exec(&ddevapp.ExecOpts{
+			Service:   serviceType,
+			RawCmd:    []string{shell, "-l"},
+			Dir:       sshDirArg,
+			User:      user,
+			Tty:       true,
+			NoCapture: true,
+			SkipHooks: true,
 		})
 		if err != nil {
-			if exiterr, ok := err.(*exec.ExitError); ok {
-				os.Exit(exiterr.ExitCode())
+			if statusErr, ok := errors.AsType[cli.StatusError](err); ok {
+				os.Exit(statusErr.StatusCode)
 			}
 			util.Failed("ddev ssh failed: %v", err)
 		}
 	},
 }
 
-func init() {
+func registerSSHCmd() {
 	DdevSSHCmd.Flags().StringVarP(&serviceType, "service", "s", "web", "Defines the service to connect to. [e.g. web, db]")
 	_ = DdevSSHCmd.RegisterFlagCompletionFunc("service", ddevapp.GetServiceNamesFunc(true))
 	DdevSSHCmd.Flags().StringVarP(&sshDirArg, "dir", "d", "", "Defines the destination directory within the container")

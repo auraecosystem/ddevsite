@@ -34,7 +34,7 @@ We have automated testing and support for a staggering range of Docker providers
 | Docker Provider            | Support Level                                                          |
 |----------------------------|------------------------------------------------------------------------|
 | OrbStack (macOS)           | officially tested and supported on macOS                               |
-| Docker Desktop for Mac     | officially tested and supported on both Intel and Apple Silicon        |
+| Docker Desktop for Mac     | officially tested and supported on Apple Silicon                       |
 | Docker Desktop for Windows | officially tested and supported on WSL2 and traditional Windows        |
 | Colima (macOS)             | officially tested and supported                                        |
 | Docker-ce (Linux/WSL2)     | officially supported with automated tests on WSL2/Ubuntu. Recommended. |
@@ -111,6 +111,13 @@ Yes, as long as they’re configured to use different ports. It doesn’t matter
 It’s probably easiest, however, to shut down one before using the other.
 
 For example, if you use Lando for one project, do a `lando poweroff` before using DDEV, and then run [`ddev poweroff`](../usage/commands.md#poweroff) before using Lando again. If you run nginx or Apache locally, stop them before using DDEV. The [troubleshooting](troubleshooting.md) section goes into more detail about identifying and resolving port conflicts.
+
+### Can AI assistants read the DDEV docs?
+
+Yes. The docs are also published as Markdown for AI assistants and coding agents:
+
+* [`llms.txt`](../../llms.txt) lists every page, with a link to its Markdown version.
+* [`llms-full.txt`](../../llms-full.txt) contains all pages in one file.
 
 ## Performance & Troubleshooting
 
@@ -189,11 +196,41 @@ For Debian/Ubuntu/WSL2 with DDEV installed via apt, you can run `sudo apt-get up
 
 #### Homebrew
 
-If you’re using Homebrew, first run `brew unlink ddev` to get rid of the version you have there. Then use one of these options:
+Homebrew itself abandoned the ability to specify versions a few years ago, but you can still install an older release by checking out its formula from the tap's own Git history, then pinning it so `brew upgrade` doesn't move it:
 
-1. Download the version you want from the [releases page](https://github.com/ddev/ddev/releases) and place it in your `$PATH`.
-2. Use the [install_ddev.sh](https://raw.githubusercontent.com/ddev/ddev/main/scripts/install_ddev.sh) script with the version number argument. For example, if you want `v1.23.5`, run `curl -fsSL https://ddev.com/install.sh | bash -s v1.23.5`.
-3. If you want the very latest, unreleased version of DDEV, run `brew unlink ddev && brew install ddev/ddev/ddev --HEAD`.
+```bash
+# downgrade to v1.23.5
+cd "$(brew --repository ddev/ddev)"
+git checkout "$(git rev-list -n 1 --grep='v1.23.5' HEAD)"
+HOMEBREW_NO_AUTO_UPDATE=1 brew reinstall ddev/ddev/ddev
+brew pin ddev/ddev/ddev
+git switch master
+```
+
+To go back to the latest release:
+
+```bash
+brew unpin ddev/ddev/ddev
+brew update && brew upgrade ddev/ddev/ddev
+```
+
+If you want the very latest, unreleased version of DDEV instead, install from `HEAD`:
+
+```bash
+# switch to HEAD
+brew uninstall --force ddev
+brew install ddev/ddev/ddev --HEAD
+
+# go back to the latest release
+brew uninstall --force ddev
+brew install ddev/ddev/ddev
+```
+
+Your projects are not affected by these changes.
+
+#### Any platform
+
+On any platform you can download the binaries for a specific release with [`ddev utility download-ddev`](../usage/commands.md#utility-download-ddev), for example `ddev utility download-ddev --tag v1.25.3`, which writes `ddev` and `ddev-hostname` to `~/tmp/ddev-download-ddev/v1.25.3` so you can try that version before moving them into your `$PATH`.
 
 ### Why do I have an old DDEV?
 
@@ -308,6 +345,12 @@ This allows you to have multiple check-outs of the same project, each with diffe
 
 It can also allow team members to have the same project run using different hostnames and URLs.
 
+### What happens when one DDEV project is nested inside another?
+
+Avoid nesting one DDEV project inside another; it only causes confusion. It usually happens by accident, with a Git submodule or dependency that ships its own `.ddev/config.yaml`.
+
+DDEV only uses a project that shows up in `ddev list`, so inside an unregistered nested project it warns and uses the registered project around it instead. To use the nested project, run `ddev start` in its directory and confirm the prompt, which adds it to `ddev list`.
+
 ## Getting Involved
 
 ### How do I get support?
@@ -321,9 +364,9 @@ We love and welcome contributions of knowledge, support, docs, and code:
 * Submit an issue or pull request to the [main repository](https://github.com/ddev/ddev).
 * Add your external resource to [awesome-ddev](https://github.com/ddev/awesome-ddev).
 * Help others in [Discord](https://ddev.com/s/discord).
-* Contribute financially via [GitHub Sponsors](https://github.com/sponsors/rfay).
+* Contribute financially by [sponsoring DDEV](https://ddev.com/sponsor).
 * Get involved with DDEV governance and the [Advisory Group](https://github.com/ddev/ddev/discussions/categories/ddev-advisory-group).
 
 ### How do financial contributions support DDEV?
 
-Thanks for asking! Contributions made via [GitHub Sponsors](https://github.com/sponsors/ddev) go to the [DDEV Foundation](https://ddev.com/foundation) and are used for infrastructure and supporting development.
+Thanks for asking! Contributions made by [sponsoring DDEV](https://ddev.com/sponsor) go to the [DDEV Foundation](https://ddev.com/foundation) and are used for infrastructure and supporting development.

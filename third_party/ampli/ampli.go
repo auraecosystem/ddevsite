@@ -6,7 +6,7 @@
 // To update run 'ampli pull ddev'
 //
 // Required dependencies: github.com/amplitude/analytics-go@latest
-// Tracking Plan Version: 13
+// Tracking Plan Version: 14
 // Build: 1.0.0
 // Runtime: go-ampli
 //
@@ -18,10 +18,10 @@
 package ampli
 
 import (
-	"os"
 	"sync"
 
 	"github.com/amplitude/analytics-go/amplitude"
+	"github.com/ddev/ddev/pkg/nodeps"
 	"github.com/ddev/ddev/pkg/output"
 )
 
@@ -85,14 +85,14 @@ type LoadOptions struct {
 
 type baseEvent struct {
 	eventType  string
-	properties map[string]interface{}
+	properties map[string]any
 }
 
 type Event interface {
 	ToAmplitudeEvent() amplitude.Event
 }
 
-func newBaseEvent(eventType string, properties map[string]interface{}) baseEvent {
+func newBaseEvent(eventType string, properties map[string]any) baseEvent {
 	return baseEvent{
 		eventType:  eventType,
 		properties: properties,
@@ -127,7 +127,7 @@ var Identify = struct {
 		}
 	} {
 		return &identifyBuilder{
-			properties: map[string]interface{}{},
+			properties: map[string]any{},
 		}
 	},
 }
@@ -151,7 +151,7 @@ type IdentifyBuilder interface {
 }
 
 type identifyBuilder struct {
-	properties map[string]interface{}
+	properties map[string]any
 }
 
 func (b *identifyBuilder) DdevEnvironment(ddevEnvironment string) interface {
@@ -241,7 +241,7 @@ var Command = struct {
 		}
 	} {
 		return &commandBuilder{
-			properties: map[string]interface{}{},
+			properties: map[string]any{},
 		}
 	},
 }
@@ -263,7 +263,7 @@ type CommandBuilder interface {
 }
 
 type commandBuilder struct {
-	properties map[string]interface{}
+	properties map[string]any
 }
 
 func (b *commandBuilder) Arguments(arguments []string) interface {
@@ -337,7 +337,7 @@ var Project = struct {
 		}
 	} {
 		return &projectBuilder{
-			properties: map[string]interface{}{},
+			properties: map[string]any{},
 		}
 	},
 }
@@ -356,6 +356,7 @@ func (e projectEvent) project() {
 
 type ProjectBuilder interface {
 	Build() ProjectEvent
+	AddOnRepositories(addOnRepositories []string) ProjectBuilder
 	AddOns(addOns []string) ProjectBuilder
 	BindAllInterfaces(bindAllInterfaces bool) ProjectBuilder
 	Ci(ci bool) ProjectBuilder
@@ -380,7 +381,7 @@ type ProjectBuilder interface {
 }
 
 type projectBuilder struct {
-	properties map[string]interface{}
+	properties map[string]any
 }
 
 func (b *projectBuilder) Id(id string) interface {
@@ -445,6 +446,12 @@ func (b *projectBuilder) WebserverType(webserverType string) interface {
 
 func (b *projectBuilder) XhProfMode(xhProfMode string) ProjectBuilder {
 	b.properties[`XHProf Mode`] = xhProfMode
+
+	return b
+}
+
+func (b *projectBuilder) AddOnRepositories(addOnRepositories []string) ProjectBuilder {
+	b.properties[`Add-on Repositories`] = addOnRepositories
 
 	return b
 }
@@ -622,8 +629,8 @@ func (a *Ampli) Load(options LoadOptions) {
 		clientConfig.Plan = &amplitude.Plan{
 			Branch:    `main`,
 			Source:    `ddev`,
-			Version:   `13`,
-			VersionID: `a25069bf-252e-427e-b876-690362d20b18`,
+			Version:   `14`,
+			VersionID: `762be529-98a5-4db3-9c6e-5a45276d5278`,
 		}
 	}
 
@@ -724,5 +731,5 @@ func (a *Ampli) Project(userID string, event ProjectEvent, eventOptions ...Event
 
 // debugOrVerboseEnabled returns true if DDEV_DEBUG=true or DDEV_VERBOSE=true
 func debugOrVerboseEnabled() bool {
-	return os.Getenv("DDEV_DEBUG") == "true" || os.Getenv("DDEV_VERBOSE") == "true"
+	return nodeps.IsEnvTrue("DDEV_DEBUG") || nodeps.IsEnvTrue("DDEV_VERBOSE")
 }

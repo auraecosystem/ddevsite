@@ -78,6 +78,11 @@ var appTypeMatrix map[string]appTypeFuncs
 
 func init() {
 	appTypeMatrix = map[string]appTypeFuncs{
+		nodeps.AppTypeAsterios: {
+			appTypeDetect:   isAsteriosApp,
+			postStartAction: asteriosPostStartAction,
+		},
+
 		nodeps.AppTypeBackdrop: {
 			settingsCreator:            createBackdropSettingsFile,
 			uploadDirs:                 getBackdropUploadDirs,
@@ -95,6 +100,15 @@ func init() {
 			appTypeDetect:        isCakephpApp,
 			configOverrideAction: cakephpConfigOverrideAction,
 			postStartAction:      cakephpPostStartAction,
+		},
+
+		nodeps.AppTypeCodeIgniter: {
+			settingsCreator:      createCodeIgniterSettingsFile,
+			uploadDirs:           getCodeIgniterUploadDirs,
+			hookDefaultComments:  getCodeIgniterHooks,
+			appTypeSettingsPaths: setCodeIgniterSiteSettingsPaths,
+			appTypeDetect:        isCodeIgniterApp,
+			importFilesAction:    codeIgniterImportFilesAction,
 		},
 
 		nodeps.AppTypeCraftCms: {
@@ -179,8 +193,25 @@ func init() {
 			composerCreateAllowedPaths: getDrupalComposerCreateAllowedPaths,
 		},
 
+		nodeps.AppTypeDrupal12: {
+			settingsCreator:            createDrupalSettingsPHP,
+			uploadDirs:                 getDrupalUploadDirs,
+			hookDefaultComments:        getDrupalHooks,
+			appTypeSettingsPaths:       setDrupalSiteSettingsPaths,
+			appTypeDetect:              isDrupal12App,
+			configOverrideAction:       drupalConfigOverrideAction,
+			postStartAction:            drupalPostStartAction,
+			importFilesAction:          drupalImportFilesAction,
+			composerCreateAllowedPaths: getDrupalComposerCreateAllowedPaths,
+		},
+
 		nodeps.AppTypeGeneric: {
 			postStartAction: nil,
+		},
+
+		nodeps.AppTypeJoomla: {
+			appTypeDetect: isJoomlaApp,
+			uploadDirs:    getJoomlaUploadDirs,
 		},
 
 		nodeps.AppTypeLaravel: {
@@ -212,6 +243,24 @@ func init() {
 			importFilesAction:    magentoImportFilesAction,
 		},
 
+		nodeps.AppTypeMaho: {
+			settingsCreator:      createMahoSettingsFile,
+			uploadDirs:           getMahoUploadDirs,
+			appTypeSettingsPaths: setMahoSiteSettingsPaths,
+			appTypeDetect:        isMahoApp,
+			importFilesAction:    magentoImportFilesAction,
+		},
+
+		nodeps.AppTypeMODX: {
+			appTypeDetect:        isModxApp,
+			settingsCreator:      createModxSettingsFile,
+			uploadDirs:           getModxUploadDirs,
+			appTypeSettingsPaths: setModxSiteSettingsPaths,
+			importFilesAction:    modxImportFilesAction,
+			hookDefaultComments:  getModxHooks,
+			defaultWorkingDirMap: docrootWorkingDir,
+		},
+
 		nodeps.AppTypePHP: {
 			postStartAction: nil,
 		},
@@ -220,6 +269,7 @@ func init() {
 			appTypeDetect:        isShopware6App,
 			appTypeSettingsPaths: setShopware6SiteSettingsPaths,
 			uploadDirs:           getShopwareUploadDirs,
+			configOverrideAction: shopware6ConfigOverrideAction,
 			postStartAction:      shopware6PostStartAction,
 			importFilesAction:    shopware6ImportFilesAction,
 		},
@@ -246,6 +296,15 @@ func init() {
 			hookDefaultComments:  getWordpressHooks,
 			appTypeSettingsPaths: setWordpressSiteSettingsPaths,
 			appTypeDetect:        isWordpressApp,
+			importFilesAction:    wordpressImportFilesAction,
+		},
+
+		nodeps.AppTypeWPBedrock: {
+			appTypeDetect:        isWPBedrockApp,
+			postStartAction:      wpBedrockPostStartAction,
+			hookDefaultComments:  getWordpressHooks,
+			configOverrideAction: wpBedrockConfigOverrideAction,
+			uploadDirs:           getWPBedrockUploadDirs,
 			importFilesAction:    wordpressImportFilesAction,
 		},
 	}
@@ -314,19 +373,17 @@ func (app *DdevApp) CreateSettingsFile() (string, error) {
 		// Don't accidentally override the existing .ddev/.gitignore as well
 		// TODO: we may want to append to .ddev/.gitignore if needed.
 		if path.Dir(app.SiteSettingsPath) != app.AppRoot && path.Dir(app.SiteSettingsPath) != app.GetConfigPath("") && app.SiteDdevSettingsFile != "" {
-			if err = CreateGitIgnore(filepath.Dir(app.SiteSettingsPath), filepath.Base(app.SiteDdevSettingsFile), "drushrc.php"); err != nil {
+			if err = CreateGitIgnore(filepath.Dir(app.SiteSettingsPath), nil, filepath.Base(app.SiteDdevSettingsFile), "drushrc.php"); err != nil {
 				util.Warning("Failed to write .gitignore in %s: %v", filepath.Dir(app.SiteDdevSettingsFile), err)
 			}
 		}
-		return settingsPath, nil
-	}
-
-	// If the project is not running, it makes no sense to sync it
-	if s, _ := app.SiteStatus(); s == SiteRunning {
-		err = app.MutagenSyncFlush()
-		if err != nil {
-			return "", err
+		// Sync any newly written settings files into the container.
+		if s, _ := app.SiteStatus(); s == SiteRunning {
+			if err = app.MutagenSyncFlush(); err != nil {
+				return "", err
+			}
 		}
+		return settingsPath, nil
 	}
 
 	return "", nil
@@ -404,6 +461,14 @@ func (app *DdevApp) DetectAppType() string {
 	if app.Type == nodeps.AppTypeGeneric {
 		return app.Type
 	}
+	if appType := app.detectSpecificAppType(); appType != "" {
+		return appType
+	}
+	return nodeps.AppTypePHP
+}
+
+// detectSpecificAppType returns the first apptype whose detector matches, or "" if none does.
+func (app *DdevApp) detectSpecificAppType() string {
 	var keys []string
 	for k := range appTypeMatrix {
 		keys = append(keys, k)
@@ -417,8 +482,7 @@ func (app *DdevApp) DetectAppType() string {
 			return appTypeName
 		}
 	}
-
-	return nodeps.AppTypePHP
+	return ""
 }
 
 // PostImportDBAction calls each apptype's detector until it finds a match,

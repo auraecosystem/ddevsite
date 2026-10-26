@@ -3,8 +3,22 @@ package dockerutil
 import (
 	"testing"
 
+	"github.com/moby/moby/api/types/network"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+// TestCacheContainersOverlap releases the first cache before the second, as
+// overlapping callers in different goroutines can
+func TestCacheContainersOverlap(t *testing.T) {
+	first := CacheContainers()
+	second := CacheContainers()
+	require.NotNil(t, cachedContainers.Load())
+	first()
+	require.NotNil(t, cachedContainers.Load(), "the second caller still holds the cache")
+	second()
+	require.Nil(t, cachedContainers.Load())
+}
 
 // TestSanitizeUsername tests the username sanitization logic
 func TestSanitizeUsername(t *testing.T) {
@@ -109,6 +123,107 @@ func TestSanitizeUsername(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			result := sanitizeUsername(tt.input)
 			assert.Equal(t, tt.expected, result, "sanitizeUsername(%q) should return %q, got %q", tt.input, tt.expected, result)
+		})
+	}
+}
+
+// TestAddBoundHostPorts verifies that addBoundHostPorts extracts every non-empty
+// HostPort from a network.PortMap, which is the logic GetBoundHostPorts relies on
+// to fall back from HostConfig.PortBindings to NetworkSettings.Ports. Some
+// providers (e.g. socktainer/Apple Container) report an empty HostConfig on
+// inspect even though the container has ports bound, per NetworkSettings.
+func TestAddBoundHostPorts(t *testing.T) {
+	tests := []struct {
+		name     string
+		portMaps []network.PortMap
+		expected map[string]bool
+	}{
+		{
+			name:     "nil PortMap",
+			portMaps: []network.PortMap{nil},
+			expected: map[string]bool{},
+		},
+		{
+			name: "single PortMap with bound ports",
+			portMaps: []network.PortMap{
+				{
+					network.MustParsePort("80/tcp"): []network.PortBinding{{HostPort: "8080"}},
+				},
+			},
+			expected: map[string]bool{"8080": true},
+		},
+		{
+			name: "PortBinding with empty HostPort is excluded",
+			portMaps: []network.PortMap{
+				{
+					network.MustParsePort("80/tcp"): []network.PortBinding{{HostPort: ""}},
+				},
+			},
+			expected: map[string]bool{},
+		},
+		{
+			name: "merging two PortMaps, as when falling back from HostConfig to NetworkSettings",
+			portMaps: []network.PortMap{
+				{},
+				{
+					network.MustParsePort("80/tcp"):  []network.PortBinding{{HostPort: "8080"}},
+					network.MustParsePort("443/tcp"): []network.PortBinding{{HostPort: "8443"}},
+				},
+			},
+			expected: map[string]bool{"8080": true, "8443": true},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			portMap := map[string]bool{}
+			for _, m := range tt.portMaps {
+				addBoundHostPorts(portMap, m)
+			}
+			require.Equal(t, tt.expected, portMap)
+		})
+	}
+}
+
+func TestMergePortBindings(t *testing.T) {
+	bind := func(hostPort string) []network.PortBinding {
+		return []network.PortBinding{{HostPort: hostPort}}
+	}
+	http, mailpit, vite := network.MustParsePort("80/tcp"), network.MustParsePort("8025/tcp"), network.MustParsePort("5173/tcp")
+	tests := []struct {
+		name       string
+		configured network.PortMap
+		actual     network.PortMap
+		expected   network.PortMap
+	}{
+		{
+			name:       "configured host ports win over actual",
+			configured: network.PortMap{http: bind("8080")},
+			actual:     network.PortMap{http: bind("8080")},
+			expected:   network.PortMap{http: bind("8080")},
+		},
+		{
+			name:       "stopped container keeps configured ports",
+			configured: network.PortMap{http: bind("8080"), vite: bind("24117")},
+			actual:     nil,
+			expected:   network.PortMap{http: bind("8080"), vite: bind("24117")},
+		},
+		{
+			name:       "empty configured host port takes the actual one",
+			configured: network.PortMap{http: bind("8080"), mailpit: bind("8027"), vite: bind("")},
+			actual:     network.PortMap{http: bind("8080"), mailpit: bind("8027"), vite: bind("55012")},
+			expected:   network.PortMap{http: bind("8080"), mailpit: bind("8027"), vite: bind("55012")},
+		},
+		{
+			name:       "empty PortBindings uses actual ports",
+			configured: network.PortMap{},
+			actual:     network.PortMap{http: bind("55001")},
+			expected:   network.PortMap{http: bind("55001")},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.expected, mergePortBindings(tt.configured, tt.actual))
 		})
 	}
 }

@@ -111,6 +111,33 @@ func TestPurgeDirectory(t *testing.T) {
 	assert.False(fileutil.FileExists(tmpPurgeSubFile))
 }
 
+// TestPurgeDirectoryExcept tests removal of directory contents except specified files.
+func TestPurgeDirectoryExcept(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create files: README.txt plus some others
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.txt"), []byte("keep me"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "test.yaml"), []byte("remove me"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "project1.yaml"), []byte("remove me too"), 0644))
+
+	files, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Equal(t, 3, len(files))
+
+	err = fileutil.PurgeDirectoryExcept(dir, map[string]bool{"README.txt": true})
+	require.NoError(t, err)
+
+	filesAfter, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Equal(t, 1, len(filesAfter))
+	require.Equal(t, "README.txt", filesAfter[0].Name())
+
+	// Verify preserved file content is intact
+	content, err := os.ReadFile(filepath.Join(dir, "README.txt"))
+	require.NoError(t, err)
+	require.Equal(t, "keep me", string(content))
+}
+
 // TestFgrepStringInFile tests the FgrepStringInFile utility function.
 func TestFgrepStringInFile(t *testing.T) {
 	assert := asrt.New(t)
@@ -283,4 +310,210 @@ func TestRemoveFilesMatchingGlob(t *testing.T) {
 	if err != nil {
 		t.Errorf("expected no error when no files match, got: %v", err)
 	}
+}
+
+// TestCopyFilesMatchingGlob tests that CopyFilesMatchingGlob works
+func TestCopyFilesMatchingGlob(t *testing.T) {
+	srcDir := t.TempDir()
+	destDir := t.TempDir()
+
+	// Create test files in source directory
+	files := []string{"config1.yaml", "config2.yaml", "readme.txt", "notes.md"}
+	for _, name := range files {
+		err := os.WriteFile(filepath.Join(srcDir, name), []byte("content of "+name), 0644)
+		require.NoError(t, err)
+	}
+
+	// Create a subdirectory named "subdir.yaml" to ensure directories are skipped
+	err := os.Mkdir(filepath.Join(srcDir, "subdir.yaml"), 0755)
+	require.NoError(t, err)
+
+	// Copy only *.yaml files
+	copiedFiles, err := fileutil.CopyFilesMatchingGlob(srcDir, destDir, "*.yaml")
+	require.NoError(t, err)
+	require.Len(t, copiedFiles, 2)
+	require.Contains(t, copiedFiles, "config1.yaml")
+	require.Contains(t, copiedFiles, "config2.yaml")
+
+	// Verify the copied files exist and have correct content
+	for _, name := range []string{"config1.yaml", "config2.yaml"} {
+		destPath := filepath.Join(destDir, name)
+		require.True(t, fileutil.FileExists(destPath), "expected %s to exist in dest", name)
+		content, err := os.ReadFile(destPath)
+		require.NoError(t, err)
+		require.Equal(t, "content of "+name, string(content))
+	}
+
+	// Verify non-matching files were not copied
+	for _, name := range []string{"readme.txt", "notes.md", "subdir.yaml"} {
+		destPath := filepath.Join(destDir, name)
+		require.False(t, fileutil.FileExists(destPath), "expected %s to not exist in dest", name)
+	}
+
+	// Test with no matches - should return empty slice with no error
+	emptyDest := t.TempDir()
+	copiedFiles, err = fileutil.CopyFilesMatchingGlob(srcDir, emptyDest, "*.nomatch")
+	require.NoError(t, err)
+	require.Len(t, copiedFiles, 0)
+}
+
+// TestCheckSignatureOrNoFile tests the CheckSignatureOrNoFile function
+// including the correct handling of empty files per commit 986812445
+func TestCheckSignatureOrNoFile(t *testing.T) {
+	assert := asrt.New(t)
+	tmpDir := testcommon.CreateTmpDir(t.Name())
+	defer os.RemoveAll(tmpDir)
+
+	signature := nodeps.DdevFileSignature
+
+	// Test 1: Non-existent file should return nil (can overwrite)
+	nonExistentFile := filepath.Join(tmpDir, "nonexistent.txt")
+	err := fileutil.CheckSignatureOrNoFile(nonExistentFile, signature)
+	assert.NoError(err, "non-existent file should be safe to overwrite")
+
+	// Test 2: File with signature should return nil (can overwrite)
+	fileWithSig := filepath.Join(tmpDir, "with_signature.txt")
+	err = os.WriteFile(fileWithSig, []byte(signature+"\nsome content"), 0644)
+	assert.NoError(err)
+	err = fileutil.CheckSignatureOrNoFile(fileWithSig, signature)
+	assert.NoError(err, "file with signature should be safe to overwrite")
+
+	// Test 3: Empty file should return nil (can overwrite)
+	emptyFile := filepath.Join(tmpDir, "empty.txt")
+	err = os.WriteFile(emptyFile, []byte(""), 0644)
+	assert.NoError(err)
+	err = fileutil.CheckSignatureOrNoFile(emptyFile, signature)
+	assert.NoError(err, "empty file should be safe to overwrite")
+
+	// Test 4: File without signature and with content should return error (cannot overwrite)
+	fileWithoutSig := filepath.Join(tmpDir, "without_signature.txt")
+	err = os.WriteFile(fileWithoutSig, []byte("user content without signature"), 0644)
+	assert.NoError(err)
+	err = fileutil.CheckSignatureOrNoFile(fileWithoutSig, signature)
+	assert.Error(err, "file without signature should not be safe to overwrite")
+	if err != nil {
+		assert.Contains(err.Error(), "signature was not found")
+	}
+
+	// Test 5: Directory with all files having signature should return nil
+	dirWithSig := filepath.Join(tmpDir, "dir_with_sig")
+	err = os.Mkdir(dirWithSig, 0755)
+	assert.NoError(err)
+	file1 := filepath.Join(dirWithSig, "file1.txt")
+	err = os.WriteFile(file1, []byte(signature+"\ncontent1"), 0644)
+	assert.NoError(err)
+	file2 := filepath.Join(dirWithSig, "file2.txt")
+	err = os.WriteFile(file2, []byte(signature+"\ncontent2"), 0644)
+	assert.NoError(err)
+	err = fileutil.CheckSignatureOrNoFile(dirWithSig, signature)
+	assert.NoError(err, "directory with all files having signature should be safe to overwrite")
+
+	// Test 6: Directory with one file without signature should return error
+	dirMixed := filepath.Join(tmpDir, "dir_mixed")
+	err = os.Mkdir(dirMixed, 0755)
+	assert.NoError(err)
+	fileGood := filepath.Join(dirMixed, "good.txt")
+	err = os.WriteFile(fileGood, []byte(signature+"\ncontent"), 0644)
+	assert.NoError(err)
+	fileBad := filepath.Join(dirMixed, "bad.txt")
+	err = os.WriteFile(fileBad, []byte("user content"), 0644)
+	assert.NoError(err)
+	err = fileutil.CheckSignatureOrNoFile(dirMixed, signature)
+	assert.Error(err, "directory with file without signature should not be safe to overwrite")
+
+	// Test 7: Directory with empty file should be safe to overwrite
+	dirWithEmpty := filepath.Join(tmpDir, "dir_with_empty")
+	err = os.Mkdir(dirWithEmpty, 0755)
+	assert.NoError(err)
+	emptyInDir := filepath.Join(dirWithEmpty, "empty.txt")
+	err = os.WriteFile(emptyInDir, []byte(""), 0644)
+	assert.NoError(err)
+	err = fileutil.CheckSignatureOrNoFile(dirWithEmpty, signature)
+	assert.NoError(err, "directory with empty file should be safe to overwrite")
+}
+
+// TestListFilesWithDepth tests the ListFilesWithDepth function
+func TestListFilesWithDepth(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create test directory structure
+	// tmpDir/
+	//   file0.txt (depth 0)
+	//   dir1/
+	//     file1.txt (depth 1)
+	//     dir2/
+	//       file2.txt (depth 2)
+	//       dir3/
+	//         file3.txt (depth 3)
+
+	err := os.WriteFile(filepath.Join(tmpDir, "file0.txt"), []byte("depth 0"), 0644)
+	require.NoError(t, err)
+
+	dir1 := filepath.Join(tmpDir, "dir1")
+	err = os.MkdirAll(dir1, 0755)
+	require.NoError(t, err)
+	err = os.WriteFile(filepath.Join(dir1, "file1.txt"), []byte("depth 1"), 0644)
+	require.NoError(t, err)
+
+	dir2 := filepath.Join(dir1, "dir2")
+	err = os.MkdirAll(dir2, 0755)
+	require.NoError(t, err)
+	err = os.WriteFile(filepath.Join(dir2, "file2.txt"), []byte("depth 2"), 0644)
+	require.NoError(t, err)
+
+	dir3 := filepath.Join(dir2, "dir3")
+	err = os.MkdirAll(dir3, 0755)
+	require.NoError(t, err)
+	err = os.WriteFile(filepath.Join(dir3, "file3.txt"), []byte("depth 3"), 0644)
+	require.NoError(t, err)
+
+	t.Run("maxDepth=0", func(t *testing.T) {
+		files, err := fileutil.ListFilesWithDepth(tmpDir, 0)
+		require.NoError(t, err)
+		require.Len(t, files, 1)
+		require.Contains(t, files, filepath.Join(tmpDir, "file0.txt"))
+	})
+
+	t.Run("maxDepth=1", func(t *testing.T) {
+		files, err := fileutil.ListFilesWithDepth(tmpDir, 1)
+		require.NoError(t, err)
+		require.Len(t, files, 2)
+		require.Contains(t, files, filepath.Join(tmpDir, "file0.txt"))
+		require.Contains(t, files, filepath.Join(dir1, "file1.txt"))
+	})
+
+	t.Run("maxDepth=2", func(t *testing.T) {
+		files, err := fileutil.ListFilesWithDepth(tmpDir, 2)
+		require.NoError(t, err)
+		require.Len(t, files, 3)
+		require.Contains(t, files, filepath.Join(tmpDir, "file0.txt"))
+		require.Contains(t, files, filepath.Join(dir1, "file1.txt"))
+		require.Contains(t, files, filepath.Join(dir2, "file2.txt"))
+		require.NotContains(t, files, filepath.Join(dir3, "file3.txt"))
+	})
+
+	t.Run("maxDepth=3", func(t *testing.T) {
+		files, err := fileutil.ListFilesWithDepth(tmpDir, 3)
+		require.NoError(t, err)
+		require.Len(t, files, 4)
+		require.Contains(t, files, filepath.Join(tmpDir, "file0.txt"))
+		require.Contains(t, files, filepath.Join(dir1, "file1.txt"))
+		require.Contains(t, files, filepath.Join(dir2, "file2.txt"))
+		require.Contains(t, files, filepath.Join(dir3, "file3.txt"))
+	})
+
+	t.Run("maxDepth=-1 (unlimited)", func(t *testing.T) {
+		files, err := fileutil.ListFilesWithDepth(tmpDir, -1)
+		require.NoError(t, err)
+		require.Len(t, files, 4)
+		require.Contains(t, files, filepath.Join(tmpDir, "file0.txt"))
+		require.Contains(t, files, filepath.Join(dir1, "file1.txt"))
+		require.Contains(t, files, filepath.Join(dir2, "file2.txt"))
+		require.Contains(t, files, filepath.Join(dir3, "file3.txt"))
+	})
+
+	t.Run("nonexistent directory", func(t *testing.T) {
+		_, err := fileutil.ListFilesWithDepth(filepath.Join(tmpDir, "nonexistent"), 2)
+		require.Error(t, err)
+	})
 }

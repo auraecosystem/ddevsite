@@ -3,6 +3,7 @@ package ddevapp_test
 import (
 	"fmt"
 	"os"
+	osexec "os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -42,11 +43,11 @@ func TestDdevSnapshotCleanup(t *testing.T) {
 	assert.NoError(err)
 
 	// Make a snapshot of d7 tester test 1
-	snapshotName, err := app.Snapshot(t.Name() + "_1")
+	snapshotName, err := app.Snapshot(t.Name()+"_1", false)
 	assert.NoError(err)
 
 	// Provide a second snapshot that should not be deleted and whose filename will be lexicographically earlier (See https://github.com/ddev/ddev/issues/6694).
-	_, err = app.Snapshot(t.Name() + "_1-a")
+	_, err = app.Snapshot(t.Name()+"_1-a", false)
 	assert.NoError(err)
 
 	err = app.Init(site.Dir)
@@ -93,11 +94,11 @@ func TestGetLatestSnapshot(t *testing.T) {
 
 	snapshots := []string{t.Name() + "_1", t.Name() + "_2", t.Name() + "_3"}
 	// Make three snapshots and compare the last
-	s1Name, err := app.Snapshot(snapshots[0])
+	s1Name, err := app.Snapshot(snapshots[0], false)
 	assert.NoError(err)
-	s2Name, err := app.Snapshot(snapshots[1])
+	s2Name, err := app.Snapshot(snapshots[1], false)
 	assert.NoError(err)
-	s3Name, err := app.Snapshot(snapshots[2]) // last = latest
+	s3Name, err := app.Snapshot(snapshots[2], false) // last = latest
 	assert.NoError(err)
 
 	// Verify the snapshot files exist and have .zst extension
@@ -153,8 +154,210 @@ func TestGetLatestSnapshot(t *testing.T) {
 	runTime()
 }
 
+// snapshotWorktreeFixture is the layout built by newSnapshotWorktreeFixture:
+// a project and a same-project checkout in a sibling git worktree, plus an
+// unrelated clone at the same relative path that should never be treated as
+// a sibling.
+type snapshotWorktreeFixture struct {
+	// projectRoot is the current project, with an older "current" snapshot.
+	projectRoot string
+	// projectWorktreeRoot is the same project in a sibling git worktree, with
+	// a newer "other" snapshot.
+	projectWorktreeRoot string
+	// otherFile is the absolute path of "other" inside projectWorktreeRoot.
+	otherFile string
+}
+
+// newSnapshotWorktreeFixture creates the fixture described by
+// snapshotWorktreeFixture under a fresh t.TempDir().
+func newSnapshotWorktreeFixture(t *testing.T) snapshotWorktreeFixture {
+	tmpDir := t.TempDir()
+	// git resolves symlinks in the paths it reports (e.g. macOS's /var/folders
+	// into /private/var/folders); resolving here too keeps this test's own
+	// path comparisons on the same footing as what the code under test gets back.
+	resolvedTmpDir, err := filepath.EvalSymlinks(tmpDir)
+	require.NoError(t, err)
+	tmpDir = resolvedTmpDir
+
+	repoRoot := filepath.Join(tmpDir, "repo")
+	worktreeRoot := filepath.Join(tmpDir, "repo-worktree")
+	unrelatedCloneRoot := filepath.Join(tmpDir, "unrelated-clone")
+
+	projectRoot := filepath.Join(repoRoot, "web")
+	projectWorktreeRoot := filepath.Join(worktreeRoot, "web")
+	unrelatedProjectRoot := filepath.Join(unrelatedCloneRoot, "web")
+
+	runGit := func(dir string, args ...string) {
+		out, err := osexec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
+		require.NoError(t, err, string(out))
+	}
+
+	// .ddev/db_snapshots is ordinarily gitignored, so the worktree is set up
+	// (committing only a placeholder file) before it exists in either
+	// checkout - a real `git worktree add` never brings snapshots along.
+	require.NoError(t, os.MkdirAll(repoRoot, 0o755))
+	runGit(tmpDir, "init", repoRoot)
+	runGit(repoRoot, "config", "user.name", "Test User")
+	runGit(repoRoot, "config", "user.email", "test@example.com")
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "README.md"), []byte("placeholder"), 0o644))
+	runGit(repoRoot, "add", ".")
+	runGit(repoRoot, "commit", "-m", "initial")
+	runGit(repoRoot, "worktree", "add", "--detach", worktreeRoot, "HEAD")
+
+	runGit(tmpDir, "init", unrelatedCloneRoot)
+
+	require.NoError(t, os.MkdirAll(filepath.Join(projectRoot, ".ddev", "db_snapshots"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(projectWorktreeRoot, ".ddev", "db_snapshots"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(unrelatedProjectRoot, ".ddev", "db_snapshots"), 0o755))
+
+	currentFile := filepath.Join(projectRoot, ".ddev", "db_snapshots", "current-mariadb_10.11.zst")
+	otherFile := filepath.Join(projectWorktreeRoot, ".ddev", "db_snapshots", "other-mariadb_10.11.zst")
+	unrelatedFile := filepath.Join(unrelatedProjectRoot, ".ddev", "db_snapshots", "unrelated-mariadb_10.11.zst")
+	require.NoError(t, os.WriteFile(currentFile, []byte("current"), 0o644))
+	require.NoError(t, os.WriteFile(otherFile, []byte("other"), 0o644))
+	require.NoError(t, os.WriteFile(unrelatedFile, []byte("unrelated"), 0o644))
+
+	olderTime := time.Now().Add(-2 * time.Hour)
+	newerTime := time.Now().Add(-1 * time.Hour)
+	require.NoError(t, os.Chtimes(currentFile, olderTime, olderTime))
+	require.NoError(t, os.Chtimes(otherFile, newerTime, newerTime))
+
+	return snapshotWorktreeFixture{
+		projectRoot:         projectRoot,
+		projectWorktreeRoot: projectWorktreeRoot,
+		otherFile:           otherFile,
+	}
+}
+
+// TestListSnapshotRestoreTargetsWorktrees verifies that
+// ListSnapshotRestoreTargets() finds a snapshot belonging to the same project
+// checked out in another git worktree of the same repository, but not one
+// belonging to an unrelated checkout that merely happens to sit at the same
+// relative path.
+func TestListSnapshotRestoreTargetsWorktrees(t *testing.T) {
+	fixture := newSnapshotWorktreeFixture(t)
+	app := &ddevapp.DdevApp{AppRoot: fixture.projectRoot}
+
+	targets, err := app.ListSnapshotRestoreTargets()
+	require.NoError(t, err)
+	require.Len(t, targets, 2, "expected only the current project's own snapshot and the one from the sibling worktree, not the unrelated clone's")
+
+	byName := map[string]ddevapp.SnapshotRestoreTarget{}
+	for _, target := range targets {
+		byName[target.Name] = target
+	}
+
+	require.Contains(t, byName, "current")
+	require.Equal(t, "current", byName["current"].Path, "the current project's own snapshot should restore by bare name")
+	require.Equal(t, fixture.projectRoot, byName["current"].SourceRoot)
+	require.Equal(t, "mariadb_10.11", byName["current"].DBVersion)
+
+	require.Contains(t, byName, "other")
+	require.Equal(t, fixture.otherFile, byName["other"].Path, "a snapshot from another worktree should restore by absolute path")
+	require.Equal(t, fixture.projectWorktreeRoot, byName["other"].SourceRoot)
+	require.Equal(t, "other (web)", byName["other"].Label)
+	require.Equal(t, "mariadb_10.11", byName["other"].DBVersion)
+
+	require.NotContains(t, byName, "unrelated")
+
+	latest, err := app.GetLatestSnapshotRestoreTarget()
+	require.NoError(t, err)
+	require.Equal(t, "other", latest.Name)
+}
+
+// TestResolveSnapshotRestoreTargetWorktrees verifies that
+// ResolveSnapshotRestoreTarget(), used for a snapshot name given directly on
+// the `ddev snapshot restore` command line, only falls back to a sibling
+// worktree's snapshot when the project has no snapshot of its own by that
+// name, and leaves paths and genuinely unresolvable names untouched.
+func TestResolveSnapshotRestoreTargetWorktrees(t *testing.T) {
+	fixture := newSnapshotWorktreeFixture(t)
+	app := &ddevapp.DdevApp{AppRoot: fixture.projectRoot}
+
+	require.Equal(t, "current", app.ResolveSnapshotRestoreTarget("current"),
+		"the project's own snapshot should resolve by bare name, not fall back to the worktree")
+	require.Equal(t, fixture.otherFile, app.ResolveSnapshotRestoreTarget("other"),
+		"a snapshot found only in a sibling worktree should resolve to its absolute path")
+	require.Equal(t, "nonexistent", app.ResolveSnapshotRestoreTarget("nonexistent"),
+		"a name found nowhere should be returned unchanged so the usual not-found error is reported")
+
+	somePath := filepath.Join(fixture.projectRoot, "some", "path.zst")
+	require.Equal(t, somePath, app.ResolveSnapshotRestoreTarget(somePath),
+		"a path should never be treated as a bare name to look up in sibling worktrees")
+}
+
+// TestSnapshotUncompressedPostgresError verifies that --uncompressed is
+// rejected for PostgreSQL projects: only mariabackup/xtrabackup produce a raw
+// stream that can be stored uncompressed, and Postgres snapshots use
+// pg_basebackup/tar instead.
+func TestSnapshotUncompressedPostgresError(t *testing.T) {
+	app := &ddevapp.DdevApp{}
+	app.Database.Type = nodeps.Postgres
+	app.Database.Version = nodeps.PostgresDefaultVersion
+	_, err := app.Snapshot("irrelevant", true)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "not supported for PostgreSQL")
+}
+
+// TestSnapshotUncompressed tests that app.Snapshot(name, true) writes an
+// uncompressed mariabackup/xtrabackup stream (.mbstream/.xbstream), that
+// ListSnapshots() reports its compression as "none", and that it restores
+// correctly.
+func TestSnapshotUncompressed(t *testing.T) {
+	testcommon.SkipIfGotestShort(t)
+
+	assert := assert2.New(t)
+	app := &ddevapp.DdevApp{}
+	site := TestSites[0]
+	origDir, _ := os.Getwd()
+	err := os.Chdir(site.Dir)
+	assert.NoError(err)
+
+	runTime := util.TimeTrackC(t.Name())
+
+	testcommon.ClearDockerEnv()
+	err = app.Init(site.Dir)
+	assert.NoError(err)
+
+	t.Cleanup(func() {
+		err = app.Stop(true, false)
+		assert.NoError(err)
+		_ = os.RemoveAll(app.GetConfigPath("db_snapshots"))
+		err = os.Chdir(origDir)
+		assert.NoError(err)
+	})
+
+	err = app.Start()
+	require.NoError(t, err)
+
+	snapshotName, err := app.Snapshot(t.Name(), true)
+	require.NoError(t, err)
+
+	snapshotFile, err := ddevapp.GetSnapshotFileFromName(snapshotName, app)
+	require.NoError(t, err)
+	assert.True(strings.HasSuffix(snapshotFile, ".mbstream") || strings.HasSuffix(snapshotFile, ".xbstream"), "expected an uncompressed snapshot extension, got %s", snapshotFile)
+
+	snapshots, err := app.ListSnapshots()
+	require.NoError(t, err)
+	found := false
+	for _, s := range snapshots {
+		if s.Name == snapshotName {
+			found = true
+			assert.Equal("none", s.Compression)
+		}
+	}
+	assert.True(found, "expected to find snapshot %s in ListSnapshots()", snapshotName)
+
+	err = app.RestoreSnapshot(snapshotName, false)
+	assert.NoError(err)
+
+	runTime()
+}
+
 // TestDdevRestoreSnapshot tests creating a snapshot and reverting to it.
 func TestDdevRestoreSnapshot(t *testing.T) {
+	testcommon.SkipIfGotestShort(t)
+
 	assert := assert2.New(t)
 
 	runTime := util.TimeTrackC(t.Name())
@@ -206,7 +409,7 @@ func TestDdevRestoreSnapshot(t *testing.T) {
 	assert.Contains(stdout, "d7 tester test 1 has 1 node")
 
 	// Make a snapshot of d7 tester test 1
-	tester1Snapshot, err := app.Snapshot("d7testerTest1")
+	tester1Snapshot, err := app.Snapshot("d7testerTest1", false)
 	assert.NoError(err)
 
 	assert.Contains(tester1Snapshot, "d7testerTest1")
@@ -222,19 +425,19 @@ func TestDdevRestoreSnapshot(t *testing.T) {
 	assert.NoError(err)
 
 	// Make sure duplicate snapshot name gives an error
-	_, err = app.Snapshot("d7testerTest1")
+	_, err = app.Snapshot("d7testerTest1", false)
 	assert.Error(err)
 
 	// Name should contain only allowed characters
-	_, err = app.Snapshot(`name with spaces`)
+	_, err = app.Snapshot(`name with spaces`, false)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "invalid snapshot name")
 
-	_, err = app.Snapshot(`single'quotes`)
+	_, err = app.Snapshot(`single'quotes`, false)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "invalid snapshot name")
 
-	_, err = app.Snapshot(`double"quotes`)
+	_, err = app.Snapshot(`double"quotes`, false)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "invalid snapshot name")
 
@@ -248,7 +451,7 @@ func TestDdevRestoreSnapshot(t *testing.T) {
 	assert.NoError(err)
 	assert.Contains(stdout, "d7 tester test 2 has 2 nodes")
 
-	tester2Snapshot, err := app.Snapshot("d7testerTest2")
+	tester2Snapshot, err := app.Snapshot("d7testerTest2", false)
 	assert.NoError(err)
 	assert.Contains(tester2Snapshot, "d7testerTest2")
 	latest, err = app.GetLatestSnapshot()
@@ -261,7 +464,7 @@ func TestDdevRestoreSnapshot(t *testing.T) {
 	// Sleep to let sync happen if needed (M1 failure)
 	time.Sleep(2 * time.Second)
 
-	err = app.RestoreSnapshot(tester1Snapshot)
+	err = app.RestoreSnapshot(tester1Snapshot, false)
 	assert.NoError(err)
 
 	assert.FileExists("hello-pre-restore-snapshot-" + app.Name)
@@ -278,7 +481,7 @@ func TestDdevRestoreSnapshot(t *testing.T) {
 	assert.NoError(err)
 	assert.Contains(stdout, "d7 tester test 1 has 1 node")
 
-	err = app.RestoreSnapshot(tester2Snapshot)
+	err = app.RestoreSnapshot(tester2Snapshot, false)
 	assert.NoError(err)
 
 	stdout, _, err = app.Exec(&ddevapp.ExecOpts{
@@ -295,7 +498,7 @@ func TestDdevRestoreSnapshot(t *testing.T) {
 	err = archive.Untar(oldSnapshotTarball, app.GetConfigPath("db_snapshots"), "")
 	assert.NoError(err)
 
-	err = app.RestoreSnapshot("d7tester_test_1.snapshot_mariadb_10.1")
+	err = app.RestoreSnapshot("d7tester_test_1.snapshot_mariadb_10.1", false)
 	assert.Error(err)
 	assert.Contains(err.Error(), "is not compatible")
 
@@ -355,7 +558,7 @@ func TestDdevRestoreSnapshot(t *testing.T) {
 		})
 		assert.NoError(err)
 
-		err = app.RestoreSnapshot(dirSnapshot)
+		err = app.RestoreSnapshot(dirSnapshot, false)
 		if err != nil {
 			assert.NoError(err, "Failed to restore dirSnapshot '%s': %v, continuing", dirSnapshot, err)
 			continue

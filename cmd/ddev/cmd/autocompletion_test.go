@@ -23,6 +23,7 @@ import (
 
 // TestAutocompletionForStopCmd checks autocompletion of project names for ddev stop
 func TestAutocompletionForStopCmd(t *testing.T) {
+	testcommon.UsesAllTestSites(t)
 	assert := asrt.New(t)
 
 	// Skip if we don't have enough tests.
@@ -99,6 +100,7 @@ func TestAutocompletionForStopCmd(t *testing.T) {
 
 // TestAutocompletionForStartCmd checks autocompletion of project names for ddev start
 func TestAutocompletionForStartCmd(t *testing.T) {
+	testcommon.UsesAllTestSites(t)
 	assert := asrt.New(t)
 
 	// Skip if we don't have enough tests.
@@ -175,6 +177,7 @@ func TestAutocompletionForStartCmd(t *testing.T) {
 
 // TestAutocompletionForDescribeCmd checks autocompletion of project names for ddev describe
 func TestAutocompletionForDescribeCmd(t *testing.T) {
+	testcommon.UsesAllTestSites(t)
 	assert := asrt.New(t)
 
 	// Skip if we don't have enough tests.
@@ -245,7 +248,7 @@ func TestAutocompletionForConfigCmd(t *testing.T) {
 		"--project-tld":                 {nodeps.DdevDefaultTLD},
 		"--use-dns-when-possible":       {"true", "false"},
 		"--disable-settings-management": {"true", "false"},
-		"--composer-version":            {"2", "2.2", "1", "stable", "preview", "snapshot"},
+		"--composer-version":            {"2", "2.2", "stable", "preview", "snapshot"},
 		"--bind-all-interfaces":         {"true", "false"},
 		"--database":                    nodeps.GetValidDatabaseVersions(),
 		"--nodejs-version":              {nodeps.NodeJSDefault, "auto", "engine"},
@@ -423,7 +426,13 @@ func TestAutocompletionForCustomCmds(t *testing.T) {
 	assert.NoError(err)
 	err = fileutil.CopyDir(filepath.Join(testdataCustomCommandsDir, "global_commands"), tmpHomeGlobalCommandsDir)
 	require.NoError(t, err)
-	_, _ = exec.RunHostCommand(DdevBin, "restart")
+	// The restart repopulates the global-commands volume; keep its output so a
+	// missing global web command can be traced to what the restart did.
+	restartOut, restartErr := exec.RunHostCommand(DdevBin, "restart")
+	t.Logf("ddev restart: err=%v output=%s", restartErr, restartOut)
+	volListing, _ := exec.RunHostCommand(DdevBin, "exec", "ls -laR /mnt/ddev-global-cache/global-commands")
+	hashFile, _ := os.ReadFile(filepath.Join(globalconfig.GetGlobalDdevDir(), ".global-commands-hash"))
+	t.Logf("global-commands volume:\n%s\n.global-commands-hash=%s", volListing, hashFile)
 
 	// Check completion results are as expected for each command
 	for _, cmd := range []string{"global-host-cmd", "global-web-cmd", "project-host-cmd", "project-web-cmd"} {
@@ -502,6 +511,7 @@ func TestAutocompleteServiceForServiceFlag(t *testing.T) {
 		assert.NotContains(out, "xhgui")
 
 		// check with project argument
+		// Excluding exec because exec uses a flag, see TestProjectAutocompletionForExecCmd
 		if cmd != "exec" {
 			out, err := exec.RunHostCommand(DdevBin, "__complete", cmd, site.Name, "-s", "")
 			assert.NoError(err)
@@ -518,6 +528,46 @@ func TestAutocompleteServiceForServiceFlag(t *testing.T) {
 	assert.Contains(out, "web")
 	assert.Contains(out, "db")
 	assert.Contains(out, "xhgui")
+}
+
+// TestProjectAutocompletionForExecCmd checks autocompletion of project names for ddev exec
+func TestProjectAutocompletionForExecCmd(t *testing.T) {
+	testcommon.UsesAllTestSites(t)
+	assert := asrt.New(t)
+
+	// Skip if we don't have enough tests.
+	if len(TestSites) < 2 {
+		t.Skip("Must have at least two test sites to test autocompletion")
+	}
+	origDir, _ := os.Getwd()
+
+	t.Cleanup(func() {
+		removeSites()
+		_ = os.Chdir(origDir)
+	})
+
+	// Make sure we have some sites.
+	err := addSites()
+	require.NoError(t, err)
+
+	var siteNames []string
+	for _, site := range TestSites {
+		siteNames = append(siteNames, site.Name)
+	}
+
+	// ddev exec completion should show all project names
+	out, err := exec.RunHostCommand(DdevBin, "__complete", "exec", "--project", "")
+	require.NoError(t, err)
+	filteredOut := getTestingSitesFromOutput(out)
+	for _, name := range siteNames {
+		assert.Contains(filteredOut, name)
+	}
+
+	// If there's already a project, nothing more should be suggested
+	out, err = exec.RunHostCommand(DdevBin, "__complete", "exec", "--project", "anything", "")
+	require.NoError(t, err)
+	filteredOut = getTestingSitesFromOutput(out)
+	assert.Empty(filteredOut)
 }
 
 // TestAutocompleteTermsForCustomCmds tests the AutocompleteTerms annotation for custom host and container commands
@@ -585,9 +635,9 @@ func TestAutocompleteTermsForCustomCmds(t *testing.T) {
 // have names starting with "Test" from a space separated list of project names.
 // This is useful when running the tests locally, to filter out projects that
 // aren't test-related.
-func getTestingSitesFromOutput(output string) []interface{} {
-	testSites := make([]interface{}, 0)
-	for _, siteName := range strings.Fields(output) {
+func getTestingSitesFromOutput(output string) []any {
+	testSites := make([]any, 0)
+	for siteName := range strings.FieldsSeq(output) {
 		if strings.HasPrefix(siteName, "Test") {
 			testSites = append(testSites, siteName)
 		}

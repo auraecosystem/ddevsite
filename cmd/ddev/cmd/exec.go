@@ -3,12 +3,12 @@ package cmd
 import (
 	"errors"
 	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/ddev/ddev/pkg/ddevapp"
 	"github.com/ddev/ddev/pkg/output"
 	"github.com/ddev/ddev/pkg/util"
+	"github.com/docker/cli/cli"
 	"github.com/spf13/cobra"
 )
 
@@ -25,18 +25,28 @@ var DdevExecCmd = &cobra.Command{
 ddev exec --service db
 ddev exec -s db
 ddev exec -s solr (assuming an add-on service named 'solr')
+ddev exec -p my-project -s db (assuming a project exists named 'my-project')
 ddev exec --raw -- ls -lR
 ddev exec -s db -u root ls -la /root`,
 	Run: func(cmd *cobra.Command, args []string) {
+		activeApp, err := cmd.Flags().GetString("project")
+		if err != nil {
+			util.Failed("Failed to exec command: %v", err)
+		}
+
 		if len(args) == 0 {
 			err := cmd.Usage()
 			util.CheckErr(err)
 			os.Exit(1)
 		}
 
-		app, err := ddevapp.GetActiveApp("")
+		app, err := ddevapp.GetActiveApp(activeApp)
 		if err != nil {
 			util.Failed("Failed to exec command: %v", err)
+		}
+
+		if err = app.StartAppIfNotRunning(); err != nil {
+			util.Failed("Failed to start app %s: %v", app.Name, err)
 		}
 
 		container, err := app.FindContainerByType(serviceType)
@@ -49,12 +59,18 @@ ddev exec -s db -u root ls -la /root`,
 
 		_ = app.DockerEnv()
 
+		// An explicit -u wins over the service's configured container-user.
+		user := serviceUser
+		if !cmd.Flag("user").Changed {
+			user = app.GetXDdevExtension(serviceType).ContainerUser
+		}
+
 		opts := &ddevapp.ExecOpts{
 			Service: serviceType,
 			Dir:     execDirArg,
 			Cmd:     quoteArgs(args),
 			Tty:     true,
-			User:    serviceUser,
+			User:    user,
 		}
 
 		// If they've chosen raw, use the actual passed values.
@@ -64,7 +80,7 @@ ddev exec -s db -u root ls -la /root`,
 			path, _, err := app.Exec(&ddevapp.ExecOpts{
 				Service: serviceType,
 				Cmd:     "echo $PATH",
-				User:    serviceUser,
+				User:    user,
 			})
 			path = strings.Trim(path, "\n")
 			if err == nil && path != "" {
@@ -80,9 +96,8 @@ ddev exec -s db -u root ls -la /root`,
 
 		if err != nil {
 			exitCode := 1
-			var exiterr *exec.ExitError
-			if errors.As(err, &exiterr) {
-				exitCode = exiterr.ExitCode()
+			if statusErr, ok := errors.AsType[cli.StatusError](err); ok {
+				exitCode = statusErr.StatusCode
 			}
 			if !quiet {
 				util.Error("Failed to execute command `%s`: %v", opts.Cmd, err)
@@ -115,13 +130,15 @@ func quoteArgs(args []string) string {
 	return b.String()
 }
 
-func init() {
+func registerExecCmd() {
 	DdevExecCmd.Flags().StringVarP(&serviceType, "service", "s", "web", "Define the service to connect to. [e.g. web, db]")
 	_ = DdevExecCmd.RegisterFlagCompletionFunc("service", ddevapp.GetServiceNamesFunc(true))
 	DdevExecCmd.Flags().StringVarP(&execDirArg, "dir", "d", "", "Define the execution directory within the container")
 	DdevExecCmd.Flags().Bool("raw", true, "Use raw exec (do not interpret with Bash inside container)")
 	DdevExecCmd.Flags().BoolP("quiet", "q", false, "Suppress detailed error output")
 	DdevExecCmd.Flags().StringVarP(&serviceUser, "user", "u", "", "Defines the user to use within the container")
+	DdevExecCmd.Flags().StringP("project", "p", "", "Project to use, defaults to the one for the current directory")
+	_ = DdevExecCmd.RegisterFlagCompletionFunc("project", ddevapp.GetProjectNamesFunc("all", 0))
 	// This requires flags for exec to be specified prior to any arguments, allowing for
 	// flags to be ignored by cobra for commands that are to be executed in a container.
 	DdevExecCmd.Flags().SetInterspersed(false)

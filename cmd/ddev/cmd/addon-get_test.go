@@ -4,12 +4,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"testing"
 
 	"github.com/ddev/ddev/pkg/ddevapp"
 	"github.com/ddev/ddev/pkg/exec"
+	"github.com/ddev/ddev/pkg/github"
+	"github.com/ddev/ddev/pkg/globalconfig"
 	copy2 "github.com/otiai10/copy"
 	asrt "github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -70,11 +71,12 @@ func TestCmdAddonComplex(t *testing.T) {
 	require.FileExists(t, app.GetConfigPath(fmt.Sprintf("junk_%s_%s.txt", runtime.GOOS, runtime.GOARCH)))
 	info, err := os.Stat(app.GetConfigPath("extra/no-ddev-generated.txt"))
 	require.NoError(t, err, "stat of no-ddev-generated.txt failed")
-	require.True(t, info.Size() == 0)
+	// With empty file handling, the empty file is overwritten with addon content (39 bytes)
+	require.True(t, info.Size() == 39, "empty file should be overwritten with addon content")
 
 	require.Contains(t, out, fmt.Sprintf("👍 %s", filepath.Join("extra", "has-ddev-generated.txt")))
-	require.NotContains(t, out, fmt.Sprintf("👍 %s", filepath.Join("extra", "no-ddev-generated.txt")))
-	require.Regexp(t, regexp.MustCompile(fmt.Sprintf(`NOT overwriting [^ ]*%s`, regexp.QuoteMeta(filepath.Join("extra", "no-ddev-generated.txt")))), out)
+	// With empty file handling, no-ddev-generated.txt is also installed (empty files are overwritten)
+	require.Contains(t, out, fmt.Sprintf("👍 %s", filepath.Join("extra", "no-ddev-generated.txt")))
 }
 
 // TestCmdAddonComplex tests advanced usages
@@ -228,8 +230,21 @@ func TestCmdAddonGetWithDotEnv(t *testing.T) {
 	err = copy2.Copy(filepath.Join(origDir, "testdata", t.Name(), "project"), app.GetAppRoot())
 	require.NoError(t, err)
 
+	envFilesDir := filepath.Join(origDir, "testdata", t.Name(), "env_files")
+	// Not a service name, so this global file only reaches 'docker-compose config'
+	globalEnvFile := filepath.Join(globalconfig.GetGlobalDdevDir(), ".env.global-interpolation-test")
+
 	t.Cleanup(func() {
 		assert := asrt.New(t)
+		// 'add-on remove' does not remove .env files, and a leftover would reach other projects
+		_ = os.RemoveAll(globalEnvFile)
+		envFiles, err := os.ReadDir(envFilesDir)
+		assert.NoError(err)
+		for _, envFile := range envFiles {
+			_ = os.RemoveAll(app.GetConfigPath(envFile.Name()))
+		}
+		_ = os.RemoveAll(app.GetConfigPath(".env.busybox"))
+		_ = os.RemoveAll(app.GetConfigPath(".env.bare-busybox"))
 		out, err := exec.RunHostCommand(DdevBin, "stop", site.Name)
 		assert.NoError(err, "output='%s'", out)
 		out, err = exec.RunHostCommand(DdevBin, "add-on", "remove", "busybox")
@@ -314,13 +329,22 @@ func TestCmdAddonGetWithDotEnv(t *testing.T) {
 	require.Contains(t, out, "BARE_BUSYBOX_FOO=bar")
 
 	// Adding extra .env files here
-	err = copy2.Copy(filepath.Join(origDir, "testdata", t.Name(), "env_files"), app.AppConfDir())
+	err = copy2.Copy(envFilesDir, app.AppConfDir())
+	require.NoError(t, err)
+
+	err = os.WriteFile(globalEnvFile, []byte("GLOBAL_INTERPOLATED_TAG=8\n"), 0644)
 	require.NoError(t, err)
 
 	// Update the busybox image in .ddev/.env.busybox
 	// And update the value for THIS_VARIABLE_CAN_BE_CHANGED_FROM_ENV
-	out, err = exec.RunHostCommand(DdevBin, "dotenv", "set", ".ddev/.env.busybox", "--busybox-tag", "1.36.1", "--this-variable-can-be-changed-from-env=changed", "--dollar-sign", `$dollar_variable_override`)
+	out, err = exec.RunHostCommand(DdevBin, "dotenv", "set", ".ddev/.env.busybox", "--busybox-tag", "1.36.1", "--this-variable-can-be-changed-from-env=changed", "--dollar-sign", `$dollar_variable_override`, "--service-override-variable=service_value")
 	require.NoError(t, err, "out=%s", out)
+
+	// Install actions read .ddev/.env and the gitignored .ddev/.env.busybox.local
+	out, err = exec.RunHostCommand(DdevBin, "add-on", "get", filepath.Join(origDir, "testdata", t.Name(), "busybox"))
+	require.NoError(t, err, "out=%s", out)
+	require.Contains(t, out, "DOT_ENV_VARIABLE=dot_env_value")
+	require.Contains(t, out, "SECRET_VARIABLE=secret_value")
 
 	out, err = exec.RunHostCommand(DdevBin, "restart")
 	require.NoError(t, err, "unable to ddev restart: %v, output='%s'", err, out)
@@ -349,6 +373,16 @@ func TestCmdAddonGetWithDotEnv(t *testing.T) {
 	require.NotContains(t, out, "REDIS_TAG")
 	// But this REDIS_TAG variable from .env.redis can be expanded during 'docker-compose config'
 	require.Contains(t, out, "CAN_READ_FROM_ALL_ENV_FILES=7")
+	// The same is true for a global env file
+	require.Contains(t, out, "CAN_READ_FROM_GLOBAL_ENV_FILES=8")
+	// .env.local overrides .env
+	require.Contains(t, out, "LOCAL_OVERRIDE_VARIABLE=local_value")
+	require.NotContains(t, out, "LOCAL_OVERRIDE_VARIABLE=env_value")
+	// .env.busybox.local overrides .env.busybox
+	require.Contains(t, out, "SERVICE_OVERRIDE_VARIABLE=service_local_value")
+	require.NotContains(t, out, "SERVICE_OVERRIDE_VARIABLE=service_value")
+	// A labeled file reaches the service it names
+	require.Contains(t, out, "LABELED_VARIABLE=labeled_value")
 
 	// Check that the environment variable are set correctly inside the bare-busybox container
 	out, err = exec.RunHostCommand(DdevBin, "exec", "-s", "bare-busybox", "env")
@@ -356,6 +390,7 @@ func TestCmdAddonGetWithDotEnv(t *testing.T) {
 	require.Contains(t, out, "BARE_BUSYBOX_FOO=bar")
 	// Variables from .env are passed to all containers
 	require.Contains(t, out, "GLOBAL_TEST_VARIABLE=global_test_variable")
+	require.Contains(t, out, "LOCAL_OVERRIDE_VARIABLE=local_value")
 
 	// Check that the environment variable are set correctly inside the web container
 	out, err = exec.RunHostCommand(DdevBin, "exec", "env")
@@ -376,12 +411,20 @@ func TestCmdAddonGetWithDotEnv(t *testing.T) {
 	require.NotContains(t, out, "REDIS_TAG")
 	// Variable from another service should not be here
 	require.NotContains(t, out, "CAN_READ_FROM_ALL_ENV_FILES")
+	// .env.local overrides .env in every container
+	require.Contains(t, out, "LOCAL_OVERRIDE_VARIABLE=local_value")
+	require.NotContains(t, out, "LOCAL_OVERRIDE_VARIABLE=env_value")
+	// Labeled and .local files belong to the busybox service
+	require.NotContains(t, out, "LABELED_VARIABLE")
+	require.NotContains(t, out, "SERVICE_OVERRIDE_VARIABLE")
+	require.NotContains(t, out, "SECRET_VARIABLE")
 
 	// Check that the environment variable are set correctly inside the db container
 	out, err = exec.RunHostCommand(DdevBin, "exec", "-s", "db", "env")
 	require.NoError(t, err, "unable to ddev exec -s db env: %v, output='%s'", err, out)
 	// Variables from .env are passed to all containers
 	require.Contains(t, out, "GLOBAL_TEST_VARIABLE=global_test_variable")
+	require.Contains(t, out, "LOCAL_OVERRIDE_VARIABLE=local_value")
 }
 
 // TestAddonGetWithDependencies tests static dependency installation
@@ -418,6 +461,9 @@ func TestAddonGetWithDependencies(t *testing.T) {
 
 // TestAddonGetCircularDependencies tests circular dependency detection
 func TestAddonGetCircularDependencies(t *testing.T) {
+	if !github.HasGitHubToken() {
+		t.Skip("Skipping because DDEV_GITHUB_TOKEN is not set")
+	}
 	origDir, _ := os.Getwd()
 	site := TestSites[0]
 	err := os.Chdir(site.Dir)
@@ -552,4 +598,145 @@ func TestAddonGetPostInstallRuntimeDependencies(t *testing.T) {
 	// Verify the runtime deps file was cleaned up
 	runtimeDepsFile := app.GetConfigPath(".runtime-deps-post-install-runtime-deps-addon")
 	require.NoFileExists(t, runtimeDepsFile, "Runtime dependencies file should be cleaned up after processing")
+}
+
+// TestAddonGetWithPRFlag tests the --project flag functionality
+func TestCmdAddonProjectFlag(t *testing.T) {
+	if !github.HasGitHubToken() {
+		t.Skip("Skipping because DDEV_GITHUB_TOKEN is not set")
+	}
+	t.Setenv("DDEV_DEBUG", "")
+	assert := asrt.New(t)
+
+	site := TestSites[0]
+	// Explicitly don't chdir to the project
+
+	t.Cleanup(func() {
+		_, err := exec.RunHostCommand(DdevBin, "add-on", "remove", "redis", "--project", site.Name)
+		assert.NoError(err)
+		_ = os.RemoveAll(filepath.Join(globalconfig.GetGlobalDdevDir(), "commands/web/global-touched"))
+	})
+
+	// Install the add-on using the `--project` flag
+	out, err := exec.RunHostCommand(DdevBin, "add-on", "get", "ddev/ddev-redis", "--project", site.Name, "--json-output")
+	require.NoError(t, err, "failed ddev add-on get ddev/ddev-redis --project %s --json-output: %v (output='%s')", site.Name, err, out)
+
+	redisManifest := getManifestFromLogs(t, out)
+	require.NoError(t, err)
+
+	installedOutput, err := exec.RunHostCommand(DdevBin, "add-on", "list", "--installed", "--project", site.Name, "--json-output")
+	require.NoError(t, err, "failed ddev add-on list --installed --project %s --json-output: %v (output='%s')", site.Name, err, installedOutput)
+	installedManifests := getManifestMapFromLogs(t, installedOutput)
+
+	require.NotEmptyf(t, redisManifest["Version"], "redis manifest is empty: %v", redisManifest)
+	assert.Equal(redisManifest["Version"], installedManifests["redis"]["Version"])
+
+	// Remove the add-on using the `--project` flag
+	out, err = exec.RunHostCommand(DdevBin, "add-on", "remove", "ddev/ddev-redis", "--project", site.Name)
+	require.NoError(t, err, "unable to ddev add-on remove ddev/ddev-redis --project %s: %v, output='%s'", site.Name, err, out)
+
+	// Now make sure we put it back so it can be removed in cleanup
+	out, err = exec.RunHostCommand(DdevBin, "add-on", "get", "ddev/ddev-redis", "--project", site.Name)
+	assert.NoError(err, "unable to ddev add-on get ddev/ddev-redis --project %s: %v, output='%s'", site.Name, err, out)
+}
+
+// TestAddonGetWithPRFlag tests the --pr flag functionality
+func TestAddonGetWithPRFlag(t *testing.T) {
+	if !github.HasGitHubToken() {
+		t.Skip("Skipping because DDEV_GITHUB_TOKEN is not set")
+	}
+	origDir, _ := os.Getwd()
+	site := TestSites[0]
+	err := os.Chdir(site.Dir)
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		assert := asrt.New(t)
+		_, _ = exec.RunHostCommand(DdevBin, "add-on", "remove", "ddev-redis")
+		err = os.Chdir(origDir)
+		assert.NoError(err)
+	})
+
+	// Test that --pr flag with invalid value fails
+	out, err := exec.RunHostCommand(DdevBin, "add-on", "get", "ddev/ddev-redis", "--pr", "0")
+	require.Error(t, err, "Should fail with --pr=0, out=%s", out)
+	require.Contains(t, out, "--pr flag requires a positive integer value")
+
+	// Test that --pr flag with negative value fails
+	out, err = exec.RunHostCommand(DdevBin, "add-on", "get", "ddev/ddev-redis", "--pr", "-1")
+	require.Error(t, err, "Should fail with --pr=-1, out=%s", out)
+	require.Contains(t, out, "--pr flag requires a positive integer value")
+
+	// Test that --pr flag with valid value works (PR #54 exists for ddev-redis)
+	out, err = exec.RunHostCommand(DdevBin, "add-on", "get", "ddev/ddev-redis", "--pr", "54")
+	require.NoError(t, err, "Should succeed with --pr=54, out=%s", out)
+	require.Contains(t, out, "Installing ddev/ddev-redis:pr-54")
+}
+
+// TestAddonGetWithVersionFlag tests the --version flag functionality
+func TestAddonGetWithVersionFlag(t *testing.T) {
+	if !github.HasGitHubToken() {
+		t.Skip("Skipping because DDEV_GITHUB_TOKEN is not set")
+	}
+	origDir, _ := os.Getwd()
+	site := TestSites[0]
+	err := os.Chdir(site.Dir)
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		assert := asrt.New(t)
+		_, _ = exec.RunHostCommand(DdevBin, "add-on", "remove", "ddev-redis")
+		err = os.Chdir(origDir)
+		assert.NoError(err)
+	})
+
+	// Test that --version flag with empty value fails
+	out, err := exec.RunHostCommand(DdevBin, "add-on", "get", "ddev/ddev-redis", "--version", "")
+	require.Error(t, err, "Should fail with --version='', out=%s", out)
+	require.Contains(t, out, "--version flag requires a non-empty value")
+
+	// Test that --version flag with valid tag works
+	out, err = exec.RunHostCommand(DdevBin, "add-on", "get", "ddev/ddev-redis", "--version", "v2.2.0")
+	require.NoError(t, err, "Should succeed with --version=v2.2.0, out=%s", out)
+	require.Contains(t, out, "Installing ddev/ddev-redis:v2.2.0")
+
+	// Clean up before next test
+	_, _ = exec.RunHostCommand(DdevBin, "add-on", "remove", "ddev-redis")
+
+	// Test that --version flag with branch name works
+	out, err = exec.RunHostCommand(DdevBin, "add-on", "get", "ddev/ddev-redis", "--version", "main")
+	require.NoError(t, err, "Should succeed with --version=main, out=%s", out)
+	require.Contains(t, out, "Installing ddev/ddev-redis:main")
+
+	// Clean up before next test
+	_, _ = exec.RunHostCommand(DdevBin, "add-on", "remove", "ddev-redis")
+
+	// Test that --version flag with commit SHA works
+	out, err = exec.RunHostCommand(DdevBin, "add-on", "get", "ddev/ddev-redis", "--version", "b50ac77")
+	require.NoError(t, err, "Should succeed with --version=b50ac77, out=%s", out)
+	require.Contains(t, out, "Installing ddev/ddev-redis:b50ac77")
+}
+
+// TestAddonGetWithDefaultBranchFlag tests the --default-branch flag functionality
+func TestAddonGetWithDefaultBranchFlag(t *testing.T) {
+	if !github.HasGitHubToken() {
+		t.Skip("Skipping because DDEV_GITHUB_TOKEN is not set")
+	}
+	origDir, _ := os.Getwd()
+	site := TestSites[0]
+	err := os.Chdir(site.Dir)
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		assert := asrt.New(t)
+		_, _ = exec.RunHostCommand(DdevBin, "add-on", "remove", "ddev-redis")
+		err = os.Chdir(origDir)
+		assert.NoError(err)
+	})
+
+	// Test that --default-branch flag works and installs from default branch
+	out, err := exec.RunHostCommand(DdevBin, "add-on", "get", "ddev/ddev-redis", "--default-branch")
+	require.NoError(t, err, "Should succeed with --default-branch, out=%s", out)
+	// Should install from main branch (default_branch for ddev-redis)
+	require.Contains(t, out, "Installing ddev/ddev-redis:main")
 }

@@ -12,47 +12,27 @@ teardown() {
 }
 
 @test "Sulu quickstart with $(ddev --version)" {
-  # mkdir ${PROJNAME} && cd ${PROJNAME}
-  run mkdir ${PROJNAME} && cd ${PROJNAME}
-  assert_success
-  # ddev config --project-type=php --docroot=public --upload-dirs=uploads --database=mysql:8.0
-  run ddev config --project-type=php --docroot=public --upload-dirs=uploads --database=mysql:8.0
-  assert_success
+  run -0 mkdir -p ${PROJNAME}
+  cd ${PROJNAME}
+  run -0 ddev config --project-type=php --docroot=public --upload-dirs=uploads --database=mysql:8.0
   # ddev start -y
-  run ddev start -y
-  assert_success
-  # ddev composer create-project sulu/skeleton
-  run ddev composer create-project sulu/skeleton
-  assert_success
-  # export SULU_PROJECT_NAME="My Sulu Site"
+  run -0 ddev start -y
+
+  _extra_info
+
+  run -0 _retry ddev composer create-project sulu/skeleton
   export SULU_PROJECT_NAME="My Sulu Site"
-  assert_success
-  # export SULU_PROJECT_KEY="${PROJNAME}"
   export SULU_PROJECT_KEY="${PROJNAME}"
-  assert_success
-  # export SULU_PROJECT_CONFIG_FILE="config/webspaces/my-sulu-site.xml"
   export SULU_PROJECT_CONFIG_FILE="config/webspaces/${PROJNAME}.xml"
-  assert_success
-  # ddev exec "mv config/webspaces/website.xml ${SULU_PROJECT_CONFIG_FILE}"
-  run ddev exec "mv config/webspaces/website.xml ${SULU_PROJECT_CONFIG_FILE}"
-  assert_success
-  # ddev exec "sed -i -e 's|<name>.*</name>|<name>${SULU_PROJECT_NAME}</name>|g' -e 's|<key>.*</key>|<key>${SULU_PROJECT_KEY}</key>|g' ${SULU_PROJECT_CONFIG_FILE}"
-  run ddev exec "sed -i -e 's|<name>.*</name>|<name>${SULU_PROJECT_NAME}</name>|g' -e 's|<key>.*</key>|<key>${SULU_PROJECT_KEY}</key>|g' ${SULU_PROJECT_CONFIG_FILE}"
-  assert_success
+  run -0 ddev exec "mv config/webspaces/website.xml ${SULU_PROJECT_CONFIG_FILE}"
+  run -0 ddev exec "sed -i -e 's|<name>.*</name>|<name>${SULU_PROJECT_NAME}</name>|g' -e 's|<key>.*</key>|<key>${SULU_PROJECT_KEY}</key>|g' ${SULU_PROJECT_CONFIG_FILE}"
   # Set APP_ENV and DATABASE_URL in .env.local
-  # ddev dotenv set .env.local --app-env=dev --database-url="mysql://db:db@db:3306/db?serverVersion=8.0&charset=utf8mb4"
-  run ddev dotenv set .env.local --app-env=dev --database-url="mysql://db:db@db:3306/db?serverVersion=8.0&charset=utf8mb4"
-  assert_success
-  # ddev exec bin/adminconsole sulu:build dev --no-interaction
-  run ddev exec bin/adminconsole sulu:build dev --no-interaction
-  assert_success
-  # ddev launch
-  run bash -c "DDEV_DEBUG=true ddev launch /admin"
-  assert_output --partial "FULLURL https://${PROJNAME}.ddev.site/admin"
-  assert_success
+  run -0 ddev dotenv set .env.local --app-env=dev --database-url="mysql://db:db@db:3306/db?serverVersion=8.0&charset=utf8mb4"
+  run -0 ddev exec bin/adminconsole sulu:build dev --no-interaction
+  DDEV_DEBUG=true run -0 ddev launch /admin
+  assert_output --partial "FULLURL ${PRIMARY_URL}/admin"
   # validate running project
-  run curl -sfI https://${PROJNAME}.ddev.site
-  assert_success
+  run -0 curl -sSfI ${PRIMARY_URL}
   assert_output --partial "x-generator: Sulu"
   assert_output --partial "HTTP/2 200"
 }

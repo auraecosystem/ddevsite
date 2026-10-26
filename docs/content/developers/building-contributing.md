@@ -8,6 +8,7 @@ search:
 
 There are several ways to use DDEV’s latest-committed HEAD version:
 
+* **[`ddev utility download-ddev`](../users/usage/commands.md#utility-download-ddev)**: Run `ddev utility download-ddev --head` to download the latest `main` build into `~/tmp/ddev-download-ddev/main`. It prints how to use the new binary in your current shell.
 * **Download** the latest `main` branch artifacts from [nightly.link](https://nightly.link/ddev/ddev/workflows/main-build/main). Each of these is built by the CI system, signed, and notarized. Get the one you need and place it in your `$PATH`.
 * **Homebrew install HEAD**: On macOS and Linux, run `brew unlink ddev && brew install ddev/ddev/ddev --HEAD --fetch-HEAD` to get the latest DDEV commit, even if it’s unreleased.
 * **Install via script**: You can download and run the [install_ddev_head.sh](https://raw.githubusercontent.com/ddev/ddev/main/scripts/install_ddev_head.sh)  script, or run it automatically:
@@ -21,9 +22,24 @@ There are several ways to use DDEV’s latest-committed HEAD version:
 
 ## Testing a PR
 
-Each [PR build](https://github.com/ddev/ddev/actions/workflows/pr-build.yml) creates GitHub artifacts you can use for testing, so you can download the one you need from the PR page, install it locally, and test using that build.
+Each [PR build](https://github.com/ddev/ddev/actions/workflows/pr-build.yml) creates GitHub artifacts you can use for testing. The easiest way is [`ddev utility download-ddev`](../users/usage/commands.md#utility-download-ddev), described first below; you can also download the artifact you need from the PR page manually and install it yourself.
 
 !!!tip "You can also [downgrade to an older version of DDEV](../users/usage/faq.md#how-can-i-install-a-specific-version-of-ddev) (perform a rollback)."
+
+### Downloading a build with `ddev utility download-ddev`
+
+[`ddev utility download-ddev`](../users/usage/commands.md#utility-download-ddev) downloads the `ddev` and `ddev-hostname` binaries for a build and prints how to use them in your current shell:
+
+```bash
+# Download this PR's build for your current OS and architecture into ~/tmp/ddev-download-ddev/pr-<PR_NUMBER>
+ddev utility download-ddev --pr <PR_NUMBER>
+# See the help for more options:
+ddev utility download-ddev --help
+```
+
+It can also fetch builds by branch, commit, release tag, or `main` HEAD, and cross-download other platforms.
+
+### Downloading a build manually
 
 Normally, you can put any executable in your path, and it takes precedence, so you don't need to remove or disable an already installed DDEV instance, which we will use here. This example uses `~/bin`. Since not every OS has `$HOME/bin` in `$PATH`, you can create the folder and add it to your path by updating `~/.bashrc`, `~/.zshrc`, or another relevant shell configuration file with these commands:
 
@@ -98,33 +114,42 @@ rm ~/bin/ddev
 
 ## Making Changes to DDEV Images
 
-If you need to make a change to one of the DDEV images, it will need to be built with a specific tag that’s updated in `pkg/versionconstants/versionconstants.go`.
-
-For example, make a change to `containers/ddev-webserver/Dockerfile`, then build it:
+If you need to make a change to one of the DDEV images, just edit the files under that image's directory (for example `containers/ddev-webserver/Dockerfile`), then build from the repository root:
 
 ```bash
-cd containers/ddev-webserver
-make VERSION=20210424_fix_dockerfile
-```
-
-Then edit `pkg/versionconstants/versionconstants.go` to set `var WebTag = "20210424_fix_dockerfile"` and
-
-```bash
-cd /workspace/ddev
 make
 ```
 
-`ddev version` should show you that you are using the correct webtag, and [`ddev start`](../users/usage/commands.md#start) will show it.
+`make` detects that the image's own content changed, builds it locally for your host architecture, and automatically rewrites the matching tag (like `WebTag`) in `pkg/versionconstants/versionconstants.go` — there's no tag to invent and no file to hand-edit. If nothing under `containers/` changed, `make` does nothing extra: no Docker calls, no network access.
+
+This also applies after a rebase or merge — if a base image or shared file changed upstream, `make` detects the mismatch and rebuilds the affected image the same way, even if you didn't edit anything yourself.
+
+External package repositories are not part of an image's content hash. To
+rebuild `ddev-webserver` against updated external dependencies, bump
+`EXTERNAL_DEPENDENCIES_REFRESH` in its `Dockerfile`, then run `make`. This
+invalidates the base package-install layer and gives the rebuilt image a new
+tag.
+
+`ddev version` should show you that you are using the freshly built tag, and [`ddev start`](../users/usage/commands.md#start) will use the local image without pulling.
+
+Run `make print-image-tags` at any time to see the tag each image would currently use, whether or not it's actually been built yet — this is the value to use with the GitHub Actions push workflows described below if you need the image pushed to the registry.
+
+`containers/ddev-dbserver` is a special case: one tag (`BaseDBTag`) covers many db type/version combinations, so `make` only builds the default variant (currently `mariadb_11.8`) locally. To build a different db type/version after changing `containers/ddev-dbserver`, build it manually using the tag `make print-image-tags` reports:
+
+```bash
+cd containers/ddev-dbserver
+make mysql_8.0_amd64 VERSION=<tag-from-print-image-tags>
+```
 
 ## Docker Image Changes
 
-If you make changes to a Docker image (like `ddev-webserver`), it won’t have any effect unless you:
+Running `make` at the repository root (above) already builds a changed image locally and updates `pkg/versionconstants/versionconstants.go` for you. To make that same build available to CI or other developers, it also needs to be pushed to the registry:
 
-* Push an image with a specific tag by navigating to the image directory (like `containers/ddev-webserver`), and running `make push DOCKER_REPO=youruser/yourimage VERSION=<branchname>`.
+* Get the exact tag `make` used, with `make print-image-tags` (or read it straight out of `pkg/versionconstants/versionconstants.go` after running `make`).
+* Push an image with that tag by navigating to the image directory (like `containers/ddev-webserver`), and running `make push DOCKER_REPO=youruser/yourimage VERSION=<tag>`.
 * Multi-arch images require you to have a Buildx builder, so `docker buildx use multi-arch-builder || docker buildx create --name multi-arch-builder --use`.
 * You can’t push until you `docker login`.
-* Push a container to hub.docker.com. Push with the tag that matches your branch. Push to `<yourorg>/ddev-webserver` repository with `make push DOCKER_ORG=<yourorg> VERSION=<branchname>` **in the container directory**. You might have to use other techniques to push to another repository.
-* Update `pkg/versionconstants/versionconstants.go` with the `WebImg` and `WebTag` that relate to the Docker image you pushed.
+* Push a container to hub.docker.com with that same tag. Push to `<yourorg>/ddev-webserver` repository with `make push DOCKER_ORG=<yourorg> VERSION=<tag>` **in the container directory**. You might have to use other techniques to push to another repository.
 
 ### Local Builds and Pushes
 
@@ -132,8 +157,8 @@ To use `buildx` successfully you have to have the [`buildx` Docker plugin](https
 
 To build multi-platform images you must `docker buildx use multi-arch-builder || docker buildx create --name multi-arch-builder --use` as a one-time initialization.
 
-* If you want to work locally with a quick build for your architecture, you can:
-    * `make VERSION=<version>`
+* Running `make` from the repository root already does a quick local build of any changed image for your host architecture (see [Making Changes to DDEV Images](#making-changes-to-ddev-images) above). To build a specific image or db type/version directly instead, you can still:
+    * `cd containers/<image>` then `make VERSION=<version>`
     * for `ddev-dbserver`: `make mariadb_10.3 VERSION=<version>` etc.
 
 * To push manually:
@@ -152,6 +177,8 @@ make push VERSION=<tag> DOCKER_REPO=your/dockerrepo
 
 ### Pushes Using GitHub Actions
 
+Normally the [Image build](https://github.com/ddev/ddev/actions/workflows/image-build-push.yml) workflow (see [Automatic Image Build and Push](#automatic-image-build-and-push)) handles pushing a changed image automatically for any pull request, including forks. The workflows below are for manually pushing a specific tag — a re-push, or one of the `ddev-dbserver` variants other than the default `mariadb_11.8` that `make` auto-builds.
+
 To manually push using GitHub Actions,
 
 #### For Most Images
@@ -168,7 +195,7 @@ To manually push using GitHub Actions,
 
 ## Instrumentation
 
-The instrumentation implementation is generated using the [Ampli Codegen](https://www.docs.developers.amplitude.com/data/sdks/go/ampli/).
+The [instrumentation](../users/usage/diagnostics.md) implementation is generated using the [Ampli Codegen](https://www.docs.developers.amplitude.com/data/sdks/go/ampli/).
 
 To synchronize the implementation with the latest changes at Amplitude, the CLI
 tool has to be installed locally:
@@ -281,6 +308,12 @@ Use `GOTEST_SHORT=true` to run one CMS in each test, or `GOTEST_SHORT=<integer>`
 
 To run a test (in the `cmd` package) against a individually-compiled DDEV binary, set the `DDEV_BINARY_FULLPATH` environment variable, for example `DDEV_BINARY_FULLPATH=$PWD/.gotmp/bin/linux_amd64/ddev make testcmd`.
 
+To run all tests in a specific package, use `make testonepkg TESTPKG=./pkg/dockerutil`. Combine with `TESTARGS` to filter further, for example `make testonepkg TESTPKG=./pkg/dockerutil TESTARGS="-run TestDockerUtils"`.
+
+To run all tests defined in a single `_test.go` file, use `make testonefile TESTFILE=./cmd/ddev/cmd/utility-tls-diagnose_test.go`. This automatically extracts the test function names from the file and builds the `-run` pattern.
+
+When triggering a custom Buildkite or GitHub Actions run, the same targets are available via environment variables: set `MAKE_TARGET=testonepkg` with `TESTPKG=./pkg/dockerutil`, or `MAKE_TARGET=testonefile` with `TESTFILE=./cmd/ddev/cmd/utility-tls-diagnose_test.go`.
+
 The easiest way to run tests is using GoLand (or VS Code) with their built-in test runners and debuggers. You can step through a specific test; you can stop at the point before the failure and experiment with the site that the test has set up.
 
 ## Automated Testing
@@ -293,14 +326,87 @@ The Buildkite automated tests require special access, which we typically grant t
 
 The Docker images that DDEV uses are included in the `containers/` directory:
 
-* `containers/ddev-php-base` the base build for `ddev-webserver`.
 * `containers/ddev-webserver` provides the web servers for per-project `web` containers.
 * `containers/ddev-dbserver` provides the `db` container for per-project databases.
 * `containers/ddev-ssh-agent` provides a single in-Docker-network SSH agent so projects can use your SSH keys.
 * `containers/ddev-traefik-router` is the current Traefik-based router image.
 * `containers/ddev-xhgui` provides a web interface to analyze performance profiles generated by xhprof.
 
-When changes are made to an image, they have to be temporarily pushed to a tag—ideally with the same as the branch name of the PR—and the tag updated in `pkg/versionconstants/versionconstants.go`. Please ask if you need a container pushed to support a pull request.
+When you change an image, running `make` from the repository root builds it locally and computes/updates its tag in `pkg/versionconstants/versionconstants.go` automatically — no manual tag-inventing or file-editing needed, and this works for any contributor, including from a fork. If you'd rather leave the build to CI, `make retag-images` writes the same tags without running Docker at all; the tags it writes then name images that exist nowhere until the pull request's push completes, so `ddev start` won't work until then. Once you push that commit as a pull request, the [Image build](https://github.com/ddev/ddev/actions/workflows/image-build-push.yml) workflow detects the changed image and builds and pushes it to the registry automatically — no maintainer needs to run anything by hand. See [Automatic Image Build and Push](#automatic-image-build-and-push) below for when that requires a maintainer's approval and when it doesn't.
+
+### Automatic Image Build and Push
+
+An image's tag is the bare content hash of the files it's built from — `ddev/ddev-webserver:36bceca65e`, with no branch prefix. The same content therefore resolves to the same tag no matter which branch, fork, or Docker Hub organization published it, which is what lets `make`, the CI detector, and every test runner agree without coordinating. `versionconstants.go` records the branch alongside it, both as a trailing comment and as a `WebTagBranch`-style variable that `ddev version` shows, and each push also publishes a readable `<branch>-<hash>` alias pointing at the same manifest.
+
+Opening a pull request that touches `containers/` triggers the [Image build](https://github.com/ddev/ddev/actions/workflows/image-build-push.yml) workflow. A `detect` job always runs first: it recomputes each image's content hash and checks whether that tag is already in the registry. If it is, there's nothing to build — so a pull request that touches `containers/` without changing an image costs one registry lookup per image and no build.
+
+The same resolution drives `containers/wait-for-images.sh`, which every test runner calls before pulling anything: it waits only for tags this commit will pull, and doesn't wait at all for an image whose content changed, since `make` builds that one locally on the runner.
+
+Changing `containers/ddev-dbserver` is the one case where `make` alone isn't enough. Every database variant shares a single `BaseDBTag`, so a dbserver change moves the tag for all 20 of them at once, while `make` only builds the default `mariadb_11.8` locally — the other 19 can only come from the registry. CI builds and pushes the whole matrix (36 jobs, from `containers/ddev-dbserver/variants.txt`), so **run `make` and commit the `versionconstants.go` change**; `wait-for-images.sh` stops the test run with that instruction if you don't.
+
+What happens next depends on whether the PR is from a fork:
+
+* **Fork PRs** (security boundary — the PR could contain an arbitrary Dockerfile/build script) **from someone without push access**: as soon as `detect` finds an image to build, an `approve` job asks a maintainer to sign off on the `image-push` environment, before anything is built. Once approved, a `build` job builds the image(s) per architecture with no registry credentials at all — nothing in that job can reach `docker.io`, so there's nothing to gain by gating it after the fact instead of before. A separate, trusted `image-push.yml` workflow — which never checks out or runs the pull request's code — then loads what `build` produced and pushes it, re-validating both the tag and every repository name first (`containers/validate-image-tag.sh`, `containers/validate-image-repo.sh`) so the earlier approval can only ever publish a hash-shaped tag under a known DDEV repository. A comment is posted on the PR once the push completes. If `detect` found nothing to build, no approval is requested at all.
+* **Fork PRs from a maintainer's own fork** (`author_association` is `OWNER`, `MEMBER`, or `COLLABORATOR`): the same fork-safe `build` / `image-push.yml` split runs, but the `approve` job is skipped — they already have push access, so there's nothing to ask permission for.
+* **Everything else** (a push to `main`, or a pull request from a branch in the same repository — no fork content is ever involved): `build-and-push` builds and pushes directly in one step, with no approval gate at all — the same trust level `main-build.yml` already runs at unguarded. A `create-manifests` job then assembles the multi-arch manifest and comments on the PR, if there is one.
+
+So a maintainer only ever needs to click **Approve** once — as soon as a fork PR without push access changes a container image — and only that once; everything else is fully automatic.
+
+### Cleaning Up Unused Image Tags
+
+Every image change pushes new tags to Docker Hub, and most are only useful until the release that follows. `containers/image-tag-cleanup.sh` finds the tags nothing uses any more and, only when told to with `--execute`, deletes them. The [Image tag cleanup](https://github.com/ddev/ddev/actions/workflows/image-tag-cleanup.yml) workflow runs the same script.
+
+#### What counts as unused
+
+A tag is a candidate for deletion only when all of these hold:
+
+* It has a shape that CI or a branch build produces: a bare hash, a `<branch>-<hash>` alias, a date-prefixed branch tag like `20250612_stasadev_rebuild_images`, or a leftover `-amd64`/`-arm64` tag. Release tags, `latest`, and anything unrecognized are never candidates.
+* It isn't named in a version file (`pkg/versionconstants/versionconstants.go`, or `pkg/version/version.go` for older releases) at any `v*` release tag, at the head of any open pull request, or on the main branch within the last 90 days (`--keep-main-branch-days`).
+* It was pushed more than 90 days ago (`--older-than-days`) and hasn't been pulled in the last 30 days (`--not-pulled-for-days`).
+* No kept tag points at the same manifest.
+
+A deleted tag that a pull request later needs is pushed again by that pull request's next image build, so the worst case is one rebuild.
+
+#### From the command line
+
+Run these from a checkout of ddev/ddev with the release tags fetched (`git fetch upstream --tags`) and [`gh`](https://cli.github.com/) logged in. The default run deletes nothing and lists what it would:
+
+```bash
+containers/image-tag-cleanup.sh
+```
+
+To include tags that were pulled recently, or only recently pushed ones, change the two rules:
+
+```bash
+containers/image-tag-cleanup.sh --older-than-days 10 --not-pulled-for-days 0
+```
+
+To see why each tag was kept or listed, write the decisions to a file:
+
+```bash
+containers/image-tag-cleanup.sh --decisions ~/tmp/decisions.tsv
+```
+
+To delete, set the credentials and add `--execute`. It asks before deleting. `--limit` deletes only the first few candidates, which is the way to try it on a small batch first:
+
+```bash
+export DOCKERHUB_USERNAME=<user> DOCKERHUB_TOKEN=<token>
+containers/image-tag-cleanup.sh --limit 5 --execute
+```
+
+Every flag can be written `--flag value` or `--flag=value`, and `--help` lists them all. `--max-delete` refuses lists longer than its value (default 1000), and `--docker-org` chooses the Docker Hub organization (default `ddev`). The three steps also run alone, each with its own `--help`: `image-tag-keep-set.sh` lists the tags to keep, `image-tag-cleanup-candidates.sh` lists the tags that can go, and `delete-image-tags.sh` deletes the tags it is given, after checking that each is still a candidate.
+
+#### From GitHub
+
+The workflow has two jobs. `report` runs every Monday, and on demand with no inputs. It needs no credentials and only lists candidates: the run summary shows the counts and the list, and the `image-tag-cleanup-report` artifact holds every tag's decision in `decisions.tsv`.
+
+`delete` runs only when started by hand from `main` with `tags` or `report_run_id`. The `image-tag-cleanup` environment must approve it, and it deletes only if `execute` is checked, so an unchecked run is a dry run:
+
+1. Run the workflow with every input empty, and read the report.
+2. Run it with `report_run_id` set to that run's ID, `execute` unchecked, and approve. The log shows `would delete …` for each tag.
+3. Run it again with the same `report_run_id` and `execute` checked, and approve. To delete only some tags, set `tags` to a list of `<org>/<repo>:<tag>` entries instead.
+
+Before deleting, the job recomputes the candidates, and if any requested tag is no longer a candidate, it deletes nothing. The repository variables `CLEANUP_OLDER_THAN_DAYS` and `CLEANUP_NOT_PULLED_FOR_DAYS` change the two rules for the workflow, and `DOCKER_ORG` chooses the Docker Hub organization (ddev-test uses `ddevhq` on its own).
 
 ## Pull Requests
 
@@ -325,7 +431,9 @@ We have very precise rules over how our PR titles (and thus main-branch commits)
 
 The pull request title must follow this convention which is based on the [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) specification:
 
-`<type>[optional scope][optional !]: <description>[, fixes #<issue>][, for #<issue>]`
+```
+<type>[optional scope][optional !]: <description>[, fixes #<issue>][, for #<issue>]
+```
 
 #### Examples
 

@@ -26,14 +26,16 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"sync"
 
 	"github.com/compose-spec/compose-go/v2/dotenv"
 	"github.com/compose-spec/compose-go/v2/errdefs"
 	"github.com/compose-spec/compose-go/v2/utils"
 	"github.com/distribution/reference"
 	godigest "github.com/opencontainers/go-digest"
-	"go.yaml.in/yaml/v3"
+	"go.yaml.in/yaml/v4"
 	"golang.org/x/sync/errgroup"
+	"golang.org/x/sync/singleflight"
 )
 
 // Project is the result of loading a set of compose files
@@ -43,6 +45,7 @@ type Project struct {
 	Name       string     `yaml:"name,omitempty" json:"name,omitempty"`
 	WorkingDir string     `yaml:"-" json:"-"`
 	Services   Services   `yaml:"services" json:"services"`
+	Jobs       Jobs       `yaml:"jobs,omitempty" json:"jobs,omitempty"`
 	Networks   Networks   `yaml:"networks,omitempty" json:"networks,omitempty"`
 	Volumes    Volumes    `yaml:"volumes,omitempty" json:"volumes,omitempty"`
 	Secrets    Secrets    `yaml:"secrets,omitempty" json:"secrets,omitempty"`
@@ -55,7 +58,9 @@ type Project struct {
 
 	// DisabledServices track services which have been disable as profile is not active
 	DisabledServices Services `yaml:"-" json:"-"`
-	Profiles         []string `yaml:"-" json:"-"`
+	// DisabledJobs track jobs which have been disabled as profile is not active
+	DisabledJobs Jobs     `yaml:"-" json:"-"`
+	Profiles     []string `yaml:"-" json:"-"`
 }
 
 // ServiceNames return names for all services in this Compose config
@@ -261,6 +266,18 @@ func (p *Project) AllServices() Services {
 	return all
 }
 
+// AllJobs returns all the project jobs, enabled or not
+func (p *Project) AllJobs() Jobs {
+	all := Jobs{}
+	for name, job := range p.Jobs {
+		all[name] = job
+	}
+	for name, job := range p.DisabledJobs {
+		all[name] = job
+	}
+	return all
+}
+
 type ServiceFunc func(name string, service *ServiceConfig) error
 
 // ForEachService runs ServiceFunc on each service and dependencies according to DependencyPolicy
@@ -364,14 +381,23 @@ func (p *Project) RelativePath(path string) string {
 
 // HasProfile return true if service has no profile declared or has at least one profile matching
 func (s ServiceConfig) HasProfile(profiles []string) bool {
-	if len(s.Profiles) == 0 {
+	return matchesProfiles(s.Profiles, profiles)
+}
+
+// HasProfile return true if job has no profile declared or has at least one profile matching
+func (j JobConfig) HasProfile(profiles []string) bool {
+	return matchesProfiles(j.Profiles, profiles)
+}
+
+func matchesProfiles(declared, active []string) bool {
+	if len(declared) == 0 {
 		return true
 	}
-	for _, p := range profiles {
+	for _, p := range active {
 		if p == "*" {
 			return true
 		}
-		for _, sp := range s.Profiles {
+		for _, sp := range declared {
 			if sp == p {
 				return true
 			}
@@ -395,6 +421,21 @@ func (p *Project) WithProfiles(profiles []string) (*Project, error) {
 	}
 	newProject.Services = enabled
 	newProject.DisabledServices = disabled
+
+	if newProject.Jobs != nil || newProject.DisabledJobs != nil {
+		enabledJobs := Jobs{}
+		disabledJobs := Jobs{}
+		for name, job := range newProject.AllJobs() {
+			if job.HasProfile(profiles) {
+				enabledJobs[name] = job
+			} else {
+				disabledJobs[name] = job
+			}
+		}
+		newProject.Jobs = enabledJobs
+		newProject.DisabledJobs = disabledJobs
+	}
+
 	newProject.Profiles = profiles
 	return newProject, nil
 }
@@ -549,6 +590,84 @@ func (p *Project) WithSelectedServices(names []string, options ...DependencyOpti
 	return newProject, nil
 }
 
+// WithoutUnresolvedOptionalDependencies removes from services any optional (required: false)
+// depends_on reference to a service absent from the model — typically disabled by an inactive
+// profile or dropped by service selection. Required references are deliberately kept, so
+// consumers can detect them and report a meaningful error.
+// It returns a new Project instance with the changes and keep the original Project unchanged
+func (p *Project) WithoutUnresolvedOptionalDependencies() *Project {
+	newProject := p.deepCopy()
+	for name, s := range newProject.Services {
+		for dep, cfg := range s.DependsOn {
+			if _, ok := newProject.Services[dep]; !ok && !cfg.Required {
+				delete(s.DependsOn, dep)
+			}
+		}
+		newProject.Services[name] = s
+	}
+	return newProject
+}
+
+// WithSelectedJob returns a new Project containing only the services required
+// by the named job's DependsOn. The job itself is NOT added to Services.
+func (p *Project) WithSelectedJob(name string, options ...DependencyOption) (*Project, error) {
+	job, ok := p.Jobs[name]
+	if !ok {
+		if disabled, exists := p.DisabledJobs[name]; exists {
+			// a profile-disabled job is enabled when explicitly selected,
+			// and its profiles are added to the set of active profiles
+			enabled, err := p.WithProfiles(append(append([]string{}, p.Profiles...), disabled.Profiles...))
+			if err != nil {
+				return nil, err
+			}
+			return enabled.WithSelectedJob(name, options...)
+		}
+		return nil, fmt.Errorf("no such job: %s", name)
+	}
+
+	// a job may depend on another job: walk depends_on transitively to
+	// collect the actual services required to run the selected job. Jobs are
+	// looked up enabled or not — a profile-disabled dependency is still a
+	// job, and treating its name as a service would fail the selection.
+	deps := resolveJobServiceDeps(p.AllJobs(), job, map[string]bool{name: true})
+	sort.Strings(deps)
+
+	if len(deps) == 0 {
+		// Job has no service dependencies: return project with all services disabled
+		newProject := p.deepCopy()
+		for name := range newProject.Services {
+			newProject = newProject.WithServicesDisabled(name)
+		}
+		return newProject, nil
+	}
+
+	return p.WithSelectedServices(deps, options...)
+}
+
+// resolveJobServiceDeps walks a job's DependsOn, following job-typed
+// dependencies transitively, and returns the names of the actual services
+// required to run it. jobs is the full job set (see AllJobs), so a
+// profile-disabled job in the chain is followed like an enabled one. A
+// dependency name matching a job takes precedence over a same-named service
+// — jobs and services share the depends_on namespace, and a job reference is
+// resolved first. seen guards against dependency cycles between jobs and
+// must contain the starting job's name.
+func resolveJobServiceDeps(jobs Jobs, job JobConfig, seen map[string]bool) []string {
+	var services []string
+	for dep := range job.DependsOn {
+		if seen[dep] {
+			continue
+		}
+		seen[dep] = true
+		if depJob, ok := jobs[dep]; ok {
+			services = append(services, resolveJobServiceDeps(jobs, depJob, seen)...)
+			continue
+		}
+		services = append(services, dep)
+	}
+	return services
+}
+
 // WithServicesDisabled removes from the project model the given services and their references in all dependencies
 // It returns a new Project instance with the changes and keep the original Project unchanged
 func (p *Project) WithServicesDisabled(names ...string) *Project {
@@ -576,31 +695,97 @@ func (p *Project) WithServicesDisabled(names ...string) *Project {
 }
 
 // WithImagesResolved updates services images to include digest computed by a resolver function
-// It returns a new Project instance with the changes and keep the original Project unchanged
+// It returns a new Project instance with the changes and keep the original Project unchanged.
+// Besides the service image, this also resolves the images services depend on:
+//   - pre_start hook images, which run as ephemeral init containers with their own image
+//   - `type: image` volume sources — source is always a docker image reference, not
+//     a reference to another service (there is no such thing in the Compose Spec)
 func (p *Project) WithImagesResolved(resolver func(named reference.Named) (godigest.Digest, error)) (*Project, error) {
-	return p.WithServicesTransform(func(_ string, service ServiceConfig) (ServiceConfig, error) {
-		if service.Image == "" {
-			return service, nil
+	// Deduplicate resolutions per raw image string across the whole call, on two axes:
+	//   - cache (sync.Map) memoizes results for the whole call, so images resolved at
+	//     different times — e.g. a hook or volume source equal to service.Image, resolved
+	//     sequentially within the same service — are resolved once.
+	//   - singleflight collapses concurrent resolutions of the same image (transforms run
+	//     one goroutine per service) into a single call before it reaches the cache.
+	// Neither alone suffices: the cache lets a concurrent burst miss simultaneously and
+	// all resolve, while singleflight forgets a key as soon as its call returns.
+	var (
+		cache sync.Map // map[string]string
+		group singleflight.Group
+	)
+	resolve := func(image string) (string, error) {
+		if r, ok := cache.Load(image); ok {
+			return r.(string), nil
 		}
-		named, err := reference.ParseDockerRef(service.Image)
+		r, err, _ := group.Do(image, func() (any, error) {
+			if r, ok := cache.Load(image); ok {
+				return r, nil
+			}
+			r, err := resolveImageDigest(image, resolver)
+			if err != nil {
+				return image, err
+			}
+			cache.Store(image, r)
+			return r, nil
+		})
+		if err != nil {
+			return image, err
+		}
+		return r.(string), nil
+	}
+	return p.WithServicesTransform(func(_ string, service ServiceConfig) (ServiceConfig, error) {
+		image, err := resolve(service.Image)
 		if err != nil {
 			return service, err
 		}
+		service.Image = image
 
-		if _, ok := named.(reference.Canonical); !ok {
-			// image is named but not digested reference
-			digest, err := resolver(named)
+		for i, hook := range service.PreStart {
+			image, err := resolve(hook.Image)
 			if err != nil {
 				return service, err
 			}
-			named, err = reference.WithDigest(named, digest)
-			if err != nil {
-				return service, err
-			}
+			service.PreStart[i].Image = image
 		}
-		service.Image = named.String()
+
+		for i, vol := range service.Volumes {
+			if vol.Type != VolumeTypeImage {
+				continue
+			}
+			image, err := resolve(vol.Source)
+			if err != nil {
+				return service, err
+			}
+			service.Volumes[i].Source = image
+		}
 		return service, nil
 	})
+}
+
+// resolveImageDigest returns image with its digest resolved by resolver, unless
+// it is empty or already a canonical (digested) reference, in which case it is
+// returned unchanged.
+func resolveImageDigest(image string, resolver func(named reference.Named) (godigest.Digest, error)) (string, error) {
+	if image == "" {
+		return image, nil
+	}
+	named, err := reference.ParseDockerRef(image)
+	if err != nil {
+		return image, err
+	}
+
+	if _, ok := named.(reference.Canonical); !ok {
+		// image is named but not digested reference
+		digest, err := resolver(named)
+		if err != nil {
+			return image, err
+		}
+		named, err = reference.WithDigest(named, digest)
+		if err != nil {
+			return image, err
+		}
+	}
+	return named.String(), nil
 }
 
 type marshallOptions struct {
@@ -665,83 +850,123 @@ func (p *Project) MarshalJSON(options ...func(*marshallOptions)) ([]byte, error)
 	if len(src.Configs) > 0 {
 		m["configs"] = src.Configs
 	}
+	if len(src.Jobs) > 0 {
+		m["jobs"] = src.Jobs
+	}
 	for k, v := range src.Extensions {
 		m[k] = v
 	}
 	return json.MarshalIndent(m, "", "  ")
 }
 
-// WithServicesEnvironmentResolved parses env_files set for services to resolve the actual environment map for services
+// WithServicesEnvironmentResolved parses env_files set for services, and for their pre_start hooks, to resolve
+// the actual environment map for services and hooks
 // It returns a new Project instance with the changes and keep the original Project unchanged
 func (p Project) WithServicesEnvironmentResolved(discardEnvFiles bool) (*Project, error) {
 	newProject := p.deepCopy()
 	for i, service := range newProject.Services {
-		service.Environment = service.Environment.Resolve(newProject.Environment.Resolve)
-
-		environment := service.Environment.ToMapping()
-		for _, envFile := range service.EnvFiles {
-			err := loadEnvFile(envFile, environment, func(k string) (string, bool) {
-				// project.env has precedence doing interpolation
-				if resolve, ok := p.Environment.Resolve(k); ok {
-					return resolve, true
-				}
-				// then service.environment
-				if s, ok := service.Environment[k]; ok && s != nil {
-					return *s, true
-				}
-				return "", false
-			})
-			if err != nil {
+		if err := resolveEnvironment(&service.ContainerSpec, newProject.Environment, discardEnvFiles); err != nil {
+			return nil, err
+		}
+		// pre_start hooks inherit the service environment and env_files at load time, so each one carries
+		// the merged declarations and has to be resolved exactly like a service
+		for j := range service.PreStart {
+			if len(service.PreStart[j].Environment) == 0 && len(service.PreStart[j].EnvFiles) == 0 {
+				continue
+			}
+			if err := resolveEnvironment(&service.PreStart[j].ContainerSpec, newProject.Environment, discardEnvFiles); err != nil {
 				return nil, err
 			}
-		}
-
-		service.Environment = environment.ToMappingWithEquals().OverrideBy(service.Environment)
-
-		if discardEnvFiles {
-			service.EnvFiles = nil
 		}
 		newProject.Services[i] = service
 	}
 	return newProject, nil
 }
 
-// WithServicesLabelsResolved parses label_files set for services to resolve the actual label map for services
+// resolveEnvironment resolves the environment of a container specification: values without a value are looked up
+// in the project environment, then env_files are loaded and overridden by the explicit environment
+func resolveEnvironment(spec *ContainerSpec, projectEnv Mapping, discardEnvFiles bool) error {
+	spec.Environment = spec.Environment.Resolve(projectEnv.Resolve)
+
+	environment := spec.Environment.ToMapping()
+	for _, envFile := range spec.EnvFiles {
+		err := loadEnvFile(envFile, environment, func(k string) (string, bool) {
+			// project.env has precedence doing interpolation
+			if resolve, ok := projectEnv.Resolve(k); ok {
+				return resolve, true
+			}
+			// then service.environment
+			if s, ok := spec.Environment[k]; ok && s != nil {
+				return *s, true
+			}
+			return "", false
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	spec.Environment = environment.ToMappingWithEquals().OverrideBy(spec.Environment)
+
+	if discardEnvFiles {
+		spec.EnvFiles = nil
+	}
+	return nil
+}
+
+// WithServicesLabelsResolved parses label_files set for services, and for their pre_start hooks, to resolve
+// the actual label map for services and hooks
 // It returns a new Project instance with the changes and keep the original Project unchanged
 func (p Project) WithServicesLabelsResolved(discardLabelFiles bool) (*Project, error) {
 	newProject := p.deepCopy()
 	for i, service := range newProject.Services {
-		labels := MappingWithEquals{}
-		// resolve variables based on other files we already parsed
-		var resolve dotenv.LookupFn = func(s string) (string, bool) {
-			v, ok := labels[s]
-			if ok && v != nil {
-				return *v, ok
-			}
-			return "", false
+		if err := resolveLabels(&service.ContainerSpec, discardLabelFiles); err != nil {
+			return nil, err
 		}
-
-		for _, labelFile := range service.LabelFiles {
-			vars, err := loadLabelFile(labelFile, resolve)
-			if err != nil {
+		// pre_start hooks inherit the service labels and label_files at load time, so each one carries
+		// the merged declarations and has to be resolved exactly like a service
+		for j := range service.PreStart {
+			if err := resolveLabels(&service.PreStart[j].ContainerSpec, discardLabelFiles); err != nil {
 				return nil, err
 			}
-			labels.OverrideBy(vars.ToMappingWithEquals())
-		}
-
-		labels = labels.OverrideBy(service.Labels.ToMappingWithEquals())
-		if len(labels) == 0 {
-			labels = nil
-		} else {
-			service.Labels = NewLabelsFromMappingWithEquals(labels)
-		}
-
-		if discardLabelFiles {
-			service.LabelFiles = nil
 		}
 		newProject.Services[i] = service
 	}
 	return newProject, nil
+}
+
+// resolveLabels resolves the labels of a container specification: label_files are loaded and overridden by the
+// explicit labels
+func resolveLabels(spec *ContainerSpec, discardLabelFiles bool) error {
+	labels := MappingWithEquals{}
+	// resolve variables based on other files we already parsed
+	var resolve dotenv.LookupFn = func(s string) (string, bool) {
+		v, ok := labels[s]
+		if ok && v != nil {
+			return *v, ok
+		}
+		return "", false
+	}
+
+	for _, labelFile := range spec.LabelFiles {
+		vars, err := loadLabelFile(labelFile, resolve)
+		if err != nil {
+			return err
+		}
+		labels.OverrideBy(vars.ToMappingWithEquals())
+	}
+
+	labels = labels.OverrideBy(spec.Labels.ToMappingWithEquals())
+	if len(labels) == 0 {
+		labels = nil
+	} else {
+		spec.Labels = NewLabelsFromMappingWithEquals(labels)
+	}
+
+	if discardLabelFiles {
+		spec.LabelFiles = nil
+	}
+	return nil
 }
 
 func loadEnvFile(envFile EnvFile, environment Mapping, resolve dotenv.LookupFn) error {
@@ -794,6 +1019,7 @@ func (p *Project) WithServicesTransform(fn func(name string, s ServiceConfig) (S
 	expect := len(p.Services)
 	resultCh := make(chan result, expect)
 	newProject := p.deepCopy()
+	services := newProject.Services
 
 	eg, ctx := errgroup.WithContext(context.Background())
 	eg.Go(func() error {
@@ -811,7 +1037,7 @@ func (p *Project) WithServicesTransform(fn func(name string, s ServiceConfig) (S
 		newProject.Services = s
 		return nil
 	})
-	for n, s := range newProject.Services {
+	for n, s := range services {
 		name := n
 		service := s
 		eg.Go(func() error {

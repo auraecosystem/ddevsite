@@ -14,8 +14,9 @@ import (
 
 // DiagnoseCmd implements the ddev utility diagnose command
 var DiagnoseCmd = &cobra.Command{
-	Use:   "diagnose",
-	Short: "Diagnose common DDEV issues with concise, actionable output",
+	Use:         "diagnose",
+	Annotations: map[string]string{NoDockerCommand: "true"},
+	Short:       "Diagnose common DDEV issues with concise, actionable output",
 	Long: `Run quick diagnostics on your DDEV installation and current project.
 This command checks:
 - Docker environment and connectivity
@@ -74,6 +75,6 @@ DDEV_DIAGNOSE_FULL=true ddev utility diagnose  # Include test project creation`,
 	},
 }
 
-func init() {
+func registerUtilityDiagnoseCmd() {
 	DebugCmd.AddCommand(DiagnoseCmd)
 }
