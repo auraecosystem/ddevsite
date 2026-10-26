@@ -1,3 +1,6 @@
+// FIXME(thaJeztah): remove once we are a module; the go:build directive prevents go from downgrading language version to go1.16:
+//go:build go1.26
+
 package opts
 
 import (
@@ -7,6 +10,8 @@ import (
 	"math/big"
 	"net"
 	"path"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/docker/cli/internal/lazyregexp"
@@ -104,12 +109,7 @@ func (opts *ListOpts) GetAllOrEmpty() []string {
 
 // Get checks the existence of the specified key.
 func (opts *ListOpts) Get(key string) bool {
-	for _, k := range *opts.values {
-		if k == key {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(*opts.values, key)
 }
 
 // Len returns the amount of element in the slice.
@@ -477,4 +477,40 @@ func (m *MemSwapBytes) String() string {
 func (m *MemSwapBytes) UnmarshalJSON(s []byte) error {
 	b := MemBytes(*m)
 	return b.UnmarshalJSON(s)
+}
+
+// UmaskOpt is a type for umask values in octal format
+type UmaskOpt struct {
+	ptr *uint32
+}
+
+// Set sets the value of the UmaskOpt by passing a string in octal format
+func (u *UmaskOpt) Set(s string) error {
+	v, err := strconv.ParseUint(s, 8, 32)
+	if err != nil {
+		return err
+	}
+	if u.ptr == nil {
+		u.ptr = new(uint32)
+	}
+	*u.ptr = uint32(v)
+	return nil
+}
+
+// Type returns the type
+func (*UmaskOpt) Type() string {
+	return "umask"
+}
+
+// Value returns the uint32 ptr
+func (u *UmaskOpt) Value() *uint32 {
+	return u.ptr
+}
+
+// String returns the umask value in octal format, or "<nil>" if the pointer is nil.
+func (u *UmaskOpt) String() string {
+	if u.ptr == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("%#04o", uint64(*u.ptr))
 }

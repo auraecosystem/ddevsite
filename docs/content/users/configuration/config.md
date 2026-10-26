@@ -33,9 +33,11 @@ You can hand-edit the YAML files DDEV creates for you after running [`ddev confi
 
 ### Environmental Overrides
 
-You can override the per-project `config.yaml` with files named `config.*.yaml`, and files like this are often created by [DDEV add-ons](../extend/additional-services.md). For example, `config.elasticsearch.yaml` in [Elasticsearch add-on](https://github.com/ddev/ddev-elasticsearch) adds additional configuration related to Elasticsearch.
+You can override the per-project `config.yaml` with files named `config.*.yaml`, and files like this are often created by [DDEV add-ons](../extend/additional-services.md). For example, `config.python2.yaml` in [Python 2 add-on](https://github.com/ddev/ddev-python2) adds additional configuration related to Python 2.
 
 Many teams use `config.local.yaml` for configuration that is specific to one environment, and not checked into the team’s default `config.yaml`. For example, you might enable `performance_mode: mutagen` only on your machine. Or you could use a different database type. The file `config.local.yaml` is gitignored by default.
+
+The global `$HOME/.ddev/global_config.yaml` can be extended the same way with `global_config.*.yaml` files in `$HOME/.ddev`, which is useful for keeping machine-specific or team-distributed settings out of the file DDEV rewrites.
 
 For examples, see the [Extending and Customizing Environments](../extend/customization-extendibility.md#extending-configyaml-with-custom-configyaml-files) page.
 
@@ -92,7 +94,20 @@ Composer version for the web container and the [`ddev composer`](../usage/comman
 
 | Type | Default | Usage
 | -- | -- | --
-| :octicons-file-directory-16: project | `2` | Can be `2`, `1`, or empty (`""`) for latest major version at container build time.<br><br>Can also be a minor version like `2.2` for the latest release of that branch, an explicit version like `1.0.22`, or a keyword like `stable`, `preview` or `snapshot`. See Composer documentation.
+| :octicons-file-directory-16: project | `2` | Can be `2` or empty (`""`) for latest major version at container build time.<br><br>Can also be the LTS version `2.2` (there's no other `2.x` LTS), an explicit version like `2.9.3`, or a keyword like `stable`, `preview` or `snapshot`. See [Composer documentation](https://getcomposer.org/doc/03-cli.md#self-update-selfupdate).
+
+!!!warning "Composer version is cached at container build time"
+    DDEV installs Composer at container build time and caches it. If you use a non-specific version like `2`, `2.2`, `""` (empty), or `stable`, DDEV installs the latest available version in that range at build time.
+
+    The next update of Composer will be done automatically when DDEV is upgraded. If you want to update Composer in the web container before then, [restart](../usage/commands.md#restart) with `--no-cache` or [rebuild](../usage/commands.md#utility-rebuild):
+
+    ```bash
+    ddev restart --no-cache
+    # or
+    ddev utility rebuild
+    ```
+
+    See [Composer Self-Update Changes Do Not Persist](../usage/developer-tools.md#composer-self-update-changes-do-not-persist) for details.
 
 !!!tip "Using `vendor/bin/composer`"
     See the example in [Composer from `vendor/bin/composer`](../usage/developer-tools.md#composer-from-vendorbincomposer).
@@ -105,7 +120,35 @@ Whether to run `corepack enable` on Node.js configuration.
 | -- | -- | --
 | :octicons-file-directory-16: project | `false` | Can be `true` or `false`.
 
-When `true`, `corepack enable` will be executed, making latest `yarn` and `pnpm` package managers available.
+When `true`, `corepack enable` will be executed, making latest `pnpm` and `yarn` package managers available.
+
+Node.js 25 and later no longer include `corepack`. When it is missing, DDEV installs it from npm while building the web image, so that build needs access to the npm registry.
+
+To set a specific version of `pnpm` for a project:
+
+```bash
+ddev config --corepack-enable && ddev restart
+# pnpm@latest requires Node.js 22+
+# use pnpm@latest-10 for Node.js 18 or 20
+ddev exec corepack use pnpm@latest
+ddev exec pnpm --version
+```
+
+To set a specific version of `yarn` for a project:
+
+```bash
+ddev config --corepack-enable && ddev restart
+# yarn@stable is the latest stable release
+# use yarn@4.9.1 to pin exactly
+ddev exec corepack use yarn@stable
+ddev yarn --version
+```
+
+`corepack use` pins the version by setting the `packageManager` field in `package.json`. To clear the global cache, run:
+
+```bash
+ddev exec corepack cache clear
+```
 
 ## `database`
 
@@ -113,7 +156,24 @@ The type and version of the database engine the project should use.
 
 | Type | Default | Usage
 | -- | -- | --
-| :octicons-file-directory-16: project | MariaDB 11.8 | Can be MariaDB 5.5–10.8, 10.11, 11.4, 11.8 and MySQL 5.5–8.0, 8.4, or PostgreSQL 9–18.<br>See [Database Server Types](../extend/database-types.md) for examples and caveats. For very old database types see [Using DDEV to spin up a legacy PHP application](https://ddev.com/blog/legacy-projects-with-unsupported-php-and-mysql-using-ddev/).
+| :octicons-file-directory-16: project | `mariadb:11.8` | The following database types are currently supported:<br>- MariaDB 5.5-10.8, 10.11, 11.4, 11.8, 12.3<br>- MySQL 5.5-8.0, 8.4, 9.7<br>- Postgres 9-18
+
+See [Database Server Types](../extend/database-types.md) for examples (e.g. `ddev config --database=mariadb:11.8`) and caveats (e.g. how to migrate from one database version to another).
+
+!!!tip "For very old database types, see [Using DDEV to spin up a legacy PHP application](https://ddev.com/blog/legacy-projects-with-unsupported-php-and-mysql-using-ddev/)."
+
+## `dbimage`
+
+!!!warning "Proceed with caution"
+    It's unusual to change this option, and we don't recommend it without Docker experience and a good reason. Typically, this means additions to the existing db image using a `.ddev/db-build/Dockerfile.*`.
+
+The Docker image to use for the database server.
+
+| Type | Default | Usage
+| -- | -- | --
+| :octicons-file-directory-16: project | [`ddev/ddev-dbserver`](https://hub.docker.com/u/ddev) | Specify your own image based on the [ddev-dbserver](https://github.com/ddev/ddev/tree/main/containers/ddev-dbserver) image matching your project's `database` type and version.
+
+DDEV images carry a `com.ddev.image-tag` label recording the image tag they were built as, and a derived image inherits it. When a pinned image was built from a different generation of DDEV images than the running DDEV expects, `ddev start` reports it as custom configuration, along with a note showing both tags. That's the signal to rebuild your derived image against the current DDEV images. Images built before the label existed are not reported. See [DDEV Labels on Images](../extend/customizing-images.md#ddev-labels-on-images) for how this differs from `com.ddev.webtag`.
 
 ## `dbimage_extra_packages`
 
@@ -123,7 +183,7 @@ Extra Debian packages for the project’s database container. (This is rarely us
 | -- | -- | --
 | :octicons-file-directory-16: project | `[]` | &zwnj;
 
-Example: `dbimage_extra_packages: ["less"]` will add the `less` package when the database container is built.
+Example: `dbimage_extra_packages: [netcat, telnet, sudo]` will add the `netcat`, `telnet`, and `sudo` packages when the database container is built.
 
 ## `ddev_version_constraint`
 
@@ -151,7 +211,7 @@ Not currently used.
 
 | Type | Default | Usage
 | -- | -- | --
-| :octicons-globe-16: global | `false` | Can `true` or `false`.
+| :octicons-globe-16: global | `false` | Can be `true` or `false`.
 
 ## `disable_settings_management`
 
@@ -172,6 +232,19 @@ Whether to disable the standard warning issued when a project is using `performa
 | :octicons-file-directory-16: project | `false` | Can be `true` or `false`.
 
 When `true`, DDEV will not issue the normal warning on `ddev start`: "You have Mutagen enabled and your 'php' project type doesn't have `upload_dirs` set". See [Mutagen and User-Generated Uploads](../install/performance.md#mutagen-and-user-generated-uploads) for context on why DDEV avoids doing the Mutagen sync on `upload_dirs`.
+
+## `docker_buildx_version`
+
+!!!warning "Advanced Usage"
+    `docker_buildx_version` should only be changed for troubleshooting purposes or if you can't install `docker-buildx` on your system.
+
+Controls which `docker-buildx` plugin DDEV uses.
+
+| Type | Default | Usage
+| -- | -- | --
+| :octicons-globe-16: global | `system` | `system` or a version string like `0.33.0`
+
+When set to `system` (the default), DDEV uses whatever `docker-buildx` is already installed on your system and never downloads anything.
 
 ## `docroot`
 
@@ -195,7 +268,7 @@ DDEV-specific lifecycle [hooks](hooks.md) to be executed.
 
 | Type | Default | Usage
 | -- | -- | --
-| :octicons-file-directory-16: project | `` | &zwnj;
+| :octicons-file-directory-16: project<br>:octicons-globe-16: global | `` | Global hooks in `global_config.yaml` run for every project, see [Global Hooks](hooks.md#global-hooks).
 
 ## `host_db_port`
 
@@ -353,23 +426,13 @@ The URL-friendly name DDEV should use to reference the project.
 | -- | -- | --
 | :octicons-file-directory-16: project | enclosing directory name | Must be unique; no two projects can have the same name. It’s best if this matches the directory name. If this option is omitted, the project will take the name of the enclosing directory. This value may also be set via `ddev config --project-name=<name>`. (The `ddev config` flag is `project-name`, not `name`, see [`ddev config` docs](../usage/commands.md#config).)"
 
-## `ngrok_args`
-
-Extra flags for [configuring ngrok](https://ngrok.com/docs/agent/config) when [sharing projects](../topics/sharing.md) with the [`ddev share`](../usage/commands.md#share) command.
-
-| Type | Default | Usage
-| -- | -- | --
-| :octicons-file-directory-16: project | `` | &zwnj;
-
-Example: `--basic-auth username:pass1234 --domain foo.ngrok-free.app`.
-
 ## `no_bind_mounts`
 
 Whether to not use Docker bind mounts.
 
 | Type | Default | Usage
 | -- | -- | --
-| :octicons-globe-16: global | `false` | Can `true` or `false`.
+| :octicons-globe-16: global | `false` | Can be `true` or `false`.
 
 Some Docker environments (like remote Docker) do not allow bind mounts, so when `true` this turns those off, turns on Mutagen, and uses volume copies to do what bind mounts would otherwise do.
 
@@ -384,43 +447,71 @@ Whether to skip mounting project into web container.
 !!!warning "Advanced users only!"
     When `true`, project will not be mounted by DDEV into the web container. Enables experimentation with alternate file mounting strategies.
 
-## `nodejs_version`
+## `no_tui`
 
-Node.js version for the web container’s “system” version. [`n`](https://www.npmjs.com/package/n) tool is under the hood.
-
-There is no need to reconfigure `nodejs_version` unless you want a version other than the version already specified, which will be the default version at the time the project was configured.
-
-Note that specifying any non-default Node.js version will cause DDEV to download and install that version when running `ddev start` the first time on a project. If optimizing first-time startup speed (as in Continuous Integration) is your biggest concern, consider using the default version of Node.js.
+Whether to disable the TUI (terminal user interface) when running the `ddev` command without any arguments.
 
 | Type | Default | Usage
 | -- | -- | --
-| :octicons-file-directory-16: project | current LTS version | any [node version](https://www.npmjs.com/package/n#specifying-nodejs-versions), like `16`, `18.2`, `18.19.2`, etc.
+| :octicons-globe-16: global | `false` | Can be `true` or `false`.
 
-!!!tip "How to define the Node.js version using a file"
-    Your project team may specify the Node.js version in a more general way than in the `.ddev/config.yaml`. For example, you may use a `.nvmrc` file, the `package.json`, or a similar technique. In that case, DDEV can use the external configuration provided by that file.
+## `nodejs_root`
 
-    There is an `auto` label (see [full documentation](https://www.npmjs.com/package/n#specifying-nodejs-versions)):
+The relative path, from the project root, to the directory containing the Node.js version file. (Requires [`nodejs_version`](#nodejs_version) `auto` or `engine`.)
+
+| Type | Default | Usage
+| -- | -- | --
+| :octicons-file-directory-16: project | &zwnj; | `nodejs_root: web/themes/custom/mytheme`
+
+## `nodejs_version`
+
+Node.js version for the web container, managed by [`n`](https://www.npmjs.com/package/n).
+
+| Type | Default | Usage
+| -- | -- | --
+| :octicons-file-directory-16: project | current LTS version | Any [Node.js version](https://www.npmjs.com/package/n#specifying-nodejs-versions); see the table below for what each value does.
+
+What DDEV does depends on the value:
+
+| Value | Result
+| -- | --
+| `24` | Default version preinstalled in DDEV.
+| `""` (empty) | Uses the version already included in the image, with no download step (fastest for CI). Follows DDEV default behavior over time.
+| `v24` | Installs the newest `24.x` release when the image is built. Use the `v` prefix only to get the latest of the current default major.
+| any other version (`22`, `20.2`, `18.19.2`, etc.) | Installs that version when the image is built. A bare major like `22` already installs the newest `22.x`.
+| `auto`, `engine` | Reads the version from a file in your project (see below).
+
+!!!warning "The Node.js version changes only when the image is rebuilt"
+    A version installed by `n` is fixed at build time. It changes only when the `ddev-webserver` image is rebuilt, for example when you upgrade DDEV. You can also trigger a rebuild manually:
 
     ```bash
-    ddev config --nodejs-version=auto
+    ddev restart --no-cache
+    # or
+    ddev utility rebuild
     ```
 
-    It reads the target version from a file in the [DDEV_APPROOT](../extend/custom-commands.md#environment-variables-provided) directory, or any parent directory.
+    Example: you set `22`, and `n` installs the newest `22.x` available at build time, for example `22.14.0`. If `22.14.1` is released before the next rebuild, your project stays on `22.14.0` until then.
 
-    `n` looks for in order:
+!!!tip "How to define the Node.js version using a file"
+    Set `nodejs_version: auto` to read the version from a file in your project root ([`DDEV_APPROOT`](../extend/custom-commands.md#environment-variables-provided)). `n` checks these in order: `.n-node-version`, `.node-version`, `.nvmrc`, then the `engines.node` field in `package.json`. Set `nodejs_version: engine` to use only `engines.node`. Either value fails validation if no such file exists. See [n's documentation](https://www.npmjs.com/package/n#specifying-nodejs-versions) for details.
 
-    * `.n-node-version` : version on single line. Custom to `n`.
-    * `.node-version` : version on single line. Used by [multiple tools](https://github.com/shadowspawn/node-version-usage).
-    * `.nvmrc` : version on single line. Used by `nvm`.
-    * if no version file found, look for `engine` as below.
+    If your version file is not in your project root, point [`nodejs_root`](#nodejs_root) at its directory. For example, if you have `frontend/.nvmrc`:
 
-    The `engine` label looks for a `package.json` file and reads the engines field to determine compatible Node.js.
-
-    If your file is not in the `DDEV_APPROOT` directory, you can create a link to the parent folder, so that `n` can find it. For example, if you have `frontend/.nvmrc`, create a `.ddev/web-build/Dockerfile.nvmrc` file:
-
-    ```dockerfile
-    RUN ln -sf /var/www/html/frontend/.nvmrc /var/www/.nvmrc
+    ```yaml
+    nodejs_root: frontend
+    nodejs_version: auto
     ```
+
+!!!tip "Installing additional Node.js versions"
+    To have multiple Node.js versions available, install additional ones via a [`post-start` hook](hooks.md) using `n`:
+
+    ```yaml
+    hooks:
+      post-start:
+        - exec: "n install 18 && n install 20"
+    ```
+
+    All installed versions are cached; the last one becomes active. Switch with `ddev exec n <version>`, clean up with `ddev exec n prune`.
 
 ## `omit_containers`
 
@@ -445,15 +536,25 @@ Determines whether `ddev config` updates the `name` field in the `.ddev/config.y
 
 When the `name` field is omitted in `.ddev/config.yaml`, DDEV gets the project name from the directory the project is in. If this option is set to `true`, `ddev config` will not update the `name` field unless you use `ddev config --project-name=<name>` to explicitly set the project name. People using `git worktree` often prefer to omit the project name so they can work on multiple projects at the same time in different worktrees.
 
+## `omit_snapshot_on_delete`
+
+Determines whether to omit the database snapshot when running `ddev delete` by default.
+
+| Type | Default | Usage
+| -- | -- | --
+| :octicons-globe-16: global | `false` | Can be `true` or `false`.
+
+Snapshots are taken by default when running `ddev delete` to allow recovery of data if the deletion was accidental. Setting this to `true` will turn off that safety feature. You can also override this behavior on a per-command basis with `ddev delete --omit-snapshot=false`.
+
 ## `override_config`
 
 Whether to override config values instead of merging.
 
 | Type | Default | Usage
 | -- | -- | --
-| :octicons-file-directory-16: project | `false` | Can be `true` or `false`.
+| :octicons-file-directory-16: project<br>:octicons-globe-16: global | `false` | Can be `true` or `false`.
 
-When `true`, the `config.*.yaml` file with the option will have its settings *override* rather than *merge with* others. Allows statements like `use_dns_when_possible: false` or `additional_hostnames: []` to work.
+When `true`, the `config.*.yaml` or `global_config.*.yaml` file with the option will have its settings *override* rather than *merge with* others. Allows statements like `use_dns_when_possible: false` or `additional_hostnames: []` to work.
 
 See [Extending `config.yaml` with Custom `config.*.yaml` Files](../extend/customization-extendibility.md#extending-configyaml-with-custom-configyaml-files).
 
@@ -473,7 +574,7 @@ The PHP version the project should use.
 
 | Type | Default | Usage
 | -- |---------| --
-| :octicons-file-directory-16: project | `8.4` | Can be `5.6` through `8.5`. New versions are added when released upstream.
+| :octicons-file-directory-16: project | `8.4` | Can be `5.6` through `8.6`. New versions are added when released upstream.
 
 You can only specify the major version (`7.3`), not a minor version (`7.3.2`), from those explicitly available.
 
@@ -486,19 +587,6 @@ Default Top-Level-Domain (`TLD`) to be used for a project’s domains, or global
 | :octicons-file-directory-16: project<br>:octicons-globe-16: global | `ddev.site` | Can be changed to any TLD you’d prefer.
 
 See [Hostnames and Wildcards and DDEV, Oh My!](https://ddev.com/blog/ddev-name-resolution-wildcards/) for more information on DDEV hostname resolution.
-
-## `required_docker_compose_version`
-
-Specific docker-compose version for download.
-
-| Type | Default | Usage
-| -- | -- | --
-| :octicons-globe-16: global | &zwnj; | &zwnj;
-
-If set to `v2.8.3`, for example, it will download and use that version instead of the expected version for docker-compose.
-
-!!!warning "Troubleshooting Only!"
-    This should only be used in specific cases like troubleshooting. Please don't experiment with it unless directed to do so.
 
 ## `router_bind_all_interfaces`
 
@@ -530,6 +618,32 @@ Port for DDEV router’s HTTPS traffic.
 
 See the [Troubleshooting](../usage/troubleshooting.md#web-server-ports-already-occupied) page for more on addressing port conflicts.
 
+## `share_default_provider`
+
+The default share provider to use with the [`ddev share`](../usage/commands.md#share) command.
+
+| Type | Default | Usage
+| -- | -- | --
+| :octicons-file-directory-16: project<br>:octicons-globe-16: global | `ngrok` | Built-in providers: `ngrok`, `cloudflared`. Custom providers can be added to `.ddev/share-providers/`. Project config overrides global config.
+
+Set globally with `ddev config global --share-default-provider=cloudflared` or per-project with `ddev config --share-default-provider=cloudflared`. Can also be overridden with the `--provider` flag when running `ddev share`.
+
+## `share_provider_args`
+
+Extra flags for configuring provider when [sharing projects](../topics/sharing.md) with the [`ddev share`](../usage/commands.md#share) command.
+
+| Type | Default | Usage
+| -- | -- | --
+| :octicons-file-directory-16: project | `` | &zwnj;
+
+Example:
+
+* [ngrok](../topics/sharing.md#setting-up-a-stable-ngrok-domain): `--basic-auth username:pass1234 --domain foo.ngrok-free.app`.
+* [cloudflared](../topics/sharing.md#setting-up-a-stable-cloudflared-domain): `--tunnel my-tunnel --hostname mysite.example.com`.
+
+!!!note "Replaces `ngrok_args`"
+    This option replaces the deprecated `ngrok_args`. The old name still works for backward compatibility.
+
 ## `simple_formatting`
 
 Whether to disable most [`ddev list`](../usage/commands.md#list) and [`ddev describe`](../usage/commands.md#describe) table formatting and implicitly set `NO_COLOR=1`.
@@ -539,6 +653,30 @@ Whether to disable most [`ddev list`](../usage/commands.md#list) and [`ddev desc
 | :octicons-globe-16: global | `false` | Can be `true` or `false`. If you don't like the table lines in `ddev list` or `ddev describe`, you can completely turn them off with `ddev config global --simple-formatting=true`.
 
 When `true`, turns off most table formatting in [`ddev list`](../usage/commands.md#list) and [`ddev describe`](../usage/commands.md#describe) and suppresses colorized text everywhere.
+
+## `skip_global_hooks`
+
+Whether to skip the [global hooks](hooks.md#global-hooks) in this project.
+
+| Type | Default | Usage
+| -- | -- | --
+| :octicons-file-directory-16: project | `false` | Can be `true` or `false`. Project hooks still run.
+
+## `ssh_agent_upstream`
+
+Make the `ddev-ssh-agent` container relay to an SSH agent you already run, such as the macOS agent, 1Password, or one forwarded with `ssh -A`, instead of running its own agent. See [Using an Existing SSH Agent](../usage/cli.md#using-an-existing-ssh-agent) for how this works with each Docker provider.
+
+| Type | Default | Usage
+| -- | -- | --
+| :octicons-globe-16: global | (empty) | Can be empty, `host`, or an absolute or `~/`-relative path of an agent socket.
+
+* Empty: `ddev-ssh-agent` runs its own agent, and [`ddev auth ssh`](../usage/commands.md#auth-ssh) adds key files to it.
+* `host`: relay to the agent your Docker provider forwards (Docker Desktop on macOS or Linux, OrbStack, Colima with `--ssh-agent`, or Lima with `ssh.forwardAgent`), or on Linux and WSL2 to the socket in `$SSH_AUTH_SOCK` when a project starts.
+* A socket path: relay to that socket. The Docker host must be able to reach it, so on macOS use `host` instead.
+
+Traditional Windows doesn't support this setting, because Windows SSH agents such as 1Password listen on a named pipe that Docker can't reach. On WSL2, bridge that pipe to a socket path first, as [Using an Existing SSH Agent](../usage/cli.md#using-an-existing-ssh-agent) describes.
+
+If DDEV can't use the setting, for example `host` with a provider that doesn't forward an agent, projects still start with DDEV's own agent and a warning. With an upstream agent, `ddev auth ssh` lists the agent's keys rather than adding keys.
 
 ## `table_style`
 
@@ -574,11 +712,11 @@ The DDEV-specific project type.
 
 | Type | Default | Usage
 | -- | -- | --
-| :octicons-file-directory-16: project | `php` | Can be `backdrop`, `cakephp`, `craftcms`, `drupal`, `drupal6`, `drupal7`, `drupal8`, `drupal9`, `drupal10`, `drupal11`, `generic`, `laravel`, `magento`, `magento2`, `php`, `shopware6`, `silverstripe`, `symfony`, `typo3`, or `wordpress`.
+| :octicons-file-directory-16: project | `php` | Can be `asterios`, `backdrop`, `cakephp`, `codeigniter`, `craftcms`, `drupal`, `drupal6`, `drupal7`, `drupal8`, `drupal9`, `drupal10`, `drupal11`, `drupal12`, `generic`, `joomla`, `laravel`, `magento`, `magento2`, `maho`, `modx`, `php`, `shopware6`, `silverstripe`, `symfony`, `typo3`, `wordpress`, or `wp-bedrock`.
 
 The `php` type doesn’t attempt [CMS configuration](../../users/quickstart.md) or settings file management and can work with any project.
 
-The many versions of the Drupal project types can be used, for example `drupal11` or `drupal6`. There is also a special `drupal` type that is interpreted as "latest stable Drupal version", so in 2025, `drupal` means `drupal11`.
+The many versions of the Drupal project types can be used, for example `drupal11` or `drupal6`. There is also a special `drupal` type that is interpreted as "latest stable Drupal version", so until the release of Drupal 12, `drupal` currently means `drupal11`.
 
 The special `generic` project type does nothing and implies nothing. It is normally used with `webserver_type: generic`.
 
@@ -604,26 +742,13 @@ When `false`, DDEV will always update the `/etc/hosts` file with the project hos
 
 See [Using DDEV Offline](../usage/offline.md).
 
-## `use_docker_compose_from_path`
-
-Whether to use the system-installed docker-compose. You can otherwise use [`required_docker_compose_version`](#required_docker_compose_version) to specify a version for download.
-
-| Type | Default | Usage
-| -- | -- | --
-| :octicons-globe-16: global | `false` | Can `true` or `false`.
-
-When `true`, DDEV will use the docker-compose found in on your system’s path instead of using its private, known-good, docker-compose version.
-
-!!!warning "Troubleshooting Only!"
-    This should only be used in specific cases like troubleshooting. (It is used in the Docker Compose automated tests.)
-
 ## `use_hardened_images`
 
 Whether to use hardened images for internet deployment.
 
 | Type | Default | Usage
 | -- | -- | --
-| :octicons-globe-16: global | `false` | Can `true` or `false`.
+| :octicons-globe-16: global | `false` | Can be `true` or `false`.
 
 When `true`, more secure hardened images are used for an internet deployment. These do not include sudo in the web container, and the container is run without elevated privileges. Generally used with the [hosting](../topics/hosting.md) feature.
 
@@ -633,13 +758,13 @@ Whether to enable Let’s Encrypt integration. (Works in conjunction with [`lets
 
 | Type | Default | Usage
 | -- | -- | --
-| :octicons-globe-16: global | `false` | Can `true` or `false`.
+| :octicons-globe-16: global | `false` | Can be `true` or `false`.
 
 May also be set via `ddev config global --use-letsencrypt` or `ddev config global --use-letsencrypt=false`. When `true`, `letsencrypt_email` must also be set and the system must be available on the internet. Used with the [hosting](../topics/hosting.md) feature.
 
 ## `web_environment`
 
-Additional [custom environment variables](../extend/customization-extendibility.md#environment-variables-for-containers-and-services) for a project’s web container. (Or for all projects if used globally.)
+Additional [custom environment variables](environment-variables.md#web_environment) for a project’s web container. (Or for all projects if used globally.)
 
 | Type | Default | Usage
 | -- | -- | --
@@ -682,7 +807,7 @@ Extra Debian packages for the project’s web container.
 | -- | -- | --
 | :octicons-file-directory-16: project | `[]` | &zwnj;
 
-Example: `webimage_extra_packages: [php${DDEV_PHP_VERSION}-yac, php${DDEV_PHP_VERSION}-bcmath]` will add the `php-yac` and `php-bcmath` packages when the web container is built.
+Example: `webimage_extra_packages: ['php${DDEV_PHP_VERSION}-tidy', 'php${DDEV_PHP_VERSION}-yac']` will add the `phpX.Y-tidy` and `phpX.Y-yac` packages when the web container is built.
 
 ## `webserver_type`
 
@@ -704,6 +829,9 @@ Then run [`ddev restart`](../usage/commands.md#restart) to have the change take 
 
 The `generic` type is special: It tells DDEV not to run any web server daemons, and the user can configure their own with the [`web_extra_daemons`](#web_extra_daemons) option.
 
+!!!tip
+    For generic web server configuration examples, see the [quickstart guide](../quickstart.md#generic).
+
 ## `working_dir`
 
 Working directories used by [`ddev exec`](../usage/commands.md#exec) and [`ddev ssh`](../usage/commands.md#ssh).
@@ -723,7 +851,7 @@ Example: `working_dir: { web: "/var/www", db: "/etc" }` sets the working directo
 
 | Type | Default | Usage
 | -- | -- | --
-| :octicons-globe-16: global | `false` | Can `true` or `false`.
+| :octicons-globe-16: global | `false` | Can be `true` or `false`.
 
 May also be set via `ddev config global --wsl2-no-windows-hosts-mgt` or `ddev config global --wsl2-no-windows-hosts-mgt=false`.
 

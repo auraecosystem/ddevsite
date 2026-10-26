@@ -6,43 +6,27 @@ import (
 	"os"
 	osexec "os/exec"
 	"path/filepath"
-	"slices"
-	"strconv"
 	"strings"
 
-	"github.com/Masterminds/semver/v3"
-	ddevImages "github.com/ddev/ddev/pkg/docker"
 	"github.com/ddev/ddev/pkg/nodeps"
-	"github.com/ddev/ddev/pkg/output"
 	"github.com/ddev/ddev/pkg/util"
+	"github.com/ddev/ddev/pkg/versionconstants"
 	"github.com/moby/moby/client/pkg/versions"
 )
 
 type DockerVersionMatrix struct {
-	APIVersion               string
-	Version                  string
-	PodmanVersion            string
-	ComposeVersionConstraint string
+	APIVersion    string
+	Version       string
+	PodmanVersion string
 }
 
-// DockerRequirements defines the minimum Docker version required by DDEV.
+// DockerRequirements defines the minimum Docker version recommended by DDEV.
 // We compare using the APIVersion because it's a consistent and reliable value.
 // The Version is displayed to users as it's more readable and user-friendly.
-// The values correspond to the API version matrix found here:
-// https://docs.docker.com/reference/api/engine/#api-version-matrix
-// List of supported Docker versions: https://endoflife.date/docker-engine
-//
-// PodmanVersion is the minimum Podman version supported. If it's empty, Podman is not supported.
-// Podman 4.x doesn't run properly on GitHub runners, so we require Podman 5.0+
-//
-// ComposeVersionConstraint is in sync with https://docs.docker.com/desktop/release-notes/
-// The constraint MUST HAVE a -pre of some kind on it for successful comparison.
-// See https://github.com/ddev/ddev/pull/738 and regression https://github.com/ddev/ddev/issues/1431
 var DockerRequirements = DockerVersionMatrix{
-	APIVersion:               "1.44",
-	Version:                  "25.0",
-	PodmanVersion:            "5.0",
-	ComposeVersionConstraint: ">= 2.24.3",
+	APIVersion:    versionconstants.DockerMinAPIVersion,
+	Version:       versionconstants.DockerMinVersion,
+	PodmanVersion: versionconstants.PodmanMinVersion,
 }
 
 // CheckDockerVersion determines if the Docker version of the host system meets the provided
@@ -76,84 +60,61 @@ func CheckDockerVersion(dockerVersionMatrix DockerVersionMatrix) error {
 	return nil
 }
 
-// CheckDockerCompose determines if docker-compose is present and executable on the host system. This
-// relies on docker-compose being somewhere in the user's $PATH.
-func CheckDockerCompose() error {
-	defer util.TimeTrack()()
-
-	_, err := DownloadDockerComposeIfNeeded()
-	if err != nil {
-		return err
+// CheckAvailableSpace returns an error if Docker space is low
+func CheckAvailableSpace() error {
+	// stat -f -c "%a %b %S" / outputs three space-separated values:
+	// %a = free blocks available to non-root, %b = total blocks, %S = block size in bytes
+	_, out, _ := RunSimpleContainer(versionconstants.UtilitiesImage, "check-available-space-"+util.RandString(6), []string{"stat", "-f", "-c", "%a %b %S", "/"}, []string{}, []string{}, []string{}, "", true, false, nil, nil, nil)
+	var availBlocks, totalBlocks, blockSize int64
+	if n, err := fmt.Sscanf(strings.TrimSpace(out), "%d %d %d", &availBlocks, &totalBlocks, &blockSize); n != 3 || err != nil {
+		return fmt.Errorf("unable to determine available disk space from %q: %v", out, err)
 	}
-	versionConstraint := DockerRequirements.ComposeVersionConstraint
-
-	v, err := GetDockerComposeVersion()
-	if err != nil {
-		return err
+	spaceAvail := availBlocks * blockSize
+	spaceTotal := totalBlocks * blockSize
+	if spaceTotal == 0 {
+		return fmt.Errorf("unable to determine available disk space: total space is zero")
 	}
-	dockerComposeVersion, err := semver.NewVersion(v)
-	if err != nil {
-		return err
+	if spaceAvail < nodeps.MinimumDockerSpaceWarning {
+		spacePercent := int((spaceTotal - spaceAvail) * 100 / spaceTotal)
+		return fmt.Errorf("your Docker install has only %s available disk space, less than %s warning level (%d%% used). Please increase disk image size. More info at %s", util.FormatBytes(spaceAvail), util.FormatBytes(nodeps.MinimumDockerSpaceWarning), spacePercent, "https://docs.ddev.com/en/stable/users/usage/troubleshooting/#out-of-disk-space")
 	}
-
-	constraint, err := semver.NewConstraint(versionConstraint)
-	if err != nil {
-		return err
-	}
-
-	match, errs := constraint.Validate(dockerComposeVersion)
-	if !match {
-		if len(errs) <= 1 {
-			return errs[0]
-		}
-
-		msgs := "\n"
-		for _, err := range errs {
-			msgs = fmt.Sprint(msgs, err, "\n")
-		}
-		return fmt.Errorf("%s", msgs)
-	}
-
 	return nil
 }
 
-// CanRunWithoutDocker returns true if the command or flag can run without Docker.
-func CanRunWithoutDocker() bool {
-	if len(os.Args) < 2 {
-		return true
+// CheckDockerCLI verifies that the docker CLI binary exists and can run basic
+// commands. Some tools (e.g. Mutagen) shell out to the docker CLI rather than
+// using the Docker API, so a working daemon alone is not sufficient.
+//
+// The lookup order mirrors Mutagen's own docker binary resolution
+// (pkg/docker/docker.go): MUTAGEN_DOCKER_PATH env var takes priority over PATH.
+func CheckDockerCLI() error {
+	dockerPath, err := findDockerCLI()
+	if err != nil {
+		return err
 	}
-	// Some commands don't support Cobra help, because they are wrappers
-	if slices.Contains([]string{"composer"}, os.Args[1]) {
-		return false
+	cmd := osexec.Command(dockerPath, "ps")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("docker CLI found at %s but 'docker ps' failed: %v (output: %s)", dockerPath, err, strings.TrimSpace(string(out)))
 	}
-	if output.ParseBoolFlag("version", "v") || output.ParseBoolFlag("help", "h") {
-		return true
-	}
-	if len(os.Args) == 2 && output.ParseBoolFlag("json-output", "j") {
-		return true
-	}
-	// help and hostname should not require docker
-	if slices.Contains([]string{"help", "hostname"}, os.Args[1]) {
-		return true
-	}
-	return false
+	return nil
 }
 
-// CheckAvailableSpace outputs a warning if Docker space is low
-func CheckAvailableSpace() {
-	_, out, _ := RunSimpleContainer(ddevImages.GetWebImage(), "check-available-space-"+util.RandString(6), []string{"sh", "-c", `df / | awk '!/Mounted/ {print $4, $5;}'`}, []string{}, []string{}, []string{}, "", true, false, map[string]string{"com.ddev.site-name": ""}, nil, nil)
-	out = strings.Trim(out, "% \r\n")
-	parts := strings.Split(out, " ")
-	if len(parts) != 2 {
-		util.Warning("Unable to determine Docker space usage: %s", out)
-		return
+// findDockerCLI resolves the docker binary path using the same priority order
+// as Mutagen: MUTAGEN_DOCKER_PATH env var first, then PATH.
+func findDockerCLI() (string, error) {
+	if searchPath := os.Getenv("MUTAGEN_DOCKER_PATH"); searchPath != "" {
+		p := filepath.Join(searchPath, "docker")
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+		return "", fmt.Errorf("MUTAGEN_DOCKER_PATH is set to %q but no docker binary found there", searchPath)
 	}
-	spacePercent, _ := strconv.Atoi(parts[1])
-	spaceAbsolute, _ := strconv.Atoi(parts[0]) // Note that this is in KB
-
-	if spaceAbsolute < nodeps.MinimumDockerSpaceWarning {
-		util.Error("Your Docker install has only %d available disk space, less than %d warning level (%d%% used). Please increase disk image size. More info at %s", spaceAbsolute, nodeps.MinimumDockerSpaceWarning, spacePercent, "https://docs.ddev.com/en/stable/users/usage/troubleshooting/#out-of-disk-space")
+	p, err := osexec.LookPath("docker")
+	if err != nil {
+		return "", fmt.Errorf("docker CLI not found in PATH: %v", err)
 	}
+	return p, nil
 }
 
 // CheckDockerAuth checks if Docker authentication is properly configured

@@ -10,10 +10,15 @@ import (
 
 // DdevSnapshotRestoreCommand handles ddev snapshot restore
 var DdevSnapshotRestoreCommand = &cobra.Command{
-	Use:   "restore [snapshot_name]",
+	Use:   "restore [snapshot_name|path]",
 	Short: "Restore a project's database to the provided snapshot version.",
-	Long: `Uses mariabackup command to restore a project database to a particular snapshot from the .ddev/db_snapshots folder.
-Example: "ddev snapshot restore d8git_20180717203845"`,
+	Long: `Uses mariadb-backup or xtrabackup command to restore a project database to a particular snapshot, either by name from the .ddev/db_snapshots folder or by the path to a snapshot file elsewhere.
+
+If the project is a git worktree, snapshots from the same project checked out in other worktrees of the same repository are also available, whether picked interactively, passed by name, or via --latest.`,
+	Example: `ddev snapshot restore d8git_20180717203845
+ddev snapshot restore --latest
+ddev snapshot restore --force t3v14-latest
+ddev snapshot restore $HOME/tmp/mysnapshot-mariadb_11.8.zst`,
 	Run: func(_ *cobra.Command, args []string) {
 		var snapshotName string
 
@@ -25,19 +30,30 @@ Example: "ddev snapshot restore d8git_20180717203845"`,
 			util.Failed("Snapshots are not available when database container is omitted")
 		}
 
+		if err = app.StartAppIfNotRunning(); err != nil {
+			util.Failed("Failed to start app %s: %v", app.GetName(), err)
+		}
+
 		if snapshotRestoreLatest {
-			if snapshotName, err = app.GetLatestSnapshot(); err != nil {
+			target, err := app.GetLatestSnapshotRestoreTarget()
+			if err != nil {
 				util.Failed("Failed to get latest snapshot of project %s: %v", app.GetName(), err)
 			}
+			snapshotName = target.Path
 		} else {
 			if len(args) != 1 { // If the name of the snapshot isn't provided, do prompted restore
-				snapshots, err := app.ListSnapshotNames()
+				targets, err := app.ListSnapshotRestoreTargets()
 				if err != nil {
 					util.Failed("Cannot list snapshots of project %s: %v", app.GetName(), err)
 				}
 
-				if len(snapshots) == 0 {
+				if len(targets) == 0 {
 					util.Failed("No snapshots found for project %s", app.GetName())
+				}
+
+				labels := make([]string, 0, len(targets))
+				for _, target := range targets {
+					labels = append(labels, target.Label)
 				}
 
 				templates := &promptui.SelectTemplates{
@@ -46,29 +62,30 @@ Example: "ddev snapshot restore d8git_20180717203845"`,
 
 				prompt := promptui.Select{
 					Label:     "Snapshot",
-					Items:     snapshots,
+					Items:     labels,
 					Templates: templates,
 				}
 
-				_, snapshotName, err = prompt.Run()
-
+				selected, _, err := prompt.Run()
 				if err != nil {
 					util.Failed("Prompt failed %v", err)
 				}
+				snapshotName = targets[selected].Path
 			} else { // Snapshot name was given on command-line, use it.
-				snapshotName = args[0]
+				snapshotName = app.ResolveSnapshotRestoreTarget(args[0])
 			}
 		}
 
 		// Normalize the snapshot name
 
-		if err := app.RestoreSnapshot(snapshotName); err != nil {
+		if err := app.RestoreSnapshot(snapshotName, snapshotRestoreForce); err != nil {
 			util.Failed("Failed to restore snapshot %s for project %s: %v", snapshotName, app.GetName(), err)
 		}
 	},
 }
 
-func init() {
+func registerSnapshotRestoreCmd() {
 	DdevSnapshotRestoreCommand.Flags().BoolVarP(&snapshotRestoreLatest, "latest", "", false, "use latest snapshot")
+	DdevSnapshotRestoreCommand.Flags().BoolVarP(&snapshotRestoreForce, "force", "f", false, "Restore a snapshot made by a different version of the same database server, which may not come up")
 	DdevSnapshotCommand.AddCommand(DdevSnapshotRestoreCommand)
 }

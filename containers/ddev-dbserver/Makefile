@@ -5,6 +5,12 @@ export DOCKER_REPO
 
 VERSION := $(shell git describe --tags --always --dirty)
 
+# Value for the com.ddev.image-tag label. Separate from VERSION because a
+# multi-arch push builds each arch under an intermediate `<tag>-<arch>` tag that
+# is combined into the manifest and then deleted; the label has to record the
+# tag people actually pull.
+DDEV_IMAGE_TAG ?= $(VERSION)
+
 .PHONY: build clean test
 
 CURRENT_ARCH=$(shell ../get_arch.sh)
@@ -13,17 +19,11 @@ CURRENT_ARCH=$(shell ../get_arch.sh)
 # So has to explicitly declare anything it might need from there (like SHELL)
 SHELL = /bin/bash
 
-BUILD_TARGETS=$(shell if [ "$(CURRENT_ARCH)" = "amd64" ] ; then \
-  echo "mysql_8.4_both mysql_8.0_both mysql_5.7_both mysql_5.6_amd64 mysql_5.5_amd64 mariadb_11.8_both mariadb_11.4_both mariadb_10.11_both mariadb_10.8_both mariadb_10.7_both mariadb_10.6_both mariadb_10.5_both mariadb_10.4_both mariadb_10.3_both mariadb_10.2_both mariadb_10.1_both mariadb_10.0_amd64 mariadb_5.5_amd64"; \
-else \
-  echo "mysql_8.4_both mysql_8.0_both mysql_5.7_both mariadb_11.8_both mariadb_11.4_both mariadb_10.11_both mariadb_10.8_both mariadb_10.7_both mariadb_10.6_both mariadb_10.5_both mariadb_10.4_both mariadb_10.3_both mariadb_10.2_both mariadb_10.1_both"; \
-fi )
-SINGLE_ARCH_TARGETS=mysql_8.4_amd64 mysql_8.4_arm64 mysql_8.0_amd64 mysql_8.0_arm64 mysql_5.7_amd64 mysql_5.7_arm64 mariadb_11.8_amd64 mariadb_11.8_arm64 mariadb_11.4_amd64 mariadb_11.4_arm64 mariadb_10.11_amd64 mariadb_10.11_arm64 mariadb_10.8_amd64 mariadb_10.8_arm64 mariadb_10.7_amd64 mariadb_10.7_arm64 mariadb_10.6_amd64 mariadb_10.6_arm64 mariadb_10.5_amd64 mariadb_10.5_arm64 mariadb_10.4_amd64 mariadb_10.4_arm64 mariadb_10.3_amd64 mariadb_10.3_arm64 mariadb_10.2_amd64 mariadb_10.2_arm64 mariadb_10.1_amd64 mariadb_10.1_arm64
-TEST_TARGETS=$(shell if [ "$(CURRENT_ARCH)" = "amd64" ] ; then \
-  echo "mysql_8.4_test mysql_8.0_test mysql_5.7_test mysql_5.6_test mysql_5.5_test mariadb_11.8_test mariadb_11.4_test mariadb_10.11_test mariadb_10.8_test mariadb_10.7_test mariadb_10.6_test mariadb_10.5_test mariadb_10.4_test mariadb_10.3_test mariadb_10.2_test mariadb_10.1_test mariadb_10.0_test mariadb_5.5_test"; \
-else \
-  echo "mysql_8.4_test mysql_8.0_test mysql_5.7_test mariadb_11.8_test mariadb_11.4_test mariadb_10.11_test mariadb_10.8_test mariadb_10.7_test mariadb_10.6_test mariadb_10.5_test mariadb_10.4_test mariadb_10.3_test mariadb_10.2_test mariadb_10.1_test"; \
-fi )
+# The variant matrix lives in variants.txt - see variants.sh for the views.
+VARIANTS_SH=./variants.sh
+BUILD_TARGETS=$(shell $(VARIANTS_SH) build-targets $(CURRENT_ARCH))
+SINGLE_ARCH_TARGETS=$(shell $(VARIANTS_SH) single-arch-targets)
+TEST_TARGETS=$(shell $(VARIANTS_SH) test-targets $(CURRENT_ARCH))
 
 
 container: build
@@ -42,12 +42,14 @@ mariadb_10.8: mariadb_10.8_both
 mariadb_10.11: mariadb_10.11_both
 mariadb_11.4: mariadb_11.4_both
 mariadb_11.8: mariadb_11.8_both
+mariadb_12.3: mariadb_12.3_both
 
 mysql_5.5: mysql_5.5_amd64
 mysql_5.6: mysql_5.6_amd64
 mysql_5.7: mysql_5.7_both
 mysql_8.0: mysql_8.0_both
 mysql_8.4: mysql_8.4_both
+mysql_9.7: mysql_9.7_both
 
 # Examples:
 # make <dbtype>_<dbmajor>_[both|amd64]_<pin>  # pin is optional, often needed for mysql 8.0
@@ -68,7 +70,7 @@ $(BUILD_TARGETS) $(SINGLE_ARCH_TARGETS):
 	    ARCHS="linux/$${ARCH}"; \
 	    ;; \
 	esac; \
-	cmd="./build_image.sh --db-type=$${DB_TYPE} --db-major-version=$${DB_MAJOR_VERSION} --archs=$${ARCHS} --tag=$(VERSION) --docker-org=$(DOCKER_ORG) --docker-args=$(DOCKER_ARGS)" && \
+	cmd="./build_image.sh --db-type=$${DB_TYPE} --db-major-version=$${DB_MAJOR_VERSION} --archs=$${ARCHS} --tag=$(VERSION) --ddev-image-tag=$(DDEV_IMAGE_TAG) --docker-org=$(DOCKER_ORG) --docker-args=$(DOCKER_ARGS)" && \
 	if [ ! -z $${PUSH} ]; then cmd="$$cmd --push"; fi && \
 	if [ ! -z $${DB_PINNED_VERSION} ]; then cmd="$$cmd --db-pinned-version=$${DB_PINNED_VERSION}"; fi && \
 	echo $${cmd} && \

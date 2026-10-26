@@ -2,16 +2,19 @@ package dockerutil
 
 import (
 	"bytes"
+	"cmp"
+	"context"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/user"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -147,9 +150,50 @@ func InspectContainer(name string) (container.InspectResponse, error) {
 	return x.Container, err
 }
 
+var (
+	// cachedContainers, when set, answers container lookups without asking Docker
+	cachedContainers atomic.Pointer[[]container.Summary]
+	// cacheUsers counts CacheContainers calls not yet released
+	cacheUsers   int
+	cacheUsersMu sync.Mutex
+)
+
+// CacheContainers lists all containers once, and until the returned function
+// is called, FindContainerByName and FindContainersByLabels answer from that
+// list instead of asking Docker each time. Use it only around code that reads
+// many containers and creates, starts, or stops none of them.
+//
+// Calls may nest or overlap: lookups use the newest list, and go back to
+// asking Docker once every caller has released it.
+func CacheContainers() func() {
+	containers, err := GetDockerContainers(true)
+	if err != nil {
+		return func() {}
+	}
+	cacheUsersMu.Lock()
+	defer cacheUsersMu.Unlock()
+	cacheUsers++
+	cachedContainers.Store(&containers)
+	return func() {
+		cacheUsersMu.Lock()
+		defer cacheUsersMu.Unlock()
+		if cacheUsers--; cacheUsers == 0 {
+			cachedContainers.Store(nil)
+		}
+	}
+}
+
 // FindContainerByName takes a container name and returns the container
 // If container is not found, returns nil with no error
 func FindContainerByName(name string) (*container.Summary, error) {
+	if cached := cachedContainers.Load(); cached != nil {
+		for _, c := range *cached {
+			if len(c.Names) > 0 && c.Names[0] == "/"+name {
+				return &c, nil
+			}
+		}
+		return nil, nil
+	}
 	ctx, apiClient, err := GetDockerClient()
 	if err != nil {
 		return nil, err
@@ -169,7 +213,7 @@ func FindContainerByName(name string) (*container.Summary, error) {
 	// ListContainers can return partial matches. Make sure we only match the exact one
 	// we're after.
 	for _, c := range containers.Items {
-		if c.Names[0] == "/"+name {
+		if len(c.Names) > 0 && c.Names[0] == "/"+name {
 			return &c, nil
 		}
 	}
@@ -182,7 +226,7 @@ func GetContainerStateByName(name string) (container.ContainerState, error) {
 	if err != nil || c == nil {
 		return "doesnotexist", fmt.Errorf("container %s does not exist", name)
 	}
-	if c.State == "running" {
+	if c.State == container.StateRunning {
 		return c.State, nil
 	}
 	return c.State, fmt.Errorf("container %s is in state=%s so can't be accessed", name, c.State)
@@ -221,6 +265,15 @@ func FindContainersByLabels(labels map[string]string) ([]container.Summary, erro
 	if len(labels) < 1 {
 		return nil, fmt.Errorf("the provided list of labels was empty")
 	}
+	if cached := cachedContainers.Load(); cached != nil {
+		var matches []container.Summary
+		for _, c := range *cached {
+			if hasLabels(c, labels) {
+				matches = append(matches, c)
+			}
+		}
+		return matches, nil
+	}
 	filterList := client.Filters{}
 	for k, v := range labels {
 		label := fmt.Sprintf("%s=%s", k, v)
@@ -238,6 +291,33 @@ func FindContainersByLabels(labels map[string]string) ([]container.Summary, erro
 	containers, err := apiClient.ContainerList(ctx, client.ContainerListOptions{
 		All:     true,
 		Filters: filterList,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return containers.Items, nil
+}
+
+// hasLabels matches labels the way a Docker label filter does: an empty value
+// matches any value of that label
+func hasLabels(c container.Summary, labels map[string]string) bool {
+	for k, v := range labels {
+		if got, ok := c.Labels[k]; !ok || (v != "" && got != v) {
+			return false
+		}
+	}
+	return true
+}
+
+// FindContainersByVolume includes exited containers, since those still block volume removal.
+func FindContainersByVolume(volumeName string) ([]container.Summary, error) {
+	ctx, apiClient, err := GetDockerClient()
+	if err != nil {
+		return nil, err
+	}
+	containers, err := apiClient.ContainerList(ctx, client.ContainerListOptions{
+		All:     true,
+		Filters: client.Filters{}.Add("volume", volumeName),
 	})
 	if err != nil {
 		return nil, err
@@ -275,6 +355,9 @@ func ContainerWait(waittime int, labels map[string]string) (string, error) {
 	defer timeoutChan.Stop()
 
 	status := ""
+	lastStatus := ""
+	startTime := time.Now()
+	lastLogTime := startTime
 
 	for {
 		select {
@@ -284,7 +367,7 @@ func ContainerWait(waittime int, labels map[string]string) (string, error) {
 			c, err := FindContainerByLabels(labels)
 			if err == nil && c != nil {
 				health, _ := GetContainerHealth(c)
-				if health != "healthy" {
+				if health != string(container.Healthy) {
 					name, suggestedCommand := getSuggestedCommandForContainerLog(c, waittime)
 					desc = desc + fmt.Sprintf(" %s:%s\n%s", name, health, suggestedCommand)
 				}
@@ -293,38 +376,55 @@ func ContainerWait(waittime int, labels map[string]string) (string, error) {
 
 		case <-tickChan.C:
 			c, err := FindContainerByLabels(labels)
+			cName := ""
 			if err != nil || c == nil {
-				return "", fmt.Errorf("failed to query container labels=%v: %v", labels, err)
+				return "", fmt.Errorf("failed to query container %s labels=%v: %v", cName, labels, err)
+			}
+			if len(c.Names) > 0 {
+				cName = strings.TrimPrefix(c.Names[0], "/")
 			}
 			health, logOutput := GetContainerHealth(c)
 
+			// Status changes are routine (DDEV_VERBOSE); a stall is what DDEV_DEBUG should surface.
+			elapsed := time.Since(startTime).Round(time.Millisecond)
+			if health != lastStatus {
+				util.Verbose("ContainerWait: %s status change: '%s' after %v", cName, health, elapsed)
+				lastStatus = health
+				lastLogTime = time.Now()
+			} else if time.Since(lastLogTime) >= 5*time.Second {
+				util.Debug("ContainerWait: still waiting for %s, status='%s' after %v", cName, health, elapsed)
+				lastLogTime = time.Now()
+			}
+
 			switch health {
-			case "healthy":
+			case string(container.Healthy):
 				return logOutput, nil
-			case "unhealthy":
+			case string(container.Unhealthy):
 				name, suggestedCommand := getSuggestedCommandForContainerLog(c, 0)
 				return logOutput, fmt.Errorf("%s container is unhealthy, log=%s\n%s", name, logOutput, suggestedCommand)
-			case "exited":
+			case string(container.StateExited):
 				name, suggestedCommand := getSuggestedCommandForContainerLog(c, 0)
 				return logOutput, fmt.Errorf("%s container exited,\n%s", name, suggestedCommand)
 			}
 		}
 	}
-
-	// We should never get here.
-	//nolint: govet
-	return "", fmt.Errorf("inappropriate break out of for loop in ContainerWait() waiting for container labels %v", labels)
 }
 
 // ContainersWait provides a wait loop to check for multiple containers in "healthy" status.
 // waittime is in seconds.
-// Returns logoutput, error, returns error if not "healthy"
-func ContainersWait(waittime int, labels map[string]string) error {
+// filterServices optionally limits which containers are checked by their
+// "com.docker.compose.service" label. When empty, all containers matching
+// labels are checked.
+// Returns error if not all containers become "healthy" before the timeout.
+func ContainersWait(waittime int, labels map[string]string, filterServices ...string) error {
 	timeoutChan := time.After(time.Duration(waittime) * time.Second)
 	tickChan := time.NewTicker(500 * time.Millisecond)
 	defer tickChan.Stop()
 
 	status := ""
+	lastStatus := ""
+	startTime := time.Now()
+	lastLogTime := startTime
 
 	for {
 		select {
@@ -333,8 +433,11 @@ func ContainersWait(waittime int, labels map[string]string) error {
 			containers, err := FindContainersByLabels(labels)
 			if err == nil && containers != nil {
 				for _, c := range containers {
+					if len(filterServices) > 0 && !slices.Contains(filterServices, c.Labels["com.docker.compose.service"]) {
+						continue
+					}
 					health, _ := GetContainerHealth(&c)
-					if health != "healthy" {
+					if health != string(container.Healthy) {
 						name, suggestedCommand := getSuggestedCommandForContainerLog(&c, waittime)
 						desc = desc + fmt.Sprintf(" %s:%s\n%s", name, health, suggestedCommand)
 					}
@@ -348,31 +451,63 @@ func ContainersWait(waittime int, labels map[string]string) error {
 				return fmt.Errorf("failed to query container labels=%v: %v", labels, err)
 			}
 			allHealthy := true
+			healthyCount := 0
+			totalCount := 0
 			for _, c := range containers {
+				if len(filterServices) > 0 && !slices.Contains(filterServices, c.Labels["com.docker.compose.service"]) {
+					continue
+				}
+				totalCount++
 				health, logOutput := GetContainerHealth(&c)
 
 				switch health {
-				case "healthy":
+				case string(container.Healthy):
+					healthyCount++
 					continue
-				case "unhealthy":
+				case string(container.Unhealthy):
 					name, suggestedCommand := getSuggestedCommandForContainerLog(&c, 0)
 					return fmt.Errorf("%s container is unhealthy, log=%s\n%s", name, logOutput, suggestedCommand)
-				case "exited":
+				case string(container.StateExited):
 					name, suggestedCommand := getSuggestedCommandForContainerLog(&c, 0)
 					return fmt.Errorf("%s container exited.\n%s", name, suggestedCommand)
 				default:
 					allHealthy = false
 				}
 			}
+
+			// Ensure every requested service has at least one container.
+			// Without this, we could return success before a service
+			// (e.g. db) has registered with the Docker API.
+			if len(filterServices) > 0 {
+				for _, svc := range filterServices {
+					if !slices.ContainsFunc(containers, func(c container.Summary) bool {
+						return c.Labels["com.docker.compose.service"] == svc
+					}) {
+						allHealthy = false
+						break
+					}
+				}
+			} else if totalCount == 0 {
+				allHealthy = false
+			}
+
+			// Status changes are routine (DDEV_VERBOSE); a stall is what DDEV_DEBUG should surface.
+			currentStatus := fmt.Sprintf("%d/%d healthy", healthyCount, totalCount)
+			elapsed := time.Since(startTime).Round(time.Millisecond)
+			if currentStatus != lastStatus {
+				util.Verbose("ContainersWait: status changed to '%s' after %v", currentStatus, elapsed)
+				lastStatus = currentStatus
+				lastLogTime = time.Now()
+			} else if time.Since(lastLogTime) >= 5*time.Second {
+				util.Debug("ContainersWait: still waiting, status='%s' after %v", currentStatus, elapsed)
+				lastLogTime = time.Now()
+			}
+
 			if allHealthy {
 				return nil
 			}
 		}
 	}
-
-	// We should never get here.
-	//nolint: govet
-	return fmt.Errorf("inappropriate break out of for loop in ContainerWait() waiting for container labels %v", labels)
 }
 
 // getSuggestedCommandForContainerLog returns a command that can be used to find out what is wrong with a container
@@ -391,7 +526,12 @@ func getSuggestedCommandForContainerLog(c *container.Summary, timeout int) (stri
 		timeoutCommand, _ := util.ArrayToReadableOutput([]string{fmt.Sprintf("ddev config --default-container-timeout=%d && ddev restart", timeout*2)})
 		suggestedCommand = suggestedCommand + timeoutNote + timeoutCommand
 	}
-	if globalconfig.DdevDebug {
+	// In CI the containers are usually removed before anyone can run the commands above
+	if (globalconfig.DdevDebug || os.Getenv("CI") == "true") && !output.JSONOutput {
+		// output.StartWait() leaves its line open unless DDEV_DEBUG is set
+		if !globalconfig.DdevDebug {
+			_, _ = fmt.Fprintln(os.Stdout)
+		}
 		ctx, apiClient, err := GetDockerClient()
 		if err == nil {
 			var stdout bytes.Buffer
@@ -410,10 +550,12 @@ func getSuggestedCommandForContainerLog(c *container.Summary, timeout int) (stri
 				if err != nil {
 					util.Warning("Unable to copy logs from %s container: %v", name, err)
 				}
-				util.Debug("Logs from failed %s container:\n%s\n", name, strings.TrimSpace(stdout.String()))
+				output.UserErr.Warnf("Logs from failed %s container:\n%s", name, strings.TrimSpace(stdout.String()))
 			}
 			_, logOutput := GetContainerHealth(c)
-			util.Debug("Health log from failed %s container:\n%s\n", name, strings.TrimSpace(logOutput))
+			if logOutput = strings.TrimSpace(logOutput); logOutput != "" {
+				output.UserErr.Warnf("Health log from failed %s container:\n%s", name, logOutput)
+			}
 		}
 	}
 	return name, suggestedCommand
@@ -429,6 +571,7 @@ func ContainerName(c *container.Summary) string {
 
 // GetContainerHealth retrieves the health status of a given container.
 // returns status, most-recent-log
+// The container is only considered "healthy" if it's also "running", contrary to Docker's normal usage
 func GetContainerHealth(c *container.Summary) (string, string) {
 	if c == nil {
 		return "no container", ""
@@ -437,7 +580,7 @@ func GetContainerHealth(c *container.Summary) (string, string) {
 	// If the container is not running, then return exited as the health.
 	// "exited" means stopped.
 	cState := string(c.State)
-	if cState == "exited" || cState == "restarting" {
+	if cState == string(container.StateExited) || cState == string(container.StateRestarting) {
 		return cState, ""
 	}
 
@@ -462,18 +605,26 @@ func GetContainerHealth(c *container.Summary) (string, string) {
 		if numLogs > 0 {
 			logOutput = fmt.Sprintf("%v", inspect.Container.State.Health.Log[numLogs-1].Output)
 		}
-		// Podman doesn't update health status to unhealthy when container is not running
-		if IsPodman() && status != "starting" && inspect.Container.State.Status != "running" {
-			status = "unhealthy"
+		// A container can't be healthy if it's not running.
+		// Docker/Podman may cache the last health status even after state changes.
+		if inspect.Container.State.Status != container.StateRunning {
+			// Return actual state for known non-running states
+			switch inspect.Container.State.Status {
+			case container.StateExited, container.StateRestarting:
+				status = string(inspect.Container.State.Status)
+			default:
+				// For other non-running states, override cached health to unhealthy
+				status = string(container.Unhealthy)
+			}
 		}
 	} else {
 		// Some containers may not have a healthcheck. In that case
 		// we use State to determine health
-		switch string(inspect.Container.State.Status) {
-		case "running":
-			status = "healthy"
-		case "exited":
-			status = "exited"
+		switch inspect.Container.State.Status {
+		case container.StateRunning:
+			status = string(container.Healthy)
+		case container.StateExited:
+			status = string(container.StateExited)
 		}
 	}
 
@@ -547,12 +698,19 @@ func RunSimpleContainer(image string, name string, cmd []string, entrypoint []st
 		Binds:        binds,
 		PortBindings: portBindings,
 	}
-	return RunSimpleContainerExtended(name, config, hostConfig, removeContainerAfterRun, detach)
+	// timeout=0 means detach (don't wait for container to finish).
+	// 10 minutes is generous for any simple container task (e.g. chown, rm).
+	var timeout time.Duration
+	if !detach {
+		timeout = 10 * time.Minute
+	}
+	return RunSimpleContainerExtended(name, config, hostConfig, removeContainerAfterRun, timeout)
 }
 
-// RunSimpleContainerExtended runs a container (non-daemonized) and captures the stdout/stderr.
+// RunSimpleContainerExtended runs a container and captures the stdout/stderr.
 // Accepts any config and hostConfig. If stdin is provided, enables interactive mode with stdin forwarding.
-func RunSimpleContainerExtended(name string, config *container.Config, hostConfig *container.HostConfig, removeContainerAfterRun bool, detach bool) (containerID string, out string, returnErr error) {
+// timeout controls how long to wait for the container to finish; 0 means detach (don't wait).
+func RunSimpleContainerExtended(name string, config *container.Config, hostConfig *container.HostConfig, removeContainerAfterRun bool, timeout time.Duration) (containerID string, out string, returnErr error) {
 	ctx, apiClient, err := GetDockerClient()
 	if err != nil {
 		return "", "", err
@@ -560,7 +718,7 @@ func RunSimpleContainerExtended(name string, config *container.Config, hostConfi
 
 	image := config.Image
 	if image == "" {
-		return "", "", fmt.Errorf("RunSimpleContainerExtended requires config.Image to be set")
+		return "", "", fmt.Errorf("image name is not set")
 	}
 
 	// Ensure image string includes a tag
@@ -614,8 +772,8 @@ func RunSimpleContainerExtended(name string, config *container.Config, hostConfi
 			if usernsMode, exists := config.Labels["com.ddev.userns"]; exists {
 				hostConfig.UsernsMode = container.UsernsMode(usernsMode)
 			}
-		} else {
-			// Always use "keep-id" for non-root users
+		} else if UseKeepID() {
+			// Use "keep-id" for non-root users (Linux rootless Podman only)
 			hostConfig.UsernsMode = "keep-id"
 		}
 	}
@@ -632,9 +790,11 @@ func RunSimpleContainerExtended(name string, config *container.Config, hostConfi
 	if config.Labels == nil {
 		config.Labels = make(map[string]string)
 	}
-	// Assign a default label so this container can be removed with 'ddev poweroff'
-	if _, exists := config.Labels["com.ddev.site-name"]; !exists {
-		config.Labels["com.ddev.site-name"] = ""
+	// Ensure all global DDEV labels are present; caller-provided values take precedence.
+	for k, v := range GlobalDdevLabels() {
+		if _, exists := config.Labels[k]; !exists {
+			config.Labels[k] = v
+		}
 	}
 
 	// Set up host.docker.internal based on DDEV's standard approach
@@ -645,12 +805,16 @@ func RunSimpleContainerExtended(name string, config *container.Config, hostConfi
 
 	c, err := apiClient.ContainerCreate(ctx, client.ContainerCreateOptions{Config: config, HostConfig: hostConfig, Name: name})
 	if err != nil {
-		return "", "", fmt.Errorf("failed to create/start Docker container %v (%v, %v): %v", name, config, hostConfig, err)
+		util.Debug("RunSimpleContainer: failed to create container %s with config=%+v and hostConfig=%+v: %v", name, config, hostConfig, err)
+		return "", "", fmt.Errorf("failed to create container %s: %v", name, err)
 	}
 
 	if removeContainerAfterRun {
-		// nolint: errcheck
-		defer RemoveContainer(c.ID)
+		untrack := trackContainer(c.ID)
+		defer func() {
+			_ = RemoveContainer(c.ID)
+			untrack()
+		}()
 	}
 
 	var hijackedResp *client.HijackedResponse
@@ -667,7 +831,7 @@ func RunSimpleContainerExtended(name string, config *container.Config, hostConfi
 
 		resp, err := apiClient.ContainerAttach(ctx, c.ID, attachOptions)
 		if err != nil {
-			return c.ID, "", fmt.Errorf("failed to attach to container: %v", err)
+			return c.ID, "", fmt.Errorf("failed to attach to container %s (%s): %v", name, TruncateID(c.ID), err)
 		}
 		hijackedResp = &resp.HijackedResponse
 		defer hijackedResp.Close()
@@ -689,8 +853,8 @@ func RunSimpleContainerExtended(name string, config *container.Config, hostConfi
 				_, _ = buf.ReadFrom(hijackedResp.Reader)
 				text := strings.ReplaceAll(buf.String(), "\r\n", "\n")
 				text = strings.ReplaceAll(text, "\r", "\n")
-				lines := strings.Split(text, "\n")
-				for _, line := range lines {
+				lines := strings.SplitSeq(text, "\n")
+				for line := range lines {
 					if line != "" {
 						output.UserOut.Println(line)
 					}
@@ -710,18 +874,51 @@ func RunSimpleContainerExtended(name string, config *container.Config, hostConfi
 	}
 
 	if _, err := apiClient.ContainerStart(ctx, c.ID, client.ContainerStartOptions{}); err != nil {
-		return c.ID, "", fmt.Errorf("failed to StartContainer: %v", err)
+		return c.ID, "", fmt.Errorf("failed to start container %s (%s): %v", name, TruncateID(c.ID), err)
 	}
 
 	exitCode := 0
 
-	if !detach {
-		waitResult := apiClient.ContainerWait(ctx, c.ID, client.ContainerWaitOptions{Condition: container.WaitConditionNotRunning})
-		select {
-		case status := <-waitResult.Result:
-			exitCode = int(status.StatusCode)
-		case err := <-waitResult.Error:
-			return c.ID, "", fmt.Errorf("failed to ContainerWait: %v", err)
+	if timeout > 0 {
+		// On Lima/Colima, ContainerInspect may report State.Running=true even after
+		// the container has exited, causing the polling loop to exhaust the deadline.
+		// Observed only in tests, not reported by users; possibly a Lima/Colima bug.
+		waitCtx, waitCancel := context.WithTimeout(ctx, timeout)
+		defer waitCancel()
+		tickChan := time.NewTicker(500 * time.Millisecond)
+		defer tickChan.Stop()
+		var lastKnownState *container.State
+		attempt := 0
+		for {
+			attempt++
+			inspectStartTime := time.Now()
+			info, err := apiClient.ContainerInspect(waitCtx, c.ID, client.ContainerInspectOptions{})
+			inspectElapsedTime := time.Since(inspectStartTime)
+			if err != nil && waitCtx.Err() == nil {
+				return c.ID, "", fmt.Errorf("failed to inspect container %s (%s): %v", name, TruncateID(c.ID), err)
+			}
+			if err == nil {
+				if info.Container.State == nil {
+					return c.ID, "", fmt.Errorf("container %s (%s) has <nil> state", name, TruncateID(c.ID))
+				}
+				lastKnownState = info.Container.State
+				if !info.Container.State.Running {
+					exitCode = info.Container.State.ExitCode
+					break
+				}
+			}
+			select {
+			case <-waitCtx.Done():
+			case <-tickChan.C:
+			}
+			if waitCtx.Err() != nil {
+				var lastKnownHealth any = "<nil>"
+				if lastKnownState != nil && lastKnownState.Health != nil {
+					lastKnownHealth = *lastKnownState.Health
+				}
+				util.Debug("RunSimpleContainer: container %s (%s) attempt=%d inspectElapsedTime=%v inspectErr=%v lastKnownState=%+v lastKnownHealth=%+v", name, TruncateID(c.ID), attempt, inspectElapsedTime, err, lastKnownState, lastKnownHealth)
+				return c.ID, "", fmt.Errorf("timed out after %s waiting for container %s (%s) to stop: %w", timeout, name, TruncateID(c.ID), waitCtx.Err())
+			}
 		}
 
 		// For interactive containers, wait for I/O forwarding to complete
@@ -739,6 +936,7 @@ func RunSimpleContainerExtended(name string, config *container.Config, hostConfi
 	var exitErr error
 
 	if exitCode != 0 {
+		// "container run failed with exit code" is used as a marker in `ddev auth ssh`
 		exitErr = fmt.Errorf("container run failed with exit code %d", exitCode)
 	}
 
@@ -751,14 +949,14 @@ func RunSimpleContainerExtended(name string, config *container.Config, hostConfi
 	options := client.ContainerLogsOptions{ShowStdout: true, ShowStderr: true}
 	rc, err := apiClient.ContainerLogs(ctx, c.ID, options)
 	if err != nil {
-		return c.ID, "", fmt.Errorf("failed to get container logs: %v", err)
+		return c.ID, "", fmt.Errorf("failed to get container %s (%s) logs: %v", name, TruncateID(c.ID), err)
 	}
 	defer rc.Close()
 
 	var stdout bytes.Buffer
 	_, err = stdcopy.StdCopy(&stdout, &stdout, rc)
 	if err != nil {
-		return c.ID, "", fmt.Errorf("failed to copy container logs: %v", err)
+		return c.ID, "", fmt.Errorf("failed to copy container %s (%s) logs: %v", name, TruncateID(c.ID), err)
 	}
 
 	return c.ID, stdout.String(), exitErr
@@ -797,47 +995,165 @@ func RemoveContainersByLabels(labels map[string]string) error {
 	return nil
 }
 
-// GetBoundHostPorts takes a container pointer and returns an array
-// of exposed ports (and error)
-func GetBoundHostPorts(containerID string) ([]string, error) {
+// addBoundHostPorts collects the non-empty HostPort values from a
+// network.PortMap into portMap.
+func addBoundHostPorts(portMap map[string]bool, m network.PortMap) {
+	for _, portBindings := range m {
+		for _, binding := range portBindings {
+			// Only include ports with a non-empty HostPort
+			if binding.HostPort != "" {
+				portMap[binding.HostPort] = true
+			}
+		}
+	}
+}
+
+// GetContainerPortBindings returns the host port bindings of a container,
+// whether or not it is running.
+func GetContainerPortBindings(containerID string) (network.PortMap, error) {
 	ctx, apiClient, err := GetDockerClient()
 	if err != nil {
 		return nil, err
 	}
 	inspectInfo, err := apiClient.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
+	if err != nil {
+		return nil, err
+	}
 
+	var configured, actual network.PortMap
+	if inspectInfo.Container.HostConfig != nil {
+		configured = inspectInfo.Container.HostConfig.PortBindings
+	}
+	if inspectInfo.Container.NetworkSettings != nil {
+		actual = inspectInfo.Container.NetworkSettings.Ports
+	}
+	return mergePortBindings(configured, actual), nil
+}
+
+// mergePortBindings returns the configured bindings, taking a port's actual
+// binding when its configured host port is empty: the engine chose it, or the
+// provider (socktainer/Apple Container) leaves PortBindings empty on inspect.
+func mergePortBindings(configured, actual network.PortMap) network.PortMap {
+	merged := network.PortMap{}
+	maps.Copy(merged, configured)
+	for port, bindings := range actual {
+		if !slices.ContainsFunc(merged[port], func(b network.PortBinding) bool { return b.HostPort != "" }) {
+			merged[port] = bindings
+		}
+	}
+	return merged
+}
+
+// GetBoundHostPorts takes a container pointer and returns an array
+// of exposed ports (and error)
+func GetBoundHostPorts(containerID string) ([]string, error) {
+	bindings, err := GetContainerPortBindings(containerID)
 	if err != nil {
 		return nil, err
 	}
 
 	portMap := map[string]bool{}
+	addBoundHostPorts(portMap, bindings)
+	var ports []string
+	for k := range portMap {
+		ports = append(ports, k)
+	}
+	slices.SortFunc(ports, func(a, b string) int {
+		x, _ := strconv.Atoi(a)
+		y, _ := strconv.Atoi(b)
+		return cmp.Compare(x, y)
+	})
+	return ports, nil
+}
 
-	if inspectInfo.Container.HostConfig != nil && inspectInfo.Container.HostConfig.PortBindings != nil {
-		for _, portBindings := range inspectInfo.Container.HostConfig.PortBindings {
-			if len(portBindings) > 0 {
-				for _, binding := range portBindings {
-					// Only include ports with a non-empty HostPort
-					if binding.HostPort != "" {
-						portMap[binding.HostPort] = true
+// GetRouterNetworkAliases takes a container ID and returns network aliases
+// from the ddev_default network (and error)
+func GetRouterNetworkAliases(containerID string) ([]string, error) {
+	ctx, apiClient, err := GetDockerClient()
+	if err != nil {
+		return nil, err
+	}
+
+	inspectInfo, err := apiClient.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	aliasMap := map[string]bool{}
+
+	// Extract aliases from ddev_default network
+	if inspectInfo.Container.NetworkSettings != nil && inspectInfo.Container.NetworkSettings.Networks != nil {
+		if ddevNetwork, ok := inspectInfo.Container.NetworkSettings.Networks["ddev_default"]; ok {
+			if ddevNetwork.Aliases != nil {
+				for _, alias := range ddevNetwork.Aliases {
+					// Filter out the router's own container name and ID
+					// Docker automatically adds these, but we only want project hostnames
+					if alias != "ddev-router" && alias != containerID[:12] {
+						aliasMap[alias] = true
 					}
 				}
 			}
 		}
 	}
-	var ports []string
-	for k := range portMap {
-		ports = append(ports, k)
+
+	aliases := []string{}
+	for k := range aliasMap {
+		aliases = append(aliases, k)
 	}
-	sort.Slice(ports, func(i, j int) bool {
-		return ports[i] < ports[j]
-	})
-	return ports, nil
+	slices.Sort(aliases)
+	return aliases, nil
+}
+
+// UpdateContainerNetworkAliases sets the container's network aliases on the
+// given network. Docker only allows aliases to be set at connect time, so this
+// disconnects and reconnects the container with the new alias set, which avoids
+// recreating the container.
+func UpdateContainerNetworkAliases(containerID, networkName string, aliases []string) error {
+	ctx, apiClient, err := GetDockerClient()
+	if err != nil {
+		return err
+	}
+
+	// Only disconnect when connected, so an earlier failed reconnect can be repaired.
+	inspectInfo, err := apiClient.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
+	if err != nil {
+		return err
+	}
+	connected := false
+	if inspectInfo.Container.NetworkSettings != nil {
+		_, connected = inspectInfo.Container.NetworkSettings.Networks[networkName]
+	}
+
+	if connected {
+		if _, err = apiClient.NetworkDisconnect(ctx, networkName, client.NetworkDisconnectOptions{
+			Container: containerID,
+		}); err != nil {
+			return fmt.Errorf("failed to disconnect container %s from network %s: %v", containerID, networkName, err)
+		}
+	}
+
+	if _, err = apiClient.NetworkConnect(ctx, networkName, client.NetworkConnectOptions{
+		Container: containerID,
+		EndpointConfig: &network.EndpointSettings{
+			Aliases: aliases,
+		},
+	}); err != nil {
+		return fmt.Errorf("failed to reconnect container %s to network %s: %v", containerID, networkName, err)
+	}
+
+	return nil
 }
 
 // Exec does a simple docker exec, no frills, it executes the command
 // with the specified uid (or defaults to root=0 if empty uid)
 // Returns stdout, stderr, error
 func Exec(containerID string, command string, uid string) (string, string, error) {
+	return ExecWithStdin(containerID, command, uid, nil)
+}
+
+// ExecWithStdin is Exec with stdin supplied to the command, which sees
+// end of input once stdin is exhausted. A nil stdin attaches none.
+func ExecWithStdin(containerID string, command string, uid string, stdin io.Reader) (string, string, error) {
 	ctx, apiClient, err := GetDockerClient()
 	if err != nil {
 		return "", "", err
@@ -848,6 +1164,7 @@ func Exec(containerID string, command string, uid string) (string, string, error
 	}
 	execCreate, err := apiClient.ExecCreate(ctx, containerID, client.ExecCreateOptions{
 		Cmd:          []string{"sh", "-c", command},
+		AttachStdin:  stdin != nil,
 		AttachStdout: true,
 		AttachStderr: true,
 		User:         uid,
@@ -860,6 +1177,16 @@ func Exec(containerID string, command string, uid string) (string, string, error
 	execAttach, err := apiClient.ExecAttach(ctx, execCreate.ID, client.ExecAttachOptions{})
 	if err != nil {
 		return "", "", err
+	}
+	if stdin != nil {
+		go func() {
+			_, _ = io.Copy(execAttach.Conn, stdin)
+			_ = execAttach.CloseWrite()
+		}()
+	} else {
+		// Half-close even with nothing to send, as the docker CLI does, so a daemon
+		// that waits for the client's end of input before closing the stream ends it.
+		_ = execAttach.CloseWrite()
 	}
 	defer execAttach.Close()
 
@@ -948,7 +1275,7 @@ func CopyIntoContainer(srcPath string, containerName string, dstPath string, exc
 		return err
 	}
 
-	util.Debug("Copied %s:%s into %s in %v", srcPath, containerName, dstPath, time.Since(startTime))
+	util.Verbose("Copied %s:%s into %s in %v", srcPath, containerName, dstPath, time.Since(startTime))
 	return nil
 }
 
@@ -1008,29 +1335,8 @@ func CopyFromContainer(containerName string, containerPath string, hostPath stri
 	return nil
 }
 
-// GetContainerNames takes an array of Container
-// and returns an array of strings with container names.
-// Use removePrefix to get short container names.
-func GetContainerNames(containers []container.Summary, excludeContainerNames []string, removePrefix string) []string {
-	var names []string
-	for _, c := range containers {
-		if len(c.Names) == 0 {
-			continue
-		}
-		name := c.Names[0][1:] // Trimming the leading '/' from the container name
-		if slices.Contains(excludeContainerNames, name) {
-			continue
-		}
-		if removePrefix != "" {
-			name = strings.TrimPrefix(name, removePrefix)
-		}
-		names = append(names, name)
-	}
-	return names
-}
-
 // ValidatePort checks that the given port is valid (in range 1-65535)
-func ValidatePort(port interface{}) error {
+func ValidatePort(port any) error {
 	var dockerPort int
 	switch v := port.(type) {
 	case int:
@@ -1081,7 +1387,7 @@ func setupRawTerminal() (restore func(), err error) {
 		return nil, fmt.Errorf("failed to set stdout to raw mode: %v", err)
 	}
 
-	restore = func() {
+	restoreTerminal := func() {
 		if stdinState != nil {
 			_ = term.RestoreTerminal(os.Stdin.Fd(), stdinState)
 		}
@@ -1089,6 +1395,10 @@ func setupRawTerminal() (restore func(), err error) {
 			_ = term.RestoreTerminal(os.Stdout.Fd(), stdoutState)
 		}
 	}
+	untrack := trackRawTerminal(restoreTerminal)
 
-	return restore, nil
+	return func() {
+		untrack()
+		restoreTerminal()
+	}, nil
 }

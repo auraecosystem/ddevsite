@@ -20,6 +20,7 @@ import "github.com/compose-spec/compose-go/v2/tree"
 
 var omitempty = []tree.Path{
 	"services.*.dns",
+	"jobs.*.dns",
 }
 
 // OmitEmpty removes empty attributes which are irrelevant when unset
@@ -41,7 +42,7 @@ func omitEmpty(data any, p tree.Path) any {
 		}
 		return v
 	case []any:
-		var c []any
+		c := make([]any, 0, len(v))
 		for _, e := range v {
 			if isEmpty(e) && mustOmit(p) {
 				continue

@@ -68,7 +68,7 @@ Drush 13+ disables Xdebug even when [Xdebug is enabled on DDEV](../debugging-pro
 As per [Drush docs](https://www.drush.org/13.x/commands/#xdebug) you can:
 
 * Enable it for a single Drush command by running: `ddev drush --xdebug`
-* Set `DRUSH_ALLOW_XDEBUG=1` [environment variable](../extend/customization-extendibility.md#environment-variables-for-containers-and-services), allowing every Drush call to be run with Xdebug when the PHP extension is enabled.
+* Set `DRUSH_ALLOW_XDEBUG=1` [environment variable](../configuration/environment-variables.md), allowing every Drush call to be run with Xdebug when the PHP extension is enabled.
 
 #### Multisite
 
@@ -116,6 +116,16 @@ As per [Drush docs](https://www.drush.org/13.x/commands/#xdebug) you can:
             - DRUSH_SHELL_PID=PERMANENT
         ```
 
+### MODX Specifics
+
+#### MODX Settings File
+
+On [`ddev start`](../usage/commands.md#start), DDEV manages MODX Revolution's main configuration file, `core/config/config.inc.php`, for both MODX 2.x and 3.x. It writes the DDEV database credentials (database name, user, and password are all `db`; host is `db`) along with the MODX path and URL constants, so a project whose database has been imported or seeded connects and boots straight away, including the `/manager/` backend.
+
+The generated file carries the `#ddev-generated` signature. If you want to take over the file and manage it yourself, remove that signature line and DDEV will respect your version and won't overwrite it. DDEV also leaves a config file that was written by the MODX installer (which has no signature) alone.
+
+The `config.core.php` stub files (at the web root and in `core/`, `manager/`, and `connectors/`) only define `MODX_CORE_PATH` and `MODX_CONFIG_KEY`; DDEV does not touch them.
+
 ### TYPO3 Specifics
 
 #### Settings Files
@@ -148,15 +158,15 @@ See also [TYPO3 Documentation](https://docs.typo3.org/m/typo3/reference-coreapi/
 
 #### WP-CLI and changing the docroot in config.yaml
 
-!!!note "DDEV v1.24.5+ automatically adds `--path=$DDEV_DOCROOT` to the `ddev wp` command if needed."
+[`ddev wp`](../usage/commands.md#wp) defaults WP-CLI's `path` to your project's docroot, so WP-CLI still finds WordPress when the docroot is something other than the project root (`''`).
 
-If you use something other than the root directory (`''`) for your docroot, [`ddev wp`](../usage/commands.md#wp) will not work properly. To fix this, create a `wp-cli.yml` file in the project root directory that contains `path: <docroot/path>`.
-
-For example, if your docroot is `public`, your `wp-cli.yml` file should contain:
+If WordPress does not live at the docroot, override that default with a `wp-cli.yml` file in the project root directory. [Bedrock](https://roots.io/bedrock/), for example, serves from `web` but keeps WordPress in `web/wp`, so its `wp-cli.yml` contains:
 
 ```yaml
-path: public
+path: web/wp
 ```
+
+A `--path` flag, an [alias](https://make.wordpress.org/cli/handbook/references/config/#config-files), and `wp-cli.local.yml` all take precedence over the DDEV default in the same way.
 
 #### WordPress Environment Type
 

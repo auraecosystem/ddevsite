@@ -95,8 +95,8 @@ header "project configuration via ddev utility configyaml"
 ddev utility configyaml --full-yaml --omit-keys=web_environment 2>/dev/null || { ddev utility configyaml | (grep -v "^web_environment" || true); }
 
 header "DDEV Global Information"
-if [ "$XDG_CONFIG_HOME" != "" ]; then
-  echo "XDG_CONFIG_HOME is set to non-default value: '${XDG_CONFIG_HOME}'"
+if [ "$DDEV_XDG_CONFIG_HOME" != "" ]; then
+  echo "DDEV_XDG_CONFIG_HOME is set to non-default value: '${DDEV_XDG_CONFIG_HOME}'"
 fi
 echo "Global DDEV dir is $(get_global_ddev_dir)"
 echo ""
@@ -110,12 +110,7 @@ if [ "${OSTYPE%-*}" = "linux" ]; then
 fi
 
 header "existing project customizations"
-grep -r -L "#ddev-generated" .ddev/docker-compose.*.yaml .ddev/php .ddev/mutagen .ddev/apache .ddev/nginx* .ddev/*-build .ddev/mysql .ddev/postgres .ddev/traefik/config .ddev/.env .ddev/.env.* 2>/dev/null | grep -v '\.example$' 2>/dev/null
-
-if ls .ddev/nginx >/dev/null 2>&1 ; then
-  echo "Customizations in .ddev/nginx:"
-  ls -l .ddev/nginx
-fi
+ddev utility check-custom-config --all || true
 
 header "installed DDEV add-ons"
 

@@ -12,16 +12,14 @@ teardown() {
 }
 
 @test "Magento 2 quickstart with $(ddev --version)" {
-
   if [ "${MAGENTO2_PUBLIC_ACCESS_KEY}" = "" ]; then
     skip "MAGENTO2_PUBLIC_ACCESS_KEY not provided (forked PR)"
   fi
 
-  run mkdir ${PROJNAME} && cd ${PROJNAME}
-  assert_success
+  run -0 mkdir -p ${PROJNAME}
+  cd ${PROJNAME}
 
-  run ddev config --project-type=magento2 --docroot=pub --upload-dirs=media --disable-settings-management
-  assert_success
+  run -0 ddev config --project-type=magento2 --docroot=pub --upload-dirs=media --disable-settings-management
 
   mkdir -p ./.ddev/homeadditions/.composer
 
@@ -37,72 +35,55 @@ teardown() {
 }
 EOF
 
-  run ddev add-on get ddev/ddev-opensearch
-  assert_success
+  run -0 ddev add-on get ddev/ddev-opensearch
 
-  run ddev start -y
-  assert_success
+  run -0 ddev start -y
 
-  run ddev composer create-project --repository https://repo.magento.com/ magento/project-community-edition
-  assert_success
+  _extra_info
+
+  run -0 _retry ddev composer create-project --repository https://repo.magento.com/ magento/project-community-edition
 
   # Copy the auth.json into var/composer_home for the deploying the sample data sep
-  run ddev exec "mkdir -p var/composer_home && cp ~/.composer/auth.json var/composer_home/auth.json"
-  assert_success
+  run -0 ddev exec "mkdir -p var/composer_home && cp ~/.composer/auth.json var/composer_home/auth.json"
 
-  run rm -f app/etc/env.php
-  assert_success
+  run -0 rm -f app/etc/env.php
   assert_file_not_exist app/etc/env.php
 
-  run ddev magento setup:install --base-url="https://${PROJNAME}.ddev.site/" \
+  run -0 ddev magento setup:install --base-url="${PRIMARY_URL}/" \
       --cleanup-database --db-host=db --db-name=db --db-user=db --db-password=db \
       --opensearch-host=opensearch --search-engine=opensearch --opensearch-port=9200 \
       --admin-firstname=Magento --admin-lastname=User --admin-email=user@example.com \
       --admin-user=admin --admin-password=Password123 --language=en_US
-  assert_success
 
-  run ddev magento deploy:mode:set developer
-  assert_success
+  run -0 ddev magento deploy:mode:set developer
 
-  run ddev magento module:disable Magento_TwoFactorAuth Magento_AdminAdobeImsTwoFactorAuth
-  assert_success
+  run -0 ddev magento module:disable Magento_TwoFactorAuth Magento_AdminAdobeImsTwoFactorAuth
 
-  run ddev config --disable-settings-management=false
-  assert_success
+  run -0 ddev config --disable-settings-management=false
 
-  run ddev magento setup:config:set --backend-frontname="admin_ddev" --no-interaction
-  assert_success
+  run -0 ddev magento setup:config:set --backend-frontname="admin_ddev" --no-interaction
 
   # Add sample data for Magento
-  run ddev magento sampledata:deploy
-  assert_success
+  run -0 ddev magento sampledata:deploy
 
   # Re-run the setup script to include the sample data
-  run ddev magento setup:upgrade
-  assert_success
+  run -0 ddev magento setup:upgrade
 
   # validate ddev launch
-  DDEV_DEBUG=true run ddev launch /admin_ddev
-  assert_output "FULLURL https://${PROJNAME}.ddev.site/admin_ddev"
-  assert_success
+  DDEV_DEBUG=true run -0 ddev launch /admin_ddev
+  assert_output "FULLURL ${PRIMARY_URL}/admin_ddev"
   # validate running project
-  run curl -sfI https://${PROJNAME}.ddev.site
-  assert_success
+  run -0 curl -sSfI ${PRIMARY_URL}
   assert_output --partial "server: nginx"
   assert_output --partial "HTTP/2 200"
-  run curl -sf https://${PROJNAME}.ddev.site
-  assert_success
-  assert_output --partial "Copyright © 2013-present Magento, Inc. All rights reserved."
-  assert_output --partial "Here is what\`s trending on Luma right now"
-  assert_output --partial "title=\"Argus All-Weather Tank\""
-  run curl -sfI https://${PROJNAME}.ddev.site/index.php/admin_ddev/
-  assert_success
+  _assert_page_contains ${PRIMARY_URL} \
+    "Copyright © 2013-present Magento, Inc. All rights reserved." \
+    "Here is what\`s trending on Luma right now" \
+    "title=\"Argus All-Weather Tank\""
+  run -0 curl -sSfI ${PRIMARY_URL}/index.php/admin_ddev/
   assert_output --partial "server: nginx"
   assert_output --partial "HTTP/2 200"
-  run curl -sf https://${PROJNAME}.ddev.site/index.php/admin_ddev/
-  assert_success
-  assert_output --partial "Copyright &copy; $(date +%Y) Magento Commerce Inc. All rights reserved."
-  run curl -sf https://${PROJNAME}.ddev.site:5602/app/home#/
-  assert_success
-  assert_output --partial "<title>OpenSearch Dashboards</title>"
+  _assert_page_contains ${PRIMARY_URL}/index.php/admin_ddev/ "Copyright &copy; $(date +%Y) Magento Commerce Inc. All rights reserved."
+  # OpenSearch Dashboards is exposed on its own port, independent of router_https_port
+  _assert_page_contains https://${DDEV_HOSTNAME}:5602/app/home#/ "<title>OpenSearch Dashboards</title>"
 }

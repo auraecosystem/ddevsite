@@ -10,9 +10,126 @@
       "description": "Not currently used.",
       "type": "boolean"
     },
+    "docker_buildx_version": {
+      "description": "docker-buildx version to use. \"system\" (default) uses the installed plugin without downloading. Set to a version like \"0.33.0\" to download it.",
+      "type": "string",
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "system"
+          ]
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
     "fail_on_hook_fail": {
       "description": "Whether \"ddev start\" should be interrupted by a failing hook, on a single project or for all projects if used globally.",
       "type": "boolean"
+    },
+    "hooks": {
+      "description": "Run tasks before or after main DDEV commands for every project, in addition to the hooks in each project's config.yaml.",
+      "type": "object",
+      "properties": {
+        "pre-start": {
+          "$ref": "#/definitions/DdevTask"
+        },
+        "post-start": {
+          "$ref": "#/definitions/DdevTask"
+        },
+        "pre-import-db": {
+          "$ref": "#/definitions/DdevTask"
+        },
+        "post-import-db": {
+          "$ref": "#/definitions/DdevTask"
+        },
+        "pre-import-files": {
+          "$ref": "#/definitions/DdevTask"
+        },
+        "post-import-files": {
+          "$ref": "#/definitions/DdevTask"
+        },
+        "pre-composer": {
+          "$ref": "#/definitions/DdevTask"
+        },
+        "post-composer": {
+          "$ref": "#/definitions/DdevTask"
+        },
+        "pre-stop": {
+          "$ref": "#/definitions/DdevTask"
+        },
+        "pre-config": {
+          "$ref": "#/definitions/DdevTask"
+        },
+        "post-config": {
+          "$ref": "#/definitions/DdevTask"
+        },
+        "pre-describe": {
+          "$ref": "#/definitions/DdevTask"
+        },
+        "post-describe": {
+          "$ref": "#/definitions/DdevTask"
+        },
+        "pre-exec": {
+          "$ref": "#/definitions/DdevTask"
+        },
+        "post-exec": {
+          "$ref": "#/definitions/DdevTask"
+        },
+        "pre-pause": {
+          "$ref": "#/definitions/DdevTask"
+        },
+        "post-pause": {
+          "$ref": "#/definitions/DdevTask"
+        },
+        "pre-pull": {
+          "$ref": "#/definitions/DdevTask"
+        },
+        "post-pull": {
+          "$ref": "#/definitions/DdevTask"
+        },
+        "pre-push": {
+          "$ref": "#/definitions/DdevTask"
+        },
+        "post-push": {
+          "$ref": "#/definitions/DdevTask"
+        },
+        "pre-share": {
+          "$ref": "#/definitions/DdevTask"
+        },
+        "post-share": {
+          "$ref": "#/definitions/DdevTask"
+        },
+        "pre-snapshot": {
+          "$ref": "#/definitions/DdevTask"
+        },
+        "post-snapshot": {
+          "$ref": "#/definitions/DdevTask"
+        },
+        "pre-delete-snapshot": {
+          "$ref": "#/definitions/DdevTask"
+        },
+        "post-delete-snapshot": {
+          "$ref": "#/definitions/DdevTask"
+        },
+        "pre-restore-snapshot": {
+          "$ref": "#/definitions/DdevTask"
+        },
+        "post-restore-snapshot": {
+          "$ref": "#/definitions/DdevTask"
+        },
+        "post-stop": {
+          "$ref": "#/definitions/DdevTask"
+        },
+        "pre-delete": {
+          "$ref": "#/definitions/DdevTask"
+        },
+        "post-delete": {
+          "$ref": "#/definitions/DdevTask"
+        }
+      }
     },
     "instrumentation_opt_in": {
       "description": "Whether to allow instrumentation reporting.",
@@ -39,16 +156,38 @@
       "type": "string"
     },
     "letsencrypt_email": {
-      "description": "Email associated with Let's Encrypt feature. (Works in conjunction with use_letsencrypt.) (Not currently compatible with Traefik router.)",
+      "description": "Email associated with Let's Encrypt feature. (Works in conjunction with use_letsencrypt.)",
       "type": "string"
     },
     "mailpit_http_port": {
       "description": "Router port used for Mailpit HTTP, can be overridden in project config.",
-      "type": "string"
+      "type": "string",
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "8025"
+          ]
+        },
+        {
+          "type": "string"
+        }
+      ]
     },
     "mailpit_https_port": {
       "description": "Router port used for Mailpit HTTPS, can be overridden in project config.",
-      "type": "string"
+      "type": "string",
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "8026"
+          ]
+        },
+        {
+          "type": "string"
+        }
+      ]
     },
     "messages": {
       "description": "Configure messages like the Tip of the Day.",
@@ -71,6 +210,10 @@
       "description": "Whether to not use Docker bind mounts.",
       "type": "boolean"
     },
+    "no_tui": {
+      "description": "Whether to disable the TUI (terminal user interface) when running the \"ddev\" command without arguments.",
+      "type": "boolean"
+    },
     "omit_containers": {
       "description": "List of container types that should not be started when the project is started.",
       "type": "array",
@@ -87,6 +230,14 @@
       "description": "Whether to omit the project name from config.yaml and use directory name instead.",
       "type": "boolean"
     },
+    "omit_snapshot_on_delete": {
+      "description": "Whether to omit the database snapshot when running 'ddev delete' by default.",
+      "type": "boolean"
+    },
+    "override_config": {
+      "description": "Whether a global_config.*.yaml file overrides values instead of merging them.",
+      "type": "boolean"
+    },
     "performance_mode": {
       "description": "Define the performance optimization mode to be used. Currently, Mutagen asynchronous caching is supported. Mutagen is enabled by default on Mac and Windows.",
       "type": "string",
@@ -97,11 +248,18 @@
     },
     "project_tld": {
       "description": "Set the top-level domain to be used for projects, defaults to \"ddev.site\".",
-      "type": "string"
-    },
-    "required_docker_compose_version": {
-      "description": "Specific docker-compose version for download.",
-      "type": "string"
+      "type": "string",
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "ddev.site"
+          ]
+        },
+        {
+          "type": "string"
+        }
+      ]
     },
     "router_bind_all_interfaces": {
       "description": "Whether to bind ddev-router's ports on all network interfaces.",
@@ -109,15 +267,70 @@
     },
     "router_http_port": {
       "description": "Router HTTP port for all projects, can be overridden in project config.",
-      "type": "string"
+      "type": "string",
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "80"
+          ]
+        },
+        {
+          "type": "string"
+        }
+      ]
     },
     "router_https_port": {
       "description": "Router HTTPS port for all projects, can be overridden in project config.",
-      "type": "string"
+      "type": "string",
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "443"
+          ]
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "share_default_provider": {
+      "description": "Default share provider for all projects, can be overridden in project config.",
+      "type": "string",
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "ngrok",
+            "cloudflared"
+          ]
+        },
+        {
+          "type": "string"
+        }
+      ]
     },
     "simple_formatting": {
       "description": "Whether to disable most \"ddev list\" and \"ddev describe\" table formatting.",
       "type": "boolean"
+    },
+    "ssh_agent_upstream": {
+      "description": "Existing SSH agent for ddev-ssh-agent to relay to: empty for DDEV's own agent, \"host\" for the agent the Docker provider forwards, or an absolute socket path.",
+      "type": "string",
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "",
+            "host"
+          ]
+        },
+        {
+          "type": "string",
+          "pattern": "^(~($|[\\\\/])|/|[A-Za-z]:[\\\\/]|\\\\\\\\)"
+        }
+      ]
     },
     "table_style": {
       "description": "Style for \"ddev list\" and \"ddev describe\".",
@@ -130,11 +343,18 @@
     },
     "traefik_monitor_port": {
       "description": "Specify an alternate port for the Traefik (ddev-router) monitor port. This defaults to 10999 and rarely needs to be changed, but can be changed in cases of port conflicts.",
-      "type": "string"
-    },
-    "use_docker_compose_from_path": {
-      "description": "Whether to use the system-installed docker-compose. You can otherwise use required_docker_compose_version to specify a version for download.",
-      "type": "boolean"
+      "type": "string",
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "10999"
+          ]
+        },
+        {
+          "type": "string"
+        }
+      ]
     },
     "use_hardened_images": {
       "description": "Whether to use hardened images for internet deployment.",
@@ -149,7 +369,8 @@
       "type": "array",
       "items": {
         "type": "string"
-      }
+      },
+      "uniqueItems": true
     },
     "wsl2_no_windows_hosts_mgt": {
       "description": "(WSL2 only) Whether to disable the management and checking of the Windows hosts file. By default, when using WSL2, DDEV manages the system-wide hosts file on the Windows side (normally C:\\Windows\\system32\\drivers\\etc\\hosts) by using ddev.exe installed on the Windows side. This normally works better for all applications, including browsers and IDEs. However, this behavior can be disabled by setting \"wsl_no_windows_hosts_mgt: true\".",
@@ -161,11 +382,33 @@
     },
     "xhgui_http_port": {
       "description": "Router port used for XHGui HTTP, can be overridden in project config.",
-      "type": "string"
+      "type": "string",
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "8143"
+          ]
+        },
+        {
+          "type": "string"
+        }
+      ]
     },
     "xhgui_https_port": {
       "description": "Router port used for XHGui HTTPS, can be overridden in project config.",
-      "type": "string"
+      "type": "string",
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "8142"
+          ]
+        },
+        {
+          "type": "string"
+        }
+      ]
     },
     "xhprof_mode": {
       "description": "Define the default XHProf usage mode.",
@@ -194,7 +437,122 @@
           "description": "URL for downloading sponsorship data.",
           "type": "string",
           "format": "uri"
+        },
+        "addon_data_url": {
+          "description": "URL for downloading add-on registry data.",
+          "type": "string",
+          "format": "uri"
         }
+      }
+    }
+  },
+  "definitions": {
+    "DdevTask": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "exec": {
+            "oneOf": [
+              {
+                "type": "string",
+                "description": "Command to execute in a container"
+              },
+              {
+                "type": "null",
+                "description": "Use exec_raw for command array"
+              }
+            ]
+          },
+          "exec-host": {
+            "type": "string",
+            "description": "Command to execute on the host"
+          },
+          "composer": {
+            "oneOf": [
+              {
+                "type": "string",
+                "description": "Composer command to execute in the web container"
+              },
+              {
+                "type": "null",
+                "description": "Use exec_raw for command array"
+              }
+            ]
+          },
+          "service": {
+            "type": "string",
+            "description": "Service to run the exec command in (defaults to 'web')"
+          },
+          "user": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ],
+            "description": "User to run the exec command as (username or UID)"
+          },
+          "exec_raw": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Raw command arguments array (used with exec or composer)"
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "exec"
+            ],
+            "properties": {
+              "exec": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "required": [
+              "exec",
+              "exec_raw"
+            ],
+            "properties": {
+              "exec": {
+                "type": "null"
+              }
+            }
+          },
+          {
+            "required": [
+              "exec-host"
+            ]
+          },
+          {
+            "required": [
+              "composer"
+            ],
+            "properties": {
+              "composer": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "required": [
+              "composer",
+              "exec_raw"
+            ],
+            "properties": {
+              "composer": {
+                "type": "null"
+              }
+            }
+          }
+        ]
       }
     }
   }

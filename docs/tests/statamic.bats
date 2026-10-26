@@ -12,17 +12,16 @@ teardown() {
 }
 
 @test "Statamic Composer quickstart with $(ddev --version)" {
-  # mkdir ${PROJNAME} && cd ${PROJNAME}
-  run mkdir ${PROJNAME} && cd ${PROJNAME}
-  assert_success
+  PROJNAME=my-statamic-composer-site
 
-  # ddev config --project-type=laravel --docroot=public
-  run ddev config --project-type=laravel --docroot=public
-  assert_success
+  run -0 mkdir -p ${PROJNAME}
+  cd ${PROJNAME}
 
-  # ddev composer create-project --prefer-dist statamic/statamic
-  run ddev composer create-project --prefer-dist statamic/statamic
-  assert_success
+  run -0 ddev config --project-type=laravel --docroot=public
+
+  run -0 _retry ddev composer create-project --prefer-dist statamic/statamic
+
+  _extra_info
 
   # fill out the interactive form
   run ddev php please make:user admin@example.com --password=admin1234 --super --no-interaction
@@ -31,31 +30,25 @@ teardown() {
 
 
   # validate ddev launch
-  run bash -c "DDEV_DEBUG=true ddev launch"
-  assert_output "FULLURL https://${PROJNAME}.ddev.site"
-  assert_success
-  run bash -c "DDEV_DEBUG=true ddev launch /cp"
-  assert_output "FULLURL https://${PROJNAME}.ddev.site/cp"
-  assert_success
+  DDEV_DEBUG=true run -0 ddev launch
+  assert_output "FULLURL ${PRIMARY_URL}"
+  DDEV_DEBUG=true run -0 ddev launch /cp
+  assert_output "FULLURL ${PRIMARY_URL}/cp"
 
     # validate running project
-  run curl -sfI https://${PROJNAME}.ddev.site
-  assert_success
+  run -0 curl -sSfI ${PRIMARY_URL}
   assert_output --partial "server: nginx"
   assert_output --partial "HTTP/2 200"
   assert_output --partial "x-powered-by: Statamic"
-  run curl -sfI https://${PROJNAME}.ddev.site/cp/auth/login
-  assert_success
+  run -0 curl -sSfI ${PRIMARY_URL}/cp/auth/login
   assert_output --partial "server: nginx"
   assert_output --partial "HTTP/2 200"
   assert_output --partial "x-powered-by: Statamic"
-  run curl -sf https://${PROJNAME}.ddev.site
-  assert_success
-  assert_output --partial "<title>Home</title>"
-  assert_output --partial "<li><a href=\"https://statamic.dev\">Head to the docs</a> and learn how Statamic&nbsp;works.</li>"
-  run curl -sf https://${PROJNAME}.ddev.site/cp/auth/login
-  assert_success
-  assert_output --partial "<title>Log in ‹ Statamic</title>"
+  _assert_page_contains ${PRIMARY_URL} \
+    "<title>Home</title>" \
+    "Welcome to your new Statamic site"
+  run -0 curl -sSf ${PRIMARY_URL}/cp/auth/login
+  assert_output --regexp 'component.*auth.*Login'
 }
 
 

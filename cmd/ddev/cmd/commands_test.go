@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	osexec "os/exec"
 	"path"
@@ -16,12 +17,14 @@ import (
 	"github.com/ddev/ddev/pkg/nodeps"
 	"github.com/ddev/ddev/pkg/testcommon"
 	"github.com/ddev/ddev/pkg/util"
+	"github.com/ddev/ddev/pkg/versionconstants"
 	asrt "github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // TestCustomCommands does basic checks to make sure custom commands work OK.
 func TestCustomCommands(t *testing.T) {
+	testcommon.SkipUnlessDefaultEnvironment(t)
 	assert := asrt.New(t)
 	runTime := util.TimeTrackC(t.Name())
 
@@ -191,9 +194,20 @@ func TestCustomCommands(t *testing.T) {
 		assert.NoError(err, "Failed to run ddev %s --version", c)
 	}
 	// The various CMS commands should not be available here
-	for _, c := range []string{"artisan", "art", "cake", "drush", "magento", "typo3", "wp"} {
+	for _, c := range []string{"artisan", "art", "cake", "dr", "drush", "magento", "maho", "typo3", "wp"} {
 		_, err = exec.RunHostCommand(DdevBin, c, "-h")
 		assert.Error(err, "found command %s when it should not have been there (no error) app.Type=%s", c, app.Type)
+	}
+
+	// asterios commands should only be available for type asterios
+	app.Type = nodeps.AppTypeAsterios
+	_ = app.WriteConfig()
+	_, _ = exec.RunHostCommand(DdevBin)
+	err = app.MutagenSyncFlush()
+	assert.NoError(err)
+	for _, c := range []string{"asterios"} {
+		_, err = exec.RunHostCommand(DdevBin, "help", c)
+		assert.NoError(err)
 	}
 
 	// TYPO3 commands should only be available for type typo3
@@ -209,7 +223,7 @@ func TestCustomCommands(t *testing.T) {
 	}
 
 	// Drupal commands should be available for type drupal/backdrop projects
-	for _, drupalType := range []string{nodeps.AppTypeDrupal7, nodeps.AppTypeDrupal8, nodeps.AppTypeDrupal9, nodeps.AppTypeDrupal10, nodeps.AppTypeDrupal11, nodeps.AppTypeBackdrop} {
+	for _, drupalType := range []string{nodeps.AppTypeDrupal7, nodeps.AppTypeDrupal8, nodeps.AppTypeDrupal9, nodeps.AppTypeDrupal10, nodeps.AppTypeDrupal11, nodeps.AppTypeDrupal12, nodeps.AppTypeBackdrop} {
 		app.Type = drupalType
 		_ = app.WriteConfig()
 		_, _ = exec.RunHostCommand(DdevBin)
@@ -222,6 +236,20 @@ func TestCustomCommands(t *testing.T) {
 		}
 	}
 
+	// New Drupal commands in drupal11/12+
+	for _, drupalType := range []string{nodeps.AppTypeDrupal, nodeps.AppTypeDrupal12, nodeps.AppTypeDrupal11} {
+		app.Type = drupalType
+		_ = app.WriteConfig()
+		_, _ = exec.RunHostCommand(DdevBin)
+		err = app.MutagenSyncFlush()
+		assert.NoError(err)
+
+		for _, c := range []string{"dr"} {
+			_, err = exec.RunHostCommand(DdevBin, "help", c)
+			assert.NoError(err)
+		}
+	}
+
 	// Laravel commands should only be available for type laravel
 	app.Type = nodeps.AppTypeLaravel
 	_ = app.WriteConfig()
@@ -229,6 +257,28 @@ func TestCustomCommands(t *testing.T) {
 	err = app.MutagenSyncFlush()
 	assert.NoError(err)
 	for _, c := range []string{"artisan", "art", "pint"} {
+		_, err = exec.RunHostCommand(DdevBin, "help", c)
+		assert.NoError(err)
+	}
+
+	// Symfony commands should only be available for type symfony
+	app.Type = nodeps.AppTypeSymfony
+	_ = app.WriteConfig()
+	_, _ = exec.RunHostCommand(DdevBin)
+	err = app.MutagenSyncFlush()
+	assert.NoError(err)
+	for _, c := range []string{"console"} {
+		_, err = exec.RunHostCommand(DdevBin, "help", c)
+		assert.NoError(err)
+	}
+
+	// Shopware 6 commands should only be available for type shopware6
+	app.Type = nodeps.AppTypeShopware6
+	_ = app.WriteConfig()
+	_, _ = exec.RunHostCommand(DdevBin)
+	err = app.MutagenSyncFlush()
+	assert.NoError(err)
+	for _, c := range []string{"console"} {
 		_, err = exec.RunHostCommand(DdevBin, "help", c)
 		assert.NoError(err)
 	}
@@ -266,6 +316,28 @@ func TestCustomCommands(t *testing.T) {
 		assert.NoError(err)
 	}
 
+	// CodeIgniter commands should only be available for type codeigniter
+	app.Type = nodeps.AppTypeCodeIgniter
+	_ = app.WriteConfig()
+	_, _ = exec.RunHostCommand(DdevBin)
+	err = app.MutagenSyncFlush()
+	assert.NoError(err)
+	for _, c := range []string{"spark"} {
+		_, err = exec.RunHostCommand(DdevBin, "help", c)
+		assert.NoError(err)
+	}
+
+	// Maho commands should only be available for type maho
+	app.Type = nodeps.AppTypeMaho
+	_ = app.WriteConfig()
+	_, _ = exec.RunHostCommand(DdevBin)
+	err = app.MutagenSyncFlush()
+	assert.NoError(err)
+	for _, c := range []string{"maho"} {
+		_, err = exec.RunHostCommand(DdevBin, "help", c)
+		assert.NoError(err)
+	}
+
 	// Make sure that the non-command stuff we installed has been copied into /mnt/ddev-global-cache
 	commandDirInVolume := "/mnt/ddev-global-cache/global-commands/"
 	for _, f := range []string{".gitattributes", "db/mysqldump.example", "db/README.txt", "web/README.txt"} {
@@ -284,6 +356,68 @@ func TestCustomCommands(t *testing.T) {
 		cmdPath := app.GetConfigPath(filepath.Join("commands", command))
 		assert.False(fileutil.FileExists(cmdPath), "file %s exists but it should not", cmdPath)
 	}
+}
+
+// TestCustomCommandContainerUser verifies that a custom command targeting a
+// service with x-ddev.container-user configured runs as that user by default,
+// matching `ddev ssh` and `ddev exec`.
+// See https://github.com/ddev/ddev/issues/8806.
+func TestCustomCommandContainerUser(t *testing.T) {
+	testcommon.SkipUnlessDefaultEnvironment(t)
+	assert := asrt.New(t)
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+
+	testDir := testcommon.CreateTmpDir(t.Name())
+	err = os.Chdir(testDir)
+	require.NoError(t, err)
+
+	app, err := ddevapp.NewApp(testDir, true)
+	require.NoError(t, err)
+	app.Name = strings.ToLower(t.Name())
+	err = app.WriteConfig()
+	require.NoError(t, err)
+
+	composeContent := fmt.Sprintf(`
+services:
+  container-user-svc:
+    container_name: ddev-${DDEV_SITENAME}-container-user-svc
+    image: %s:%s
+    x-ddev:
+      container-user: www-data
+    init: true
+    command: ["sleep", "infinity"]
+    labels:
+      com.ddev.approot: ${DDEV_APPROOT}
+      com.ddev.site-name: ${DDEV_SITENAME}
+    restart: "no"
+    healthcheck:
+      test: "true"
+    volumes:
+      - .:/mnt/ddev_config:ro
+`, versionconstants.WebImg, versionconstants.WebTag)
+	err = os.WriteFile(app.GetConfigPath("docker-compose.container-user-svc.yaml"), []byte(composeContent), 0644)
+	require.NoError(t, err)
+
+	commandDir := app.GetConfigPath(filepath.Join("commands", "container-user-svc"))
+	err = os.MkdirAll(commandDir, 0755)
+	require.NoError(t, err)
+	script := "#!/usr/bin/env bash\n\n## Description: containeruserwhoami test\n## Usage: containeruserwhoami\n## Example: \"ddev containeruserwhoami\"\n\nid -un\n"
+	err = os.WriteFile(filepath.Join(commandDir, "containeruserwhoami"), []byte(script), 0755)
+	require.NoError(t, err)
+
+	err = app.Start()
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		_ = app.Stop(true, false)
+		_ = os.Chdir(origDir)
+		_ = os.RemoveAll(testDir)
+	})
+
+	out, err := exec.RunHostCommand(DdevBin, "containeruserwhoami")
+	require.NoError(t, err, "output: %s", out)
+	assert.Equal("www-data", strings.TrimSpace(out))
 }
 
 // TestLaunchCommand tests that the launch command behaves all the ways it should behave
@@ -309,9 +443,14 @@ func TestLaunchCommand(t *testing.T) {
 		_ = os.RemoveAll(testDir)
 	})
 
-	primaryURLWithoutPort := app.GetPrimaryURL()
-	app.RouterHTTPPort = "8080"
-	app.RouterHTTPSPort = "8443"
+	// primaryURLWithoutPort is the primary URL with any router port stripped off,
+	// since GetPrimaryURL() includes the port when it's non-default (for example
+	// when global router-https-port is set to something other than 443).
+	parsedPrimaryURL, err := url.Parse(app.GetPrimaryURL())
+	require.NoError(t, err)
+	primaryURLWithoutPort := parsedPrimaryURL.Scheme + "://" + parsedPrimaryURL.Hostname()
+	app.RouterHTTPPort = "8088"
+	app.RouterHTTPSPort = "8448"
 	app.MailpitHTTPPort = "18025"
 	app.MailpitHTTPSPort = "18026"
 	err = app.WriteConfig()
@@ -330,10 +469,10 @@ func TestLaunchCommand(t *testing.T) {
 		app.GetPrimaryURL() + "/full-path": app.GetPrimaryURL() + "/full-path",
 		"http://example.com":               "http://example.com",
 		"https://example.com:443/test":     "https://example.com:443/test",
-		":8080":                            desc["httpurl"].(string),
-		":8080/http-port-path":             desc["httpurl"].(string) + "/http-port-path",
-		":8443":                            desc["httpsurl"].(string),
-		":8443/https-port-path":            desc["httpsurl"].(string) + "/https-port-path",
+		":8088":                            desc["httpurl"].(string),
+		":8088/http-port-path":             desc["httpurl"].(string) + "/http-port-path",
+		":8448":                            desc["httpsurl"].(string),
+		":8448/https-port-path":            desc["httpsurl"].(string) + "/https-port-path",
 		":18025":                           "http://" + app.GetHostname() + ":18025",
 		":18026":                           "https://" + app.GetHostname() + ":18026",
 		// if it is impossible to determine the http/https scheme, the default site protocol should be used
@@ -358,9 +497,40 @@ func TestLaunchCommand(t *testing.T) {
 		assert.NoError(err, `couldn't run "%s"", output=%s`, c, out)
 		assert.Equal(expect, out, "output of %s is incorrect with app.RouterHTTPSPort=%s: %s", c, app.RouterHTTPSPort, out)
 	}
+
+	// --print-url and DDEV_LAUNCH_PRINT_URL=true print the URL without global
+	// debug logging (DDEV_DEBUG off): the output is exactly the URL itself,
+	// no FULLURL prefix, no util.Debug timestamps, no browser attempt.
+	t.Setenv("DDEV_DEBUG", "")
+
+	t.Setenv("DDEV_LAUNCH_PRINT_URL", "true")
+	c := DdevBin + ` launch`
+	out, err := exec.RunHostCommand("bash", "-c", c)
+	out = strings.Trim(out, "\r\n")
+	assert.NoError(err, `couldn't run "%s", output=%s`, c, out)
+	assert.Equal(app.GetPrimaryURL(), out, "DDEV_LAUNCH_PRINT_URL=true should print exactly the URL without DDEV_DEBUG, got: %s", out)
+
+	t.Setenv("DDEV_LAUNCH_PRINT_URL", "")
+	c = DdevBin + ` launch --print-url`
+	out, err = exec.RunHostCommand("bash", "-c", c)
+	out = strings.Trim(out, "\r\n")
+	assert.NoError(err, `couldn't run "%s", output=%s`, c, out)
+	assert.Equal(app.GetPrimaryURL(), out, "--print-url should print exactly the URL without DDEV_DEBUG, got: %s", out)
+
+	// The "&" checks that the URL reaches qrencode as a single argument
+	qrURL := "https://example.com/?a=1&b=2"
+	for noColor, fixture := range map[string]string{"": "qrcode.txt", "1": "qrcode_no_color.txt"} {
+		t.Setenv("NO_COLOR", noColor)
+		expectedQRCode, err := os.ReadFile(filepath.Join(origDir, "testdata", t.Name(), fixture))
+		require.NoError(t, err)
+		c = DdevBin + ` launch --qr "` + qrURL + `"`
+		out, err = exec.RunHostCommand("bash", "-c", c)
+		require.NoError(t, err, `couldn't run "%s" with NO_COLOR=%s, output=%s`, c, noColor, out)
+		require.Equal(t, qrURL+"\n"+strings.ReplaceAll(string(expectedQRCode), "\r\n", "\n"), strings.ReplaceAll(out, "\r\n", "\n"), "NO_COLOR=%s", noColor)
+	}
 }
 
-// TestMysqlCommand tests `ddev mysql“
+// TestMysqlCommand tests `ddev mysql`
 func TestMysqlCommand(t *testing.T) {
 	assert := asrt.New(t)
 
@@ -383,28 +553,53 @@ func TestMysqlCommand(t *testing.T) {
 		assert.NoError(err)
 	})
 
-	err = app.WriteConfig()
-	require.NoError(t, err)
-
 	// This populates the project's
 	// /mnt/ddev-global-cache/global-commands/ which otherwise doesn't get done until ddev start
 	// This matters when --no-bind-mount=true
 	_, err = exec.RunHostCommand("ddev")
 	assert.NoError(err)
 
-	err = app.Start()
-	require.NoError(t, err)
+	dbVersionsToTest := []ddevapp.DatabaseDesc{
+		{Type: nodeps.MariaDB, Version: nodeps.MariaDBDefaultVersion},
+	}
+	if !testcommon.IsGotestShort(t) {
+		dbVersionsToTest = append(dbVersionsToTest,
+			ddevapp.DatabaseDesc{Type: nodeps.MySQL, Version: nodeps.MySQL80},
+			ddevapp.DatabaseDesc{Type: nodeps.MySQL, Version: nodeps.MySQL84},
+			ddevapp.DatabaseDesc{Type: nodeps.MySQL, Version: nodeps.MySQL97},
+		)
+	}
 
-	// Test ddev mysql -uroot -proot mysql
-	command := osexec.Command("bash", "-c", "echo 'SHOW TABLES;' | "+DdevBin+" mysql --user=root --password=root --database=mysql")
-	byteOut, err := command.CombinedOutput()
-	assert.NoError(err, "byteOut=%v", string(byteOut))
-	assert.Contains(string(byteOut), `Tables_in_mysql
-column_stats
-columns_priv`)
+	for i, dbDesc := range dbVersionsToTest {
+		desc := fmt.Sprintf("%s:%s", dbDesc.Type, dbDesc.Version)
+		t.Logf("Testing ddev mysql with %s", desc)
+
+		if i > 0 {
+			err = app.Stop(true, false)
+			require.NoError(t, err)
+		}
+		app.Database = dbDesc
+		err = app.WriteConfig()
+		require.NoError(t, err)
+		err = app.Start()
+		require.NoError(t, err, "app.Start() failed for %s", desc)
+
+		// Test ddev mysql with explicit credentials
+		command := osexec.Command("bash", "-c", "echo 'SHOW TABLES;' | "+DdevBin+" mysql --user=root --password=root --database=mysql")
+		byteOut, err := command.CombinedOutput()
+		require.NoError(t, err, "ddev mysql with explicit credentials failed for %s: %s", desc, string(byteOut))
+		assert.Contains(string(byteOut), "columns_priv", "unexpected output for %s: %s", desc, string(byteOut))
+
+		// Test ddev mysql without explicit credentials; relies on ~/.my.cnf being found via HOME.
+		// This is a regression test for https://github.com/ddev/ddev/issues/8529 where
+		// HOME="" on Podman/macOS prevented mysql from reading ~/.my.cnf.
+		command = osexec.Command("bash", "-c", "echo 'SELECT 1;' | "+DdevBin+" mysql")
+		byteOut, err = command.CombinedOutput()
+		require.NoError(t, err, "ddev mysql without credentials failed for %s: %s", desc, string(byteOut))
+	}
 }
 
-// TestPsqlCommand tests `ddev psql“
+// TestPsqlCommand tests `ddev psql"
 func TestPsqlCommand(t *testing.T) {
 	assert := asrt.New(t)
 

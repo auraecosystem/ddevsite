@@ -3,6 +3,7 @@ package ddevapp_test
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"testing"
 
@@ -48,11 +49,9 @@ func TestConfigMergeStringList(t *testing.T) {
 			test = assert.False
 		}
 
-		for _, val := range setting {
-			if val == match {
-				test(true, match)
-				return
-			}
+		if slices.Contains(setting, match) {
+			test(true, match)
+			return
 		}
 		test(false, match)
 	}
@@ -173,23 +172,4 @@ func SetupTestTempDir(t *testing.T, subDir string) *ddevapp.DdevApp {
 	})
 
 	return app
-}
-
-// TestEnvToUniqueEnv tests EnvToUniqueEnv
-func TestEnvToUniqueEnv(t *testing.T) {
-	assert := asrt.New(t)
-
-	testBedSources := [][]string{
-		{"ONE=one", "ONE=two", "ONE=three", "TWO=two", "TWO=three", "TWO=four"},
-	}
-
-	testBedExpectations := [][]string{
-		{"ONE=three", "TWO=four"},
-	}
-
-	for i := 0; i < len(testBedSources); i++ {
-		res := ddevapp.EnvToUniqueEnv(&testBedSources[i])
-		sort.Strings(res)
-		assert.Equal(testBedExpectations[i], res)
-	}
 }

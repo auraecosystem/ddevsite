@@ -1,3 +1,8 @@
+---
+search:
+  boost: 2
+---
+
 # Sharing Your Project
 
 Even though DDEV is intended for local development on a single machine, not as a public server, there are a number of reasons you might want to expose your work in progress more broadly:
@@ -8,48 +13,200 @@ Even though DDEV is intended for local development on a single machine, not as a
 
 There are at least three different ways to share a running DDEV project outside the local developer machine:
 
-* [`ddev share`](../usage/commands.md#share) (using ngrok to share over the internet)
+* [`ddev share`](../usage/commands.md#share) (using a tunnel provider like ngrok or cloudflared to share over the internet)
 * Local name resolution and sharing the project on the local network
 * Sharing the HTTP port of the local machine on the local network
 
 ## Using `ddev share` (Easiest)
 
-`ddev share` proxies the project via [ngrok](https://ngrok.com) for sharing your project with others on your team or around the world. It’s built into DDEV and requires an [ngrok.com](https://ngrok.com) account. Run `ddev share` and then give the resultant URL to your collaborator or use it on your mobile device.
+`ddev share` proxies the project via a tunnel provider for sharing your project with others on your team or around the world. DDEV supports multiple providers:
 
-!!!tip "ngrok in depth"
-    Run `ddev share -h` for more, and consider reading [ngrok’s getting started guide](https://ngrok.com/docs/getting-started/) and [DrupalEasy’s more detailed walkthrough of the `share` command](https://www.drupaleasy.com/blogs/ultimike/2019/06/sharing-your-ddev-local-site-public-url-using-ddev-share-and-ngrok).
+* **ngrok** (default) - Requires an [ngrok.com](https://ngrok.com) account
+* **cloudflared** - Free, no account required. Requires [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation) to be installed
+* **Custom providers** - You can add your own providers in `.ddev/share-providers/`
 
-CMSes like WordPress and Magento 2 make this a little harder by only responding to a single base URL that’s coded into the database. ngrok allows you to use one static domain for free so you won’t have to frequently change the base URL.
+Run `ddev share` to use the default provider, or `ddev share --provider=cloudflared` to use a specific provider. The URL will be displayed, along with a QR code you can scan with a mobile device, and can be shared with collaborators.
 
-### Setting up a Stable ngrok Domain
+CMSes like WordPress and Magento 2 make this a little harder by only responding to a single base URL that’s coded into the database. ngrok allows you to use one static domain for free so you won’t have to frequently change the base URL. Cloudflared stable custom domains require a free Cloudflare account and a domain with DNS hosted on Cloudflare.
 
-1. [Get a free static domain](https://ngrok.com/blog-post/free-static-domains-ngrok-users) from ngrok. Let's say we got `wp23.ngrok-free.app`.
-2. Pass the domain to the ngrok args:
-    * In `.ddev/config.yaml`, `ngrok_args: --domain wp23.ngrok-free.app` will result in ngrok always using `wp23.ngrok-free.app` as the URL, so it’s not changing on you all the time.
-    * Alternatively you can pass the domain directly to `ddev share --ngrok-args "--domain wp23.ngrok-free.app"`
+## Using ngrok
 
-### WordPress: Change the URL with `wp search-replace`
+[ngrok](https://ngrok.com/docs/what-is-ngrok) is the traditional tunneling solution used by DDEV. It requires an ngrok account (free or paid) and the free account allows you to create tunnels with random URLs or a single static URL.
+
+### Installing ngrok
+
+1. Create an ngrok account at [ngrok.com](https://ngrok.com/signup).
+2. Install ngrok with one of [many techniques](https://ngrok.com/download/mac-os) including `brew install ngrok` (macOS) or `snap install ngrok` (Linux/WSL2).
+3. Get your token from the [dashboard](https://dashboard.ngrok.com/get-started/your-authtoken).
+4. Connect ngrok to your account with `ngrok config add-authtoken <your-token>`.
+
+<a name="setting-up-a-stable-ngrok-domain"></a>
+
+### Using your stable ngrok domain
+
+All ngrok accounts come with a free stable domain that is automatically chosen when you use ngrok via `ddev share` or otherwise. You'll see it the first time you use `ddev share`. No configuration is necessary.
+
+## Using Cloudflared
+
+[Cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/) is a free alternative to ngrok that doesn't require an account. Each tunnel gets a random temporary URL like `https://example-name.trycloudflare.com`.
+
+### Prerequisites
+
+Install cloudflared from [Cloudflare's installation guide](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation).
+
+### Usage
+
+```bash
+# Use cloudflared for a single share session
+ddev share --provider=cloudflared
+
+# Set cloudflared as default for all projects
+ddev config global --share-default-provider=cloudflared
+
+# Set cloudflared as default for current project only
+ddev config --share-default-provider=cloudflared
+```
+
+The provider priority is: command-line flag > project config > global config > default (ngrok).
+
+### Cloudflared Configuration
+
+You can configure cloudflared arguments in your `.ddev/config.yaml`:
+
+```yaml
+share_provider_args: "--your-args-here"
+```
+
+Or pass them on the command line:
+
+```bash
+ddev share --provider=cloudflared --provider-args="--your-args-here"
+```
+
+### Setting up a Stable Cloudflared Domain
+
+If you have a domain managed by Cloudflare, you can use a named tunnel for a stable, permanent URL instead of the random `trycloudflare.com` URLs.
+
+#### Cloudflared Static Domain Requirements
+
+* A domain managed by Cloudflare (DNS hosted on Cloudflare)
+* cloudflared installed and authenticated: `cloudflared tunnel login`
+
+#### Setup Steps
+
+1. **Create a named tunnel:**
+
+    ```bash
+    cloudflared tunnel create my-ddev-tunnel
+    ```
+
+    This creates a tunnel and saves credentials in `~/.cloudflared/`.
+
+    !!!tip "Multiple Tunnels"
+        You can create multiple named tunnels for different projects. Each tunnel needs a unique name and DNS record.
+
+2. **Add a DNS route for your tunnel:**
+
+    ```bash
+    cloudflared tunnel route dns my-ddev-tunnel mysite.example.com
+    ```
+
+    This creates a `CNAME` record pointing your subdomain to the tunnel.
+
+3. **Configure DDEV to use the named tunnel:**
+
+    ```bash
+    ddev config --share-provider-args="--tunnel my-ddev-tunnel --hostname mysite.example.com"
+    ```
+
+    Or add to `.ddev/config.yaml`:
+
+    ```yaml
+    share_provider_args: --tunnel my-ddev-tunnel --hostname mysite.example.com
+    ```
+
+4. **Share your project:**
+
+    ```bash
+    ddev share --provider=cloudflared
+    ```
+
+    Or use `--provider-args` to pass the tunnel configuration on the command line:
+
+    ```bash
+    ddev share --provider=cloudflared --provider-args="--tunnel my-ddev-tunnel --hostname mysite.example.com"
+    ```
+
+    Your project will be available at `https://mysite.example.com`.
+
+## Special Handling for Complex CMSes
+
+Some CMSes like WordPress and Magento require special handling because they don't automatically handle the URL routed to them. For more extensive instructions and possibilities, read the [DDEV Share Blog](https://ddev.com/blog/share-providers/).
+
+### TYPO3 special handling: Strip the host from `base`
+
+TYPO3's site configuration (`config/sites/<identifier>/config.yaml`) stores an absolute `base` URL for each site, for example:
+
+```yaml
+base: 'https://typo3.ddev.site/'
+```
+
+TYPO3 only routes requests whose Host header exactly matches `base`, so an ngrok or cloudflared tunnel hostname will 404 until `base` is adjusted.
+
+**Simplest fix (permanent):** Set `base: /` (or `/your-path/` if the site normally lives under a subpath) by hand, then run `ddev typo3 cache:flush` to clear the derived routing caches. This works indefinitely for local development and needs no further changes.
+
+**Automatic fix (reversible, multi-site-safe):** Use `pre-share`/`post-share` hooks to strip only the scheme and host from `base`, preserving any existing path. This matters for multi-site projects — commenting out or blanking every `base` collapses all sites to the same host-less `/` route and only one wins; stripping just the host keeps each site's own path distinct:
+
+```yaml
+hooks:
+  pre-share:
+    - exec: |
+        for f in config/sites/*/config.yaml; do
+          cp "$f" "$f.pre-share-backup"
+          newbase=$(yq '.base' "$f" | sed -E 's#^https?://[^/]+##')
+          [ -z "$newbase" ] && newbase="/"
+          yq -i ".base = \"$newbase\"" "$f"
+        done
+        typo3 cache:flush
+  post-share:
+    - exec: |
+        for f in config/sites/*/config.yaml.pre-share-backup; do
+          mv "$f" "${f%.pre-share-backup}"
+        done
+        typo3 cache:flush
+```
+
+This doesn't handle `baseVariants` entries or per-language `base` overrides, which are more advanced, less common setups. (See the [DDEV Share Blog](https://ddev.com/blog/share-providers/) for more on writing `pre-share`/`post-share` hooks.)
+
+### WordPress special handling: Change the URL using `wp search-replace`
 
 WordPress only has the one base URL, but the `wp` command is built into DDEV’s web container.
 
-This set of steps assumes an ngrok domain of `wp23.ngrok-free.app` and a starting URL of `https://wordpress.ddev.site`.
+This set of steps assumes an ngrok domain of `nonportentously-caulicolous-cedrick.ngrok-free.dev` and a starting URL of `https://wordpress.ddev.site`.
 
-* Configure `.ddev/config.yaml` to use a custom domain: `ngrok_args: --domain wp23.ngrok-free.app`.
+* Configure `.ddev/config.yaml` to use a custom domain: `share_provider_args: --domain nonportentously-caulicolous-cedrick.ngrok-free.dev`.
 * Make a backup of your database with [`ddev export-db`](../usage/commands.md#export-db) or [`ddev snapshot`](../usage/commands.md#snapshot).
-* Edit `wp-config-ddev.php` (or whatever your config is) to change `WP_HOME`, for example, `define('WP_HOME', 'https://wp23.ngrok-free.app');`
-* `ddev wp search-replace https://wordpress.ddev.site https://wp23.ngrok-free.app`, assuming your project is configured for `https://wordpress.ddev.site` and your `ngrok_args` are configured for the `wp23.ngrok-free.app` domain.
+* Edit `wp-config-ddev.php` (or whatever your config is) to change `WP_HOME`, for example, `define('WP_HOME', 'https://nonportentously-caulicolous-cedrick.ngrok-free.dev');`
+* `ddev wp search-replace https://wordpress.ddev.site https://nonportentously-caulicolous-cedrick.ngrok-free.dev`, assuming your project is configured for `https://wordpress.ddev.site` and your `share_provider_args` are configured for the `nonportentously-caulicolous-cedrick.ngrok-free.dev` domain.
 * Now run [`ddev share`](../usage/commands.md#share).
 
-### Magento2: Change the URL with Magento Tool
+(This can also be done with `pre-share` and `post-share` hooks, see the [DDEV Share Blog](https://ddev.com/blog/share-providers/).)
 
-This set of steps assumes an ngrok domain `mg2.ngrok-free.app`:
+### Magento2 special handling: Change the URL with Magento Tool
 
-* Configure `.ddev/config.yaml` to use a custom domain with `ngrok_args: --domain mg2.ngrok-free.app`.
+This set of steps assumes an ngrok domain `nonportentously-caulicolous-cedrick.ngrok-free.dev`:
+
+* Configure `.ddev/config.yaml` to use a custom domain with `share_provider_args: --domain nonportentously-caulicolous-cedrick.ngrok-free.dev`.
 * Make a backup of your database.
-* Edit your `.ddev/config.yaml`.
 * Run [`ddev ssh`](../usage/commands.md#ssh).
-* Run `bin/magento setup:store-config:set --base-url="https://mg2.ngrok-free.app/`.
-* Run [`ddev share`](../usage/commands.md#share) and you’ll see your project at `mg2.ngrok-free.app`.
+* Run `bin/magento setup:store-config:set --base-url="https://nonportentously-caulicolous-cedrick.ngrok-free.dev/"`.
+* Run [`ddev share`](../usage/commands.md#share) and you'll see your project at `nonportentously-caulicolous-cedrick.ngrok-free.dev`.
+
+(This can also be done with `pre-share` and `post-share` hooks, see the [DDEV Share Blog](https://ddev.com/blog/share-providers/).)
+
+## Using Custom Share Providers
+
+You can customize the built-in providers or create your own share providers. See [Custom Share Providers](../extend/share-providers.md) for details.
 
 ## Using nip.io or Custom Name Resolution Locally
 

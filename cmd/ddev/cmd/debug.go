@@ -9,9 +9,10 @@ var showHidden bool
 
 // DebugCmd is the top-level "ddev utility" command
 var DebugCmd = &cobra.Command{
-	Use:     "utility [command]",
-	Short:   "A collection of utility and debugging commands",
-	Aliases: []string{"ut", "d", "dbg", "debug"},
+	Use:         "utility [command]",
+	Annotations: map[string]string{NoDockerCommand: "true"},
+	Short:       "A collection of utility and debugging commands",
+	Aliases:     []string{"ut", "d", "dbg", "debug"},
 	Example: `ddev utility
 ddev utility mutagen sync list
 ddev ut mutagen sync list
@@ -29,7 +30,7 @@ ddev utility --show-hidden`,
 	},
 }
 
-func init() {
+func registerDebugCmd() {
 	DebugCmd.Flags().BoolVar(&showHidden, "show-hidden", false, "Show hidden developer/debugging commands")
 	_ = DebugCmd.RegisterFlagCompletionFunc("show-hidden", configCompletionFunc([]string{"true", "false"}))
 	RootCmd.AddCommand(DebugCmd)

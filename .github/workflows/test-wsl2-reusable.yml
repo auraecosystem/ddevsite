@@ -1,0 +1,207 @@
+name: Reusable WSL2 Test
+
+on:
+  workflow_call:
+    inputs:
+      make_target:
+        description: 'MAKE_TARGET value'
+        required: false
+        type: string
+        default: 'test'
+      makeargs:
+        description: 'Extra make arguments: TESTPKG=./pkg/util (for testonepkg) or TESTFILE=./pkg/util/utils_test.go (for testonefile)'
+        required: false
+        type: string
+        default: ''
+      networking:
+        description: 'WSL2 networking mode (nat or mirrored)'
+        required: false
+        type: string
+        default: 'nat'
+      testargs:
+        description: 'TESTARGS value'
+        required: false
+        type: string
+        default: ''
+      gotest_short:
+        description: 'GOTEST_SHORT value (16=drupal11 only)'
+        required: false
+        type: string
+        default: '16'
+      debug_enabled:
+        description: 'Run the build with upterm set "debug_enabled"'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  test-wsl2:
+    runs-on: windows-2025
+    timeout-minutes: 300
+
+    name: WSL2 (${{ inputs.networking }}, ${{ inputs.make_target }})
+
+    env:
+      DOCKER_ORG: "${{ vars.DOCKER_ORG || (github.repository_owner == 'ddev-test' && 'ddevhq' || 'ddev') }}"
+      GOTEST_SHORT: ${{ inputs.gotest_short }}
+      TESTARGS: ${{ inputs.testargs }}
+      MAKE_TARGET: ${{ inputs.make_target }}
+      MAKEARGS: ${{ inputs.makeargs }}
+      DDEV_SKIP_NODEJS_TEST: 'true'
+      # Always clone from base repository to get upstream tags
+      GITHUB_CLONE_URL: https://github.com/${{ github.repository }}
+      # For PRs, use the PR ref; otherwise use the branch name
+      GIT_REF: ${{ github.event.pull_request.number && format('refs/pull/{0}/head', github.event.pull_request.number) || github.ref_name }}
+
+    steps:
+      # Can't work yet until enabled in Windows Server 2025
+      - name: Configure mirrored networking
+        if: inputs.networking == 'mirrored'
+        shell: pwsh
+        run: |
+          $wslconfig = @"
+          [wsl2]
+          networkingMode=mirrored
+
+          [experimental]
+          hostAddressLoopback=true
+          "@
+          Set-Content -Path "$env:USERPROFILE\.wslconfig" -Value $wslconfig
+          Write-Host "Created .wslconfig with mirrored networking:"
+          Get-Content "$env:USERPROFILE\.wslconfig"
+          wsl --shutdown
+
+      - name: Install WSL2 distribution
+        shell: pwsh
+        run: |
+          Write-Host "Setting WSL default version to 2"
+          wsl --set-default-version 2
+          Write-Host "Installing DDEV Ubuntu distro"
+          wsl --install --name DDEV --no-launch
+          # Create testuser, enable systemd, set default user
+          wsl -d DDEV --user root bash -c "useradd -m -s /bin/bash testuser && echo 'testuser:password' | chpasswd && usermod -aG sudo testuser && printf '[boot]\nsystemd=true\n\n[user]\ndefault=testuser\n' > /etc/wsl.conf"
+          # WSL owns binfmt_misc (for WSLInterop) and newer releases mount it read-only, so systemd-binfmt fails.
+          wsl -d DDEV --user root ln -sf /dev/null /etc/systemd/system/systemd-binfmt.service
+          wsl --set-default DDEV
+          Write-Host "Verifying WSL installation"
+          wsl --list --verbose
+
+      - name: Restart WSL to enable systemd
+        shell: pwsh
+        run: |
+          Write-Host "Shutting down WSL so systemd and default user take effect"
+          wsl --shutdown
+          Start-Sleep -Seconds 5
+          Write-Host "Verifying WSL comes back with correct user"
+          $user = (wsl whoami).Trim()
+          Write-Host "Current WSL user: $user"
+          if ($user -ne "testuser") {
+            Write-Error "Expected testuser but got $user"
+            exit 1
+          }
+          wsl -- uname -a
+          $state = (wsl -- systemctl is-system-running --wait).Trim()
+          Write-Host "systemd state: $state"
+          if ($state -ne "running") {
+            wsl -u root -- bash -c "systemctl --failed --plain --no-legend | cut -d' ' -f1 | xargs -r systemctl status --no-pager -l -n 30"
+            Write-Error "Unexpected systemd state: $state"
+            exit 1
+          }
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Load variables from public-variables branch
+        if: github.event_name != 'workflow_dispatch'
+        shell: pwsh
+        run: |
+          git fetch --depth=1 --no-tags https://github.com/ddev/ddev public-variables:refs/public-variables-tmp
+          $files = git ls-tree --name-only refs/public-variables-tmp:.github/public-variables/
+          foreach ($varname in $files) {
+            if ($varname -eq "README.md") { continue }
+            $value = (git show "refs/public-variables-tmp:.github/public-variables/$varname") -join '|'
+            Write-Host "$varname=$value"
+            "$varname=$value" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
+          git update-ref -d refs/public-variables-tmp
+
+      - name: Show test configuration
+        shell: pwsh
+        run: |
+          Write-Host "=== Test Configuration ==="
+          Write-Host "Networking mode: ${{ inputs.networking }}"
+          Write-Host "GOTEST_SHORT: ${{ env.GOTEST_SHORT }}"
+          Write-Host "TESTARGS: ${{ env.TESTARGS }}"
+          Write-Host "MAKE_TARGET: ${{ env.MAKE_TARGET }}"
+          Write-Host ""
+          Write-Host "=== Windows Host ==="
+          Write-Host "Architecture: $env:PROCESSOR_ARCHITECTURE"
+          Write-Host "OS: $((Get-CimInstance Win32_OperatingSystem).Caption)"
+          Write-Host "Runner: ${{ runner.os }} / ${{ runner.arch }}"
+          Write-Host ""
+          Write-Host "=== WSL Distro ==="
+          wsl --version
+          wsl -- bash -c 'echo "Architecture: $(uname -m)" && echo "Kernel: $(uname -r)" && echo "Distro: $(. /etc/os-release && echo $PRETTY_NAME)" && echo "User: $(whoami)"'
+
+      - name: Clone repo and run setup inside WSL2
+        shell: pwsh
+        run: |
+          $repoUrl = "${{ env.GITHUB_CLONE_URL }}"
+          $gitRef = "${{ env.GIT_REF }}"
+          # Shallow clone inside WSL2 as root just to get the setup scripts
+          wsl -u root -- bash -exc "git clone --depth=1 --no-single-branch '$repoUrl' /tmp/ddev-ci && cd /tmp/ddev-ci && git fetch origin '$gitRef' && git checkout FETCH_HEAD && bash -e .github/workflows/wsl2-setup.sh"
+
+      - name: Clone repository for testuser
+        shell: pwsh
+        run: |
+          $repoUrl = "${{ env.GITHUB_CLONE_URL }}"
+          $gitRef = "${{ env.GIT_REF }}"
+          # Clone from base repository (ddev/ddev) and fetch PR ref or branch
+          # This ensures we always have upstream tags for correct git describe output
+          wsl -u testuser -- bash -exc "mkdir -p ~/workspace && cd ~/workspace && git clone --no-single-branch '$repoUrl' ddev && cd ddev && git fetch origin '$gitRef' && git checkout FETCH_HEAD && echo 'Checked out:' && git log -1 --oneline && git describe --tags --always"
+
+      - name: Setup upterm session
+        if: ${{ inputs.debug_enabled }}
+        uses: owenthereal/action-upterm@v1
+        with:
+          limit-access-to-actor: true
+
+      - name: Run DDEV tests
+        shell: pwsh
+        run: |
+          # Put each value in single quotes for bash. A ' inside a value is
+          # written as '\'' so it does not end the quotes early.
+          $exports = @('GOTEST_SHORT', 'TESTARGS', 'MAKE_TARGET', 'MAKEARGS', 'DDEV_EMBARGO_TESTS', 'DDEV_EMBARGO_PHP_VERSIONS', 'DDEV_SKIP_NODEJS_TEST', 'DOCKER_ORG') | ForEach-Object {
+            "$_='" + ([string][Environment]::GetEnvironmentVariable($_) -replace "'", "'\''") + "'"
+          }
+          wsl -u testuser -- bash -exc "export $($exports -join ' ') && cd ~/workspace/ddev && bash -e .github/workflows/wsl2-test.sh"
+
+      # wsl2-test.sh writes gotestsum's per-test JSON inside the WSL2 VM's
+      # filesystem, invisible to actions/upload-artifact on the Windows host
+      # runner -- copy it out via the \\wsl$ UNC path first. Distro name
+      # "DDEV" matches the `wsl --install --name DDEV` step above.
+      - name: Copy gotestsum results out of WSL2
+        if: always()
+        shell: pwsh
+        run: |
+          $src = "\\wsl$\DDEV\home\testuser\workspace\ddev\test-results"
+          if (Test-Path $src) {
+            New-Item -ItemType Directory -Force -Path test-results | Out-Null
+            Copy-Item -Path "$src\*" -Destination test-results -Recurse -Force
+            Write-Host "Copied gotestsum results from WSL2:"
+            Get-ChildItem test-results
+          } else {
+            Write-Host "No gotestsum results found in WSL2 at $src -- nothing to copy"
+          }
+
+      # Consumed by perf/collector/'s nightly test-runtime rollup, not by
+      # anyone reading this run directly -- see perf/collector/README.md.
+      - name: Upload gotestsum results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-${{ github.run_id }}-${{ github.run_attempt }}-wsl2-${{ inputs.networking }}-${{ inputs.make_target }}
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 90

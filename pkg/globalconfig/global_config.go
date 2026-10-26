@@ -7,7 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
+	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -15,8 +16,8 @@ import (
 	"github.com/ddev/ddev/pkg/globalconfig/types"
 	"github.com/ddev/ddev/pkg/nodeps"
 	"github.com/ddev/ddev/pkg/output"
-	"github.com/ddev/ddev/pkg/versionconstants"
-	"go.yaml.in/yaml/v3"
+	"github.com/ddev/ddev/pkg/settings"
+	"go.yaml.in/yaml/v4"
 )
 
 // DdevGlobalConfigName is the name of the global config file.
@@ -40,7 +41,9 @@ type ProjectInfo struct {
 // GlobalConfig is the struct defining ddev's global config
 type GlobalConfig struct {
 	DeveloperMode                    bool                        `yaml:"developer_mode,omitempty"`
+	DockerBuildxVersion              string                      `yaml:"docker_buildx_version,omitempty"`
 	FailOnHookFailGlobal             bool                        `yaml:"fail_on_hook_fail"`
+	Hooks                            map[string][]map[string]any `yaml:"hooks,omitempty"`
 	InstrumentationOptIn             bool                        `yaml:"instrumentation_opt_in"`
 	InstrumentationQueueSize         int                         `yaml:"instrumentation_queue_size,omitempty"`
 	InstrumentationReportingInterval time.Duration               `yaml:"instrumentation_reporting_interval,omitempty"`
@@ -51,12 +54,13 @@ type GlobalConfig struct {
 	Messages                         MessagesConfig              `yaml:"messages,omitempty"`
 	MkcertCARoot                     string                      `yaml:"mkcert_caroot"`
 	NoBindMounts                     bool                        `yaml:"no_bind_mounts"`
+	NoTUI                            bool                        `yaml:"no_tui,omitempty"`
 	OmitContainersGlobal             []string                    `yaml:"omit_containers,flow"`
 	OmitProjectNameByDefault         bool                        `yaml:"omit_project_name_by_default,omitempty"`
+	OmitSnapshotOnDelete             bool                        `yaml:"omit_snapshot_on_delete,omitempty"`
 	PerformanceMode                  configTypes.PerformanceMode `yaml:"performance_mode"`
 	ProjectTldGlobal                 string                      `yaml:"project_tld"`
 	RemoteConfig                     RemoteConfig                `yaml:"remote_config,omitempty"`
-	RequiredDockerComposeVersion     string                      `yaml:"required_docker_compose_version,omitempty"`
 	Router                           string                      `yaml:"router,omitempty"`
 	RouterBindAllInterfaces          bool                        `yaml:"router_bind_all_interfaces"`
 	RouterHTTPPort                   string                      `yaml:"router_http_port"`
@@ -65,36 +69,37 @@ type GlobalConfig struct {
 	RouterMailpitHTTPSPort           string                      `yaml:"mailpit_https_port,omitempty"`
 	RouterXHGuiHTTPPort              string                      `yaml:"xhgui_http_port,omitempty"`
 	RouterXHGuiHTTPSPort             string                      `yaml:"xhgui_https_port,omitempty"`
+	ShareDefaultProvider             string                      `yaml:"share_default_provider,omitempty"`
 	SimpleFormatting                 bool                        `yaml:"simple_formatting"`
+	SSHAgentUpstream                 string                      `yaml:"ssh_agent_upstream,omitempty"`
 	TableStyle                       string                      `yaml:"table_style"`
 	TraefikMonitorPort               string                      `yaml:"traefik_monitor_port,omitempty"`
-	// This may still be used in Docker Compose automated tests
-	UseDockerComposeFromPath bool                    `yaml:"use_docker_compose_from_path,omitempty"`
-	UseHardenedImages        bool                    `yaml:"use_hardened_images"`
-	UseLetsEncrypt           bool                    `yaml:"use_letsencrypt"`
-	WSL2NoWindowsHostsMgt    bool                    `yaml:"wsl2_no_windows_hosts_mgt"`
-	WebEnvironment           []string                `yaml:"web_environment"`
-	XdebugIDELocation        string                  `yaml:"xdebug_ide_location"`
-	XHProfMode               configTypes.XHProfMode  `yaml:"xhprof_mode,omitempty"`
-	ProjectList              map[string]*ProjectInfo `yaml:"project_info,omitempty"`
+	UseHardenedImages                bool                        `yaml:"use_hardened_images"`
+	UseLetsEncrypt                   bool                        `yaml:"use_letsencrypt"`
+	WSL2NoWindowsHostsMgt            bool                        `yaml:"wsl2_no_windows_hosts_mgt"`
+	WebEnvironment                   []string                    `yaml:"web_environment"`
+	XdebugIDELocation                string                      `yaml:"xdebug_ide_location"`
+	XHProfMode                       configTypes.XHProfMode      `yaml:"xhprof_mode,omitempty"`
+	ProjectList                      map[string]*ProjectInfo     `yaml:"project_info,omitempty"`
 }
 
 // New returns a default GlobalConfig
 func New() GlobalConfig {
 	cfg := GlobalConfig{
-		RequiredDockerComposeVersion: versionconstants.RequiredDockerComposeVersionDefault,
-		InternetDetectionTimeout:     nodeps.InternetDetectionTimeoutDefault,
-		TableStyle:                   "default",
-		RouterHTTPPort:               nodeps.DdevDefaultRouterHTTPPort,
-		RouterHTTPSPort:              nodeps.DdevDefaultRouterHTTPSPort,
-		RouterMailpitHTTPPort:        nodeps.DdevDefaultMailpitHTTPPort,
-		RouterMailpitHTTPSPort:       nodeps.DdevDefaultMailpitHTTPSPort,
-		LastStartedVersion:           "v0.0",
-		NoBindMounts:                 nodeps.NoBindMountsDefault,
-		Router:                       types.RouterTypeTraefik,
-		MkcertCARoot:                 readCAROOT(),
-		TraefikMonitorPort:           nodeps.TraefikMonitorPortDefault,
-		ProjectTldGlobal:             nodeps.DdevDefaultTLD,
+		InternetDetectionTimeout: nodeps.InternetDetectionTimeoutDefault,
+		TableStyle:               "default",
+		RouterHTTPPort:           nodeps.DdevDefaultRouterHTTPPort,
+		RouterHTTPSPort:          nodeps.DdevDefaultRouterHTTPSPort,
+		RouterMailpitHTTPPort:    nodeps.DdevDefaultMailpitHTTPPort,
+		RouterMailpitHTTPSPort:   nodeps.DdevDefaultMailpitHTTPSPort,
+		RouterXHGuiHTTPPort:      nodeps.DdevDefaultXHGuiHTTPPort,
+		RouterXHGuiHTTPSPort:     nodeps.DdevDefaultXHGuiHTTPSPort,
+		LastStartedVersion:       "v0.0",
+		NoBindMounts:             nodeps.NoBindMountsDefault,
+		Router:                   types.RouterTypeTraefik,
+		MkcertCARoot:             readCAROOT(),
+		TraefikMonitorPort:       nodeps.TraefikMonitorPortDefault,
+		ProjectTldGlobal:         nodeps.DdevDefaultTLD,
 		// RemoteConfig left empty by default, will use defaults when needed but won't show in config file
 	}
 
@@ -167,7 +172,7 @@ func checkMutagenSocketPathLength() {
 		limit = 108
 	}
 	if socketPathLength >= limit {
-		output.UserErr.Warning(fmt.Sprintf("Path to DDEV Mutagen socket is %d characters long.\nMutagen may fail, socket path must contain less than %d characters.\nConsider using a shorter path to DDEV global config with XDG_CONFIG_HOME env.", limit, socketPathLength))
+		output.UserErr.Warning(fmt.Sprintf("Path to DDEV Mutagen socket is %d characters long.\nMutagen may fail, socket path must contain less than %d characters.", limit, socketPathLength))
 	}
 	checkedMutagenSocketPathLength = true
 }
@@ -180,27 +185,18 @@ func GetMutagenDataDirectory() string {
 		output.UserErr.Fatalf("Could not get home directory for current user. Is it set? err=%v", err)
 	}
 	mutagenDataDirectory := filepath.Join(home, ".ddev_mutagen_data_directory")
-	_ = os.Setenv(`MUTAGEN_DATA_DIRECTORY`, mutagenDataDirectory)
+	_ = os.Setenv("MUTAGEN_DATA_DIRECTORY", mutagenDataDirectory)
 	return mutagenDataDirectory
 }
 
-// GetDockerComposePath gets the full path to the docker-compose binary
-// Normally this is the one that has been downloaded to ~/.ddev/bin, but if
-// UseDockerComposeFromPath, then it will be whatever if found in $PATH
-func GetDockerComposePath() (string, error) {
-	if DdevGlobalConfig.UseDockerComposeFromPath {
-		executableName := "docker-compose"
-		path, err := exec.LookPath(executableName)
-		if err != nil {
-			return "", fmt.Errorf("no docker-compose")
-		}
-		return path, nil
-	}
-	composeBinary := "docker-compose"
+// GetDockerBuildxDestination gets the full path to the docker-buildx binary
+// which is going to be downloaded in ~/.ddev/bin
+func GetDockerBuildxDestination() (string, error) {
+	buildxBinary := "docker-buildx"
 	if nodeps.IsWindows() {
-		composeBinary = composeBinary + ".exe"
+		buildxBinary = buildxBinary + ".exe"
 	}
-	return filepath.Join(GetDDEVBinDir(), composeBinary), nil
+	return filepath.Join(GetDDEVBinDir(), buildxBinary), nil
 }
 
 // GetTableStyle returns the configured (string) table style
@@ -219,6 +215,10 @@ func ValidateGlobalConfig() error {
 		DdevGlobalConfig.Router = types.RouterTypeTraefik
 	}
 
+	if err := ValidateHooks(DdevGlobalConfig.Hooks); err != nil {
+		return fmt.Errorf("invalid hooks in %s: %v", GetGlobalConfigPath(), err)
+	}
+
 	if !IsValidTableStyle(DdevGlobalConfig.TableStyle) {
 		DdevGlobalConfig.TableStyle = "default"
 	}
@@ -234,9 +234,10 @@ func ValidateGlobalConfig() error {
 // Or creates the file
 func ReadGlobalConfig() error {
 	globalConfigFile := GetGlobalConfigPath()
+	var err error
 
 	// Can't use fileutil.FileExists() here because of import cycle.
-	if _, err := os.Stat(globalConfigFile); err != nil {
+	if _, err = os.Stat(globalConfigFile); err != nil {
 		// ~/.ddev doesn't exist and running as root (only ddev hostname could do this)
 		// Then create global config.
 		if os.Geteuid() == 0 {
@@ -245,7 +246,7 @@ func ReadGlobalConfig() error {
 		}
 		if os.IsNotExist(err) {
 			DdevGlobalConfig = New()
-			err := WriteGlobalConfig(DdevGlobalConfig)
+			err = WriteGlobalConfig(DdevGlobalConfig)
 			if err != nil {
 				return err
 			}
@@ -254,13 +255,7 @@ func ReadGlobalConfig() error {
 		}
 	}
 
-	source, err := os.ReadFile(globalConfigFile)
-	if err != nil {
-		return fmt.Errorf("unable to read DDEV global config file %s: %v", source, err)
-	}
-
-	// ReadConfig config values from file.
-	err = yaml.Unmarshal(source, &DdevGlobalConfig)
+	err = loadGlobalConfigFiles(globalConfigFile)
 	if err != nil {
 		return err
 	}
@@ -268,6 +263,10 @@ func ReadGlobalConfig() error {
 	caRootEnv := os.Getenv("CAROOT")
 	if GetCAROOT() == "" || !fileExists(filepath.Join(DdevGlobalConfig.MkcertCARoot, "rootCA.pem")) || (caRootEnv != "" && caRootEnv != DdevGlobalConfig.MkcertCARoot) {
 		DdevGlobalConfig.MkcertCARoot = readCAROOT()
+	}
+
+	if DdevGlobalConfig.DockerBuildxVersion == "" {
+		DdevGlobalConfig.DockerBuildxVersion = "system"
 	}
 
 	// If they set the internetdetectiontimeout below default, reset to default
@@ -311,13 +310,116 @@ func ReadGlobalConfig() error {
 	if DdevGlobalConfig.RemoteConfig.SponsorshipDataURL == "" {
 		DdevGlobalConfig.RemoteConfig.SponsorshipDataURL = DefaultSponsorshipDataURL
 	}
+	if DdevGlobalConfig.RemoteConfig.AddonDataURL == "" {
+		DdevGlobalConfig.RemoteConfig.AddonDataURL = DefaultAddonDataURL
+	}
 
 	err = ValidateGlobalConfig()
 	if err != nil {
 		return err
 	}
 
+	loadedGlobalConfig = DdevGlobalConfig
+
 	return nil
+}
+
+// These hold the keys global_config.*.yaml files set, global_config.yaml alone,
+// and the merged result, so WriteGlobalConfig can keep override values out of global_config.yaml.
+var (
+	overriddenKeys     map[string]bool
+	mainOnlyConfig     GlobalConfig
+	loadedGlobalConfig GlobalConfig
+)
+
+// loadGlobalConfigFiles loads global_config.yaml into DdevGlobalConfig, then merges
+// global_config.*.yaml files in lexical order.
+func loadGlobalConfigFiles(globalConfigFile string) error {
+	overriddenKeys = nil
+	overrideFiles, err := filepath.Glob(filepath.Join(filepath.Dir(globalConfigFile), "global_config.*.y*ml"))
+	if err != nil {
+		return err
+	}
+	if len(overrideFiles) == 0 {
+		err = settings.LoadGlobalConfig(globalConfigFile, &DdevGlobalConfig)
+		if err != nil {
+			return fmt.Errorf("unable to load DDEV global config file %s: %v", globalConfigFile, err)
+		}
+		return nil
+	}
+
+	mainContent, err := os.ReadFile(globalConfigFile)
+	if err != nil {
+		return fmt.Errorf("unable to read DDEV global config file %s: %v", globalConfigFile, err)
+	}
+	mainOnlyConfig = New()
+	if err = settings.LoadGlobalConfigWithOverrides(mainContent, nil, &mainOnlyConfig); err != nil {
+		return fmt.Errorf("unable to load DDEV global config file %s: %v", globalConfigFile, err)
+	}
+
+	overriddenKeys = map[string]bool{}
+	var overrides []settings.OverrideConfig
+	for _, f := range overrideFiles {
+		content, err := os.ReadFile(f)
+		if err != nil {
+			return fmt.Errorf("unable to read DDEV global config file %s: %v", f, err)
+		}
+		var keys map[string]any
+		if err = yaml.Unmarshal(content, &keys); err != nil {
+			return fmt.Errorf("unable to load DDEV global config file %s: %v", f, err)
+		}
+		for k := range keys {
+			overriddenKeys[strings.ToLower(k)] = true
+		}
+		overrides = append(overrides, settings.OverrideConfig{Path: f, Content: content})
+	}
+	if err = settings.LoadGlobalConfigWithOverrides(mainContent, overrides, &DdevGlobalConfig); err != nil {
+		return fmt.Errorf("unable to load DDEV global config with overrides %v: %v", overrideFiles, err)
+	}
+	return nil
+}
+
+// restoreOverriddenFields puts the global_config.yaml value back into every field
+// that a global_config.*.yaml file set and that has not changed since loading.
+// A changed list keeps only the items added or removed since loading.
+func restoreOverriddenFields(config GlobalConfig) GlobalConfig {
+	if len(overriddenKeys) == 0 {
+		return config
+	}
+	cfg := reflect.ValueOf(&config).Elem()
+	loaded := reflect.ValueOf(loadedGlobalConfig)
+	mainOnly := reflect.ValueOf(mainOnlyConfig)
+	for i := 0; i < cfg.NumField(); i++ {
+		name, _, _ := strings.Cut(cfg.Type().Field(i).Tag.Get("yaml"), ",")
+		if !overriddenKeys[strings.ToLower(name)] {
+			continue
+		}
+		if reflect.DeepEqual(cfg.Field(i).Interface(), loaded.Field(i).Interface()) {
+			cfg.Field(i).Set(mainOnly.Field(i))
+			continue
+		}
+		if now, ok := reflect.TypeAssert[[]string](cfg.Field(i)); ok {
+			cfg.Field(i).Set(reflect.ValueOf(applyListChanges(mainOnly.Field(i).Interface().([]string), loaded.Field(i).Interface().([]string), now)))
+		}
+	}
+	return config
+}
+
+// applyListChanges applies to base the items added to and removed from loaded to get now.
+func applyListChanges(base, loaded, now []string) []string {
+	result := []string{}
+	for _, item := range base {
+		if slices.Contains(loaded, item) && !slices.Contains(now, item) {
+			continue
+		}
+		result = append(result, item)
+	}
+	for _, item := range now {
+		if !slices.Contains(loaded, item) && !slices.Contains(result, item) {
+			result = append(result, item)
+		}
+	}
+	return result
 }
 
 // WriteGlobalConfig writes the global config into ~/.ddev.
@@ -327,10 +429,11 @@ func WriteGlobalConfig(config GlobalConfig) error {
 		return err
 	}
 
-	cfgCopy := config
+	cfgCopy := restoreOverriddenFields(config)
+
 	// Remove some items that are defaults
-	if cfgCopy.RequiredDockerComposeVersion == versionconstants.RequiredDockerComposeVersionDefault {
-		cfgCopy.RequiredDockerComposeVersion = ""
+	if cfgCopy.DockerBuildxVersion == "system" {
+		cfgCopy.DockerBuildxVersion = ""
 	}
 
 	// Overwrite PerformanceMode with effective value if empty.
@@ -338,8 +441,9 @@ func WriteGlobalConfig(config GlobalConfig) error {
 		cfgCopy.PerformanceMode = cfgCopy.GetPerformanceMode()
 	}
 
+	// Overwrite XHProfMode with effective value if empty.
 	if cfgCopy.XHProfMode == configTypes.XHProfModeEmpty {
-		cfgCopy.XHProfMode = nodeps.XHProfModeDefault
+		cfgCopy.XHProfMode = cfgCopy.GetXHProfMode()
 	}
 
 	// Clear remote config URLs if they match defaults so they don't appear in config file
@@ -348,6 +452,9 @@ func WriteGlobalConfig(config GlobalConfig) error {
 	}
 	if cfgCopy.RemoteConfig.SponsorshipDataURL == DefaultSponsorshipDataURL {
 		cfgCopy.RemoteConfig.SponsorshipDataURL = ""
+	}
+	if cfgCopy.RemoteConfig.AddonDataURL == DefaultAddonDataURL {
+		cfgCopy.RemoteConfig.AddonDataURL = ""
 	}
 
 	// We only have one router, so this field is old, and when writing we can omitempty
@@ -362,18 +469,21 @@ func WriteGlobalConfig(config GlobalConfig) error {
 	instructions := `
 # You can turn off usage of the
 # ddev-ssh-agent and ddev-router containers with
-# omit_containers["ddev-ssh-agent", "ddev-router"]
+# omit_containers: [ddev-ssh-agent, ddev-router]
 
 # You can opt in or out of sending instrumentation to the DDEV developers with
 # instrumentation_opt_in: true # or false
-#
+
 # Maximum number of collected events in the local queue. If reached, collected
 # data is sent.
 # instrumentation_queue_size: 100
-#
+
 # Reporting interval in hours. If the last report was longer ago, collected
 # data is sent.
 # instrumentation_reporting_interval: 24
+
+# Can be used to give DDEV specific info about who you are
+# instrumentation_user: <your_username> 
 
 # last_started_version: ""
 # The last DDEV version that was started (informational only)
@@ -384,9 +494,24 @@ func WriteGlobalConfig(config GlobalConfig) error {
 # no_bind_mounts: false
 # Whether to disable Docker bind mounts
 
+# no_tui: false
+# Whether to disable the TUI (terminal user interface) when running the 'ddev' command without arguments
+
 # omit_project_name_by_default: false
-# If true, 'ddev config' will not write a 'name'' field
+# If true, 'ddev config' will not write a 'name' field
 # in '.ddev/config.yaml' unless you use --name=NAME.
+
+# omit_snapshot_on_delete: false
+# If true, 'ddev delete' will omit the database snapshot by default.
+# This can still be overridden per-command with --omit-snapshot=false.
+
+# override_config: false
+# global_config.*.yaml files in this directory, like global_config.local.yaml,
+# are merged over this file in alphabetical order, and DDEV never writes
+# their values here. Lists are merged, so a merge can't empty one, but with
+# "override_config: true" in a global_config.*.yaml file,
+# 'web_environment: []' or 'omit_containers: []' takes effect.
+# 'override_config' affects only the global_config.*.yaml file it exists in.
 
 # performance_mode: "<default for the OS>"
 # DDEV offers performance optimization strategies to improve the filesystem
@@ -399,14 +524,14 @@ func WriteGlobalConfig(config GlobalConfig) error {
 #
 # See https://docs.ddev.com/en/stable/users/install/performance/#mutagen
 
-# You can set the global project_tld. This way any project will use this tld. If not
-# set the local project_tld is used, or the default of DDEV.
+# You can set the global project_tld. This way any project will use this TLD.
+# If not set, the local project_tld is used, or the default of DDEV.
 # project_tld: ""
-#
+
 # You can inject environment variables into the web container with:
 # web_environment:
-#     - SOMEENV=somevalue
-#     - SOMEOTHERENV=someothervalue
+#   - SOMEENV=somevalue
+#   - SOMEOTHERENV=someothervalue
 
 # Adjust the default table style used in ddev list and describe
 # table_style: default
@@ -416,9 +541,15 @@ func WriteGlobalConfig(config GlobalConfig) error {
 # Whether to disable most 'ddev list' and 'ddev describe' table formatting and implicitly set NO_COLOR=1.
 # simple_formatting: false
 
+# ssh_agent_upstream: ""
+# Make ddev-ssh-agent relay to an SSH agent you already run instead of its own.
+# "host" uses the agent your Docker provider forwards ($SSH_AUTH_SOCK on Linux),
+# or give an absolute socket path, such as /home/<you>/.1password/agent.sock.
+# See https://docs.ddev.com/en/stable/users/usage/cli/#using-an-existing-ssh-agent
+
 # In unusual cases the default value to wait to detect internet availability is too short.
 # You can adjust this value higher to make it less likely that DDEV will declare internet
-# unavailable, but DDEV may wait longer on some commands. This should not be set below the default 3000
+# unavailable, but DDEV may wait longer on some commands. This should not be set below the default of 3000 ms
 # DDEV will ignore low values, as they're not useful
 # internet_detection_timeout_ms: 3000
 
@@ -440,38 +571,38 @@ func WriteGlobalConfig(config GlobalConfig) error {
 # xhprof_mode: [prepend|xhgui]
 # Default is "xhgui"
 
-# instrumentation_user: <your_username> # can be used to give DDEV specific info about who you are
-# developer_mode: true # (defaults to false) is not used widely at this time.
+# developer_mode: true # (defaults to false) is not used at this time
+
 # router_bind_all_interfaces: false  # (defaults to false)
-#    If true, ddev-router will bind http/s and Mailpit ports on all
+#    If true, ddev-router will bind HTTP/S and Mailpit ports on all
 #    network interfaces instead of localhost, so others on your local network can
 #    access those ports. Note that this exposes the Mailpit ports as well, which
 #    can be a major security issue, so choose wisely.
 
 # use_hardened_images: false
-# With hardened images a container that is exposed to the internet is
+# With hardened images, a container that is exposed to the internet is
 # a harder target, although not as hard as a fully-secured host.
-# sudo and mailpit are removed, and since the web container
+# sudo and Mailpit are removed, and since the web container
 # is run only as the owning user, only project files might be changed
 # if a CMS or PHP bug allowed creating or altering files, and
 # permissions should not allow escalation.
 
 # xdebug_ide_location: ""
-# It's unusual to change this option, and we don’t recommend it.
+# It's unusual to change this option, and we don't recommend it.
 # Ask for help in one of our support channels before changing it unless you understand its use completely.
-# In some cases, especially WSL2, the IDE may be set up different ways
+# In some cases, especially WSL2, the IDE may be set up in different ways
 # For example, if in WSL2 PhpStorm is running the Linux version inside WSL2
 # or if using JetBrains Gateway
 # then set xdebug_ide_location: "wsl2"
-# If using vscode language server, which listens inside the container
+# If using VS Code Language Server, which listens inside the container
 # then set xdebug_ide_location: "container"
 
-# Lets Encrypt:
+# Let's Encrypt:
 # This integration is entirely experimental; your mileage may vary.
 # * Your host must be directly internet-connected.
 # * DNS for the hostname must be set to point to the host in question
-# * You must have router_bind_all_interfaces: true or else the Let's Encrypt Certbot
-#   process will not be able to process the IP address of the host (and nobody will be able to access your site)
+# * You must have router_bind_all_interfaces: true or else Let's Encrypt
+#   will not be able to reach the router (and nobody will be able to access your site)
 # * You will need to add a startup script to start your sites after a host reboot.
 # * If using several sites at a single top-level domain, you'll probably want to set
 #   project_tld to that top-level domain. Otherwise, you can use additional-hostnames or
@@ -479,13 +610,19 @@ func WriteGlobalConfig(config GlobalConfig) error {
 #
 # use_letsencrypt: false
 # (Experimental, only useful on an internet-based server)
-# Set to true if certificates are to be obtained via Certbot on https://letsencrypt.org/
+# Set to true if certificates are to be obtained from https://letsencrypt.org/
 
 # letsencrypt_email: <email>
 # Email to be used for experimental letsencrypt certificates
 
 # fail_on_hook_fail: false
 # Decide whether 'ddev start' should be interrupted by a failing hook
+
+# hooks:
+#   post-start:
+#     - exec: "echo hello from a global hook"
+# Hooks that run for every project, in addition to the project's own hooks.
+# See https://docs.ddev.com/en/stable/users/configuration/hooks/#global-hooks
 
 # traefik_monitor_port: "10999"
 # Change this only if you're having conflicts with some
@@ -498,21 +635,17 @@ func WriteGlobalConfig(config GlobalConfig) error {
 # Router port used for XHGui HTTPS, can be overridden in project config
 
 # wsl2_no_windows_hosts_mgt: false
-# It’s unusual to change this option, and we don’t recommend it.
+# It's unusual to change this option, and we don't recommend it.
 # On Windows, it may prevent site access when using a custom project_tld or working offline.
-# On WSL2 by default the Windows-side hosts file (normally C:\Windows\system32\drivers\etc\hosts)
+# On WSL2, by default the Windows-side hosts file (normally C:\Windows\system32\drivers\etc\hosts)
 # is used for hosts file management, but doing that requires running sudo and ddev.exe on
 # Windows side; you may not want this if you're running your browser in WSL2 or for
 # various other reasons.
 
-# required_docker_compose_version: ""
-# This should only be used in specific cases like troubleshooting.
-# This can be used to override the default required docker-compose version
-# It should normally be left alone, but can be set to, for example, "v2.1.1"
-
-# use_docker_compose_from_path: false
-# This should only be used in specific cases like troubleshooting.
-# Whether to use the system-installed docker-compose instead of downloading a specific version
+# docker_buildx_version: "system"
+# Controls docker-buildx usage and should only be used in specific cases like troubleshooting.
+# "system" (default) uses the docker-buildx already installed.
+# Can be set to a specific version like "0.33.0".
 
 # messages:
 #   ticker_interval: 20 // Interval in hours to show ticker messages, -1 disables the ticker
@@ -524,6 +657,7 @@ func WriteGlobalConfig(config GlobalConfig) error {
 #  update_interval: 24 # Interval in hours to download the remote config and sponsorship data
 #  remote_config_url: "https://raw.githubusercontent.com/ddev/remote-config/main/remote-config.jsonc"
 #  sponsorship_data_url: "https://ddev.com/s/sponsorship-data.json"
+#  addon_data_url: "https://addons.ddev.com/addons.json"
 `
 	cfgbytes = append(cfgbytes, instructions...)
 
@@ -539,9 +673,10 @@ func WriteGlobalConfig(config GlobalConfig) error {
 // Or creates the file
 func ReadProjectList() error {
 	globalProjectsFile := GetProjectListPath()
+	var err error
 
 	// Can't use fileutil.FileExists() here because of import cycle.
-	if _, err := os.Stat(globalProjectsFile); err != nil {
+	if _, err = os.Stat(globalProjectsFile); err != nil {
 		// ~/.ddev doesn't exist and running as root (only ddev hostname could do this)
 		// Then create global projects list.
 		if os.Geteuid() == 0 {
@@ -552,7 +687,7 @@ func ReadProjectList() error {
 			// If someone upgrades from an earlier version, the global config may hold the project list.
 			if len(DdevGlobalConfig.ProjectList) > 0 {
 				DdevProjectList = DdevGlobalConfig.ProjectList
-				err := WriteProjectList(DdevProjectList)
+				err = WriteProjectList(DdevProjectList)
 				if err != nil {
 					return err
 				}
@@ -573,14 +708,31 @@ func ReadProjectList() error {
 
 	source, err := os.ReadFile(globalProjectsFile)
 	if err != nil {
-		return fmt.Errorf("unable to read DDEV global projects file %s: %v", source, err)
+		return fmt.Errorf("could not read global projects file %s: %v", globalProjectsFile, err)
 	}
 
-	// ReadConfig config values from file.
-	err = yaml.Unmarshal(source, &DdevProjectList)
+	// A fresh map drops projects removed from the file since the last read.
+	// An unparseable list is set aside rather than blocking every command,
+	// since projects re-register on `ddev start`.
+	projects := map[string]*ProjectInfo{}
+	err = yaml.Unmarshal(source, &projects)
 	if err != nil {
-		return err
+		badFile := globalProjectsFile + ".bad"
+		DdevProjectList = make(map[string]*ProjectInfo)
+		if renameErr := os.Rename(globalProjectsFile, badFile); renameErr != nil {
+			// Another ddev process, such as the TUI, may have set it aside first.
+			if os.IsNotExist(renameErr) {
+				return nil
+			}
+			return fmt.Errorf("unable to move unparseable global projects file %s to %s: %v", globalProjectsFile, badFile, renameErr)
+		}
+		output.UserErr.Warningf("Unable to parse global projects file %s, moved it to %s and started with an empty project list: %v", globalProjectsFile, badFile, err)
+		return WriteProjectList(DdevProjectList)
 	}
+	if projects == nil {
+		projects = make(map[string]*ProjectInfo)
+	}
+	DdevProjectList = projects
 
 	// Sanitize the project list
 	for name, project := range DdevProjectList {
@@ -610,13 +762,9 @@ func WriteProjectList(projects map[string]*ProjectInfo) error {
 		return err
 	}
 
-	// Write to projects file
-	err = os.WriteFile(GetProjectListPath(), projectsBytes, 0644)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	// Other ddev processes, such as the TUI, may read the list mid-write, and
+	// ReadProjectList sets aside a list it cannot parse.
+	return nodeps.WriteFileAtomic(GetProjectListPath(), projectsBytes, 0644)
 }
 
 // GetGlobalDdevDir returns the DDEV global config directory, and creates it as needed.
@@ -644,8 +792,8 @@ func GetGlobalDdevDir() string {
 	return ddevDir
 }
 
-// GetGlobalDdevDirLocation returns the global caching directory location to be used by DDEV:
-// $XDG_CONFIG_HOME/ddev if this $XDG_CONFIG_HOME variable is not empty,
+// GetGlobalDdevDirLocation returns the global config directory location to be used by DDEV:
+// $DDEV_XDG_CONFIG_HOME/ddev if $DDEV_XDG_CONFIG_HOME is set (all platforms),
 // ~/.config/ddev if this directory exists on Linux/WSL2 only,
 // ~/.ddev otherwise.
 func GetGlobalDdevDirLocation() string {
@@ -655,28 +803,28 @@ func GetGlobalDdevDirLocation() string {
 	}
 	userHomeDotDdev := filepath.Join(userHome, ".ddev")
 
-	// If $XDG_CONFIG_HOME is set, use $XDG_CONFIG_HOME/ddev,
-	// we create this directory.
-	xdgConfigHomeDir := os.Getenv("XDG_CONFIG_HOME")
-	// Handle ~/xxx without failure; MUTAGEN_DATA_DIRECTORY, for example, can't have it.
-	if strings.HasPrefix(xdgConfigHomeDir, `~`) {
-		xdgConfigHomeDir = userHome + xdgConfigHomeDir[1:]
+	// If $DDEV_XDG_CONFIG_HOME is set, use $DDEV_XDG_CONFIG_HOME/ddev (all platforms).
+	// Handle ~/xxx without failure.
+	ddevXdgConfigHome := os.Getenv("DDEV_XDG_CONFIG_HOME")
+	if strings.HasPrefix(ddevXdgConfigHome, `~`) {
+		ddevXdgConfigHome = userHome + ddevXdgConfigHome[1:]
 	}
-	if xdgConfigHomeDir != "" {
-		return filepath.Join(xdgConfigHomeDir, "ddev")
+	if ddevXdgConfigHome != "" {
+		return filepath.Join(ddevXdgConfigHome, "ddev")
 	}
+
 	// If Linux and ~/.ddev doesn't exist and
 	// ~/.config/ddev exists, use it,
 	// we don't create this directory.
 	stat, userHomeDotDdevErr := os.Stat(userHomeDotDdev)
 	userHomeDotDdevIsDir := userHomeDotDdevErr == nil && stat.IsDir()
 	if nodeps.IsLinux() && !userHomeDotDdevIsDir {
-		userConfigDir, err := os.UserConfigDir()
-		if err == nil {
-			linuxDir := filepath.Join(userConfigDir, "ddev")
-			if _, err := os.Stat(linuxDir); err == nil {
-				return linuxDir
-			}
+		// Use the standard ~/.config/ddev location on Linux/WSL2.
+		// We intentionally use ~/.config rather than using os.UserConfigDir(),
+		// which would honor $XDG_CONFIG_HOME. Use DDEV_XDG_CONFIG_HOME to relocate.
+		linuxDir := filepath.Join(userHome, ".config", "ddev")
+		if _, err := os.Stat(linuxDir); err == nil {
+			return linuxDir
 		}
 	}
 	// Otherwise, use ~/.ddev
@@ -685,31 +833,58 @@ func GetGlobalDdevDirLocation() string {
 	return userHomeDotDdev
 }
 
-// CheckForMultipleGlobalDdevDirs checks for multiple global DDEV directories
-// and returns an error if multiple are found.
+// CheckForMultipleGlobalDdevDirs returns an error if a global DDEV config exists in a
+// location other than the one DDEV uses, so the user can remove or relocate it.
+// Leftover config at a no-longer-honored $XDG_CONFIG_HOME/ddev is reported with
+// instructions to set DDEV_XDG_CONFIG_HOME or remove it. A stale ~/.ddev or, on Linux,
+// ~/.config/ddev is also reported; when both Linux standard locations exist, ~/.ddev
+// wins by precedence but either is valid.
 func CheckForMultipleGlobalDdevDirs() error {
 	userHome, err := os.UserHomeDir()
 	if err != nil {
 		return err
 	}
-	userHomeDotDdev := filepath.Clean(filepath.Join(userHome, ".ddev"))
-	// On Linux, also check for $HOME/.config/ddev if XDG_CONFIG_HOME is not set
-	if nodeps.IsLinux() && os.Getenv("XDG_CONFIG_HOME") == "" {
-		userConfigDir, err := os.UserConfigDir()
-		if err == nil {
-			linuxDir := filepath.Join(userConfigDir, "ddev")
-			if _, err := os.Stat(linuxDir); err == nil {
-				userHomeDotDdev = filepath.Clean(linuxDir)
+	actualDdevDir := filepath.Clean(GetGlobalDdevDirLocation())
+	userHomeDotDdev := filepath.Join(userHome, ".ddev")
+	linuxConfigDdevDir := filepath.Clean(filepath.Join(userHome, ".config", "ddev"))
+
+	// Show a warning about leftover config at $XDG_CONFIG_HOME/ddev if DDEV_XDG_CONFIG_HOME is not set
+	if os.Getenv("DDEV_XDG_CONFIG_HOME") == "" {
+		if xdgConfigHome := os.Getenv("XDG_CONFIG_HOME"); xdgConfigHome != "" {
+			if strings.HasPrefix(xdgConfigHome, `~`) {
+				xdgConfigHome = userHome + xdgConfigHome[1:]
+			}
+			xdgDdevDir := filepath.Clean(filepath.Join(xdgConfigHome, "ddev"))
+			// On Linux, we don't want to warn about existing ~/.config/ddev
+			recognizedOnLinux := nodeps.IsLinux() && xdgDdevDir == linuxConfigDdevDir
+			if xdgDdevDir != actualDdevDir && !recognizedOnLinux {
+				if _, err := os.Stat(xdgDdevDir); err == nil {
+					return fmt.Errorf("found a leftover DDEV global config at %q; DDEV no longer honors XDG_CONFIG_HOME, so it is not being used. To keep using it, set DDEV_XDG_CONFIG_HOME=%q; otherwise remove %q", xdgDdevDir, xdgConfigHome, xdgDdevDir)
+				}
 			}
 		}
 	}
-	actualDdevDir := filepath.Clean(GetGlobalDdevDirLocation())
-	// If the actual location is not the default $HOME/.ddev (or $HOME/.config/ddev on Linux),
-	// and the default location exists, warn the user
-	if actualDdevDir != userHomeDotDdev {
-		if _, err := os.Stat(userHomeDotDdev); err == nil {
-			return fmt.Errorf("multiple global DDEV configurations found, %s is used, %s is not used, delete one of them to avoid confusion", actualDdevDir, userHomeDotDdev)
+
+	// ~/.ddev and, on Linux, ~/.config/ddev are both recognized locations. If a
+	// recognized location other than the active one holds config, point it out.
+	cleanUserHomeDotDdev := filepath.Clean(userHomeDotDdev)
+	candidates := []string{cleanUserHomeDotDdev}
+	if nodeps.IsLinux() {
+		candidates = append(candidates, linuxConfigDdevDir)
+	}
+	for _, candidate := range candidates {
+		if candidate == actualDdevDir {
+			continue
 		}
+		if _, err := os.Stat(candidate); err != nil {
+			continue
+		}
+		// On Linux both locations are standard, so explain that either can be
+		// removed rather than naming only one.
+		if actualDdevDir == cleanUserHomeDotDdev && candidate == linuxConfigDdevDir {
+			return fmt.Errorf("multiple global DDEV configurations found, both %q and %q exist; %q is in use because it takes precedence. To use %q instead, remove %q; otherwise remove %q to avoid confusion", actualDdevDir, candidate, actualDdevDir, candidate, actualDdevDir, candidate)
+		}
+		return fmt.Errorf("multiple global DDEV configurations found, %q is in use; %q is not used and can be removed to avoid confusion", actualDdevDir, candidate)
 	}
 
 	return nil
@@ -756,42 +931,6 @@ func CheckHostPortsAvailable(projectName string, ports []string) error {
 		}
 	}
 	return nil
-}
-
-// GetFreePort gets an ephemeral port currently available, but also not
-// listed in DdevGlobalConfig.UsedHostPorts
-func GetFreePort(localIPAddr string) (string, error) {
-	// Limit tries arbitrarily. It will normally succeed on first try.
-	for i := 1; i < 1000; i++ {
-		// From https://github.com/phayes/freeport/blob/master/freeport.go#L8
-		// Ignores that the actual listener may be on a Docker toolbox interface,
-		// so this is a heuristic.
-		addr, err := net.ResolveTCPAddr("tcp", "127.0.0.1:0")
-		if err != nil {
-			return "", err
-		}
-
-		l, err := net.ListenTCP("tcp", addr)
-		if err != nil {
-			return "", err
-		}
-		port := strconv.Itoa(l.Addr().(*net.TCPAddr).Port)
-		// nolint: errcheck
-		l.Close()
-
-		// In the case of Docker Toolbox, the actual listening IP may be something else
-		// like 192.168.99.100, so check that to make sure it's not currently occupied.
-		conn, _ := net.Dial("tcp", localIPAddr+":"+port)
-		if conn != nil {
-			continue
-		}
-
-		if HostPostIsAllocated(port) != "" {
-			continue
-		}
-		return port, nil
-	}
-	return "-1", fmt.Errorf("getFreePort() failed to find a free port")
 }
 
 // ReservePorts adds the ProjectInfo if necessary and assigns the reserved ports
@@ -852,30 +991,53 @@ func GetGlobalProjectList() map[string]*ProjectInfo {
 
 // GetCAROOT is a wrapper on global config
 func GetCAROOT() string {
-	return DdevGlobalConfig.MkcertCARoot
-}
-
-// readCAROOT() verifies that the mkcert command is available and its CA keys readable.
-// 1. Find out CAROOT
-// 2. Look there to see if key/crt are readable
-// 3. If not, see if mkcert is even available, return empty
-
-func readCAROOT() string {
 	_, err := exec.LookPath("mkcert")
 	if err != nil {
 		return ""
 	}
+	return DdevGlobalConfig.MkcertCARoot
+}
 
+// readCAROOT returns fresh CAROOT without checking for errors
+func readCAROOT() string {
+	caRoot, _ := ReadCAROOTDetails()
+	return caRoot
+}
+
+// ReadCAROOTDetails verifies that the mkcert command is available and its CA keys readable.
+// 1. Find out CAROOT
+// 2. Look there to see if key/crt are readable
+// 3. If not, see if mkcert is even available, return empty
+func ReadCAROOTDetails() (string, error) {
+	_, err := exec.LookPath("mkcert")
+	if err != nil {
+		recommendedCommand := "with your OS package manager"
+		if nodeps.IsMacOS() {
+			recommendedCommand = "with `brew install mkcert nss`"
+		} else if nodeps.IsWindows() {
+			recommendedCommand = "with `choco install -y mkcert`"
+		}
+		return "", fmt.Errorf("mkcert not found. Install it %s to trust HTTPS, then run `mkcert -install`", recommendedCommand)
+	}
 	out, err := exec.Command("mkcert", "-CAROOT").Output()
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("error running `mkcert -CAROOT`: %v; use `ddev utility tls-diagnose` for troubleshooting", err)
 	}
-	root := strings.Trim(string(out), "\r\n")
-	if !fileIsReadable(filepath.Join(root, "rootCA-key.pem")) || !fileExists(filepath.Join(root, "rootCA.pem")) {
-		return ""
+	caRoot := strings.TrimSpace(string(out))
+	if !fileIsReadable(filepath.Join(caRoot, "rootCA-key.pem")) || !fileExists(filepath.Join(caRoot, "rootCA.pem")) {
+		caRootFrom := `mkcert -CAROOT`
+		if caRootEnv := os.Getenv("CAROOT"); caRootEnv != "" {
+			caRootFrom = fmt.Sprintf("CAROOT=%q", caRootEnv)
+		} else if caRoot != "" {
+			caRootFrom = fmt.Sprintf("`mkcert -CAROOT` at %q", caRoot)
+		}
+		wsl2Hint := ""
+		if nodeps.IsWSL2() {
+			wsl2Hint = ", verify Windows interop is working: run `wsl --shutdown`, then restart WSL"
+		}
+		return "", fmt.Errorf("mkcert CA files are not readable from %s; run `mkcert -install` to trust HTTPS%s; use `ddev utility tls-diagnose` for troubleshooting", caRootFrom, wsl2Hint)
 	}
-
-	return root
+	return caRoot, nil
 }
 
 // fileIsReadable checks to make sure a file exists and is readable
@@ -949,21 +1111,12 @@ func IsInternetActive() bool {
 	return active
 }
 
-// DockerComposeVersion is filled with the version we find for docker-compose
-var DockerComposeVersion = ""
-
-// GetRequiredDockerComposeVersion returns the version of docker-compose we need
-// based on the compiled version, or overrides in globalconfig, like
-// required_docker_compose_version and use_docker_compose_from_path
-// In the case of UseDockerComposeFromPath there is no required version, so this
-// will return empty string.
-func GetRequiredDockerComposeVersion() string {
-	v := DdevGlobalConfig.RequiredDockerComposeVersion
-	switch {
-	case DdevGlobalConfig.UseDockerComposeFromPath:
-		v = ""
-	case DdevGlobalConfig.RequiredDockerComposeVersion != "":
-		v = DdevGlobalConfig.RequiredDockerComposeVersion
+// GetRequiredDockerBuildxVersion returns the docker-buildx version DDEV should download,
+// or empty string when docker_buildx_version is "system" (the default), meaning no download.
+func GetRequiredDockerBuildxVersion() string {
+	v := strings.TrimPrefix(DdevGlobalConfig.DockerBuildxVersion, "v")
+	if v == "system" || v == "" {
+		return ""
 	}
 	return v
 }

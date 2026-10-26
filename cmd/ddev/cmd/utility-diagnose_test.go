@@ -7,6 +7,7 @@ import (
 
 	"github.com/ddev/ddev/pkg/exec"
 	"github.com/ddev/ddev/pkg/fileutil"
+	"github.com/ddev/ddev/pkg/nodeps"
 	"github.com/ddev/ddev/pkg/testcommon"
 	"github.com/stretchr/testify/require"
 )
@@ -45,7 +46,7 @@ func TestUtilityDiagnoseCmd(t *testing.T) {
 		})
 
 		out, err := exec.RunHostCommand(DdevBin, "utility", "diagnose")
-		require.NoError(t, err)
+		require.NoError(t, err, "ddev utility diagnose failed\n==== ddev utility diagnose output ====\n%s\n==== end ddev utility diagnose output ====", out)
 		require.Contains(t, out, "DDEV Diagnostic Report")
 		require.Contains(t, out, "Current Project")
 		require.Contains(t, out, "Name: test-diagnose-basic")
@@ -64,15 +65,15 @@ func TestUtilityDiagnoseCmd(t *testing.T) {
 		})
 
 		out, err := exec.RunHostCommand(DdevBin, "utility", "diagnose")
-		require.NoError(t, err)
-		require.Contains(t, out, "customized configuration file(s)")
+		require.NoError(t, err, "ddev utility diagnose failed\n==== ddev utility diagnose output ====\n%s\n==== end ddev utility diagnose output ====", out)
+		require.Contains(t, out, "Custom configuration detected")
 		require.Contains(t, out, ".ddev/.env")
 	})
 
 	// Test outside home directory warning
 	t.Run("OutsideHomeDirectory", func(t *testing.T) {
 		// Only test on systems where we can easily test outside home
-		if os.Getenv("DDEV_TEST_OUTSIDE_HOME") != "true" {
+		if nodeps.IsEnvFalse("DDEV_TEST_OUTSIDE_HOME") {
 			t.Skip("Skipping outside home test - set DDEV_TEST_OUTSIDE_HOME=true to enable")
 		}
 

@@ -3,12 +3,12 @@ package cmd
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 
 	configTypes "github.com/ddev/ddev/pkg/config/types"
-	"github.com/ddev/ddev/pkg/fileutil"
 	"github.com/ddev/ddev/pkg/globalconfig"
 	globalconfigTypes "github.com/ddev/ddev/pkg/globalconfig/types"
 	"github.com/ddev/ddev/pkg/nodeps"
@@ -16,6 +16,7 @@ import (
 	"github.com/ddev/ddev/pkg/util"
 	"github.com/ddev/ddev/pkg/versionconstants"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 var (
@@ -28,10 +29,11 @@ var (
 
 // configGlobalCommand is the the `ddev config global` command
 var configGlobalCommand = &cobra.Command{
-	Use:     "global [flags]",
-	Short:   "Change global configuration",
-	Example: "ddev config global --instrumentation-opt-in=false\nddev config global --omit-containers=ddev-ssh-agent",
-	Run:     handleGlobalConfig,
+	Use:         "global [flags]",
+	Annotations: map[string]string{NoDockerCommand: "true"},
+	Short:       "Change global configuration",
+	Example:     "ddev config global --instrumentation-opt-in=false\nddev config global --omit-containers=ddev-ssh-agent",
+	Run:         handleGlobalConfig,
 }
 
 // handleGlobalConfig handles all the flag processing for global config
@@ -81,7 +83,7 @@ func handleGlobalConfig(cmd *cobra.Command, _ []string) {
 			conc := append(globalconfig.DdevGlobalConfig.WebEnvironment, envspl...)
 			// Convert to a hashmap to remove duplicate values.
 			hashmap := make(map[string]string)
-			for i := 0; i < len(conc); i++ {
+			for i := range conc {
 				hashmap[conc[i]] = conc[i]
 			}
 			keys := []string{}
@@ -189,20 +191,14 @@ func handleGlobalConfig(cmd *cobra.Command, _ []string) {
 		dirty = true
 	}
 
-	if cmd.Flag("required-docker-compose-version").Changed {
-		val, _ := cmd.Flags().GetString("required-docker-compose-version")
-		globalconfig.DdevGlobalConfig.RequiredDockerComposeVersion = val
+	if cmd.Flag("docker-buildx-version").Changed {
+		val, _ := cmd.Flags().GetString("docker-buildx-version")
+		globalconfig.DdevGlobalConfig.DockerBuildxVersion = val
 		dirty = true
 	}
 	if cmd.Flag("project-tld").Changed {
 		val, _ := cmd.Flags().GetString("project-tld")
 		globalconfig.DdevGlobalConfig.ProjectTldGlobal = val
-		dirty = true
-	}
-
-	if cmd.Flag("use-docker-compose-from-path").Changed {
-		val, _ := cmd.Flags().GetBool("use-docker-compose-from-path")
-		globalconfig.DdevGlobalConfig.UseDockerComposeFromPath = val
 		dirty = true
 	}
 
@@ -239,9 +235,33 @@ func handleGlobalConfig(cmd *cobra.Command, _ []string) {
 		dirty = true
 	}
 
+	if cmd.Flag("ssh-agent-upstream").Changed {
+		val, _ := cmd.Flags().GetString("ssh-agent-upstream")
+		globalconfig.DdevGlobalConfig.SSHAgentUpstream = val
+		dirty = true
+	}
+
 	if cmd.Flag("traefik-monitor-port").Changed {
 		val, _ := cmd.Flags().GetString("traefik-monitor-port")
 		globalconfig.DdevGlobalConfig.TraefikMonitorPort = val
+		dirty = true
+	}
+
+	if cmd.Flag("share-default-provider").Changed {
+		val, _ := cmd.Flags().GetString("share-default-provider")
+		globalconfig.DdevGlobalConfig.ShareDefaultProvider = val
+		dirty = true
+	}
+
+	if cmd.Flag("no-tui").Changed {
+		val, _ := cmd.Flags().GetBool("no-tui")
+		globalconfig.DdevGlobalConfig.NoTUI = val
+		dirty = true
+	}
+
+	if cmd.Flag("omit-snapshot-on-delete").Changed {
+		val, _ := cmd.Flags().GetBool("omit-snapshot-on-delete")
+		globalconfig.DdevGlobalConfig.OmitSnapshotOnDelete = val
 		dirty = true
 	}
 
@@ -279,8 +299,14 @@ func handleGlobalConfig(cmd *cobra.Command, _ []string) {
 	keys = append(keys, "remote-config-url")
 	valMap["sponsorship-data-url"] = globalconfig.DdevGlobalConfig.RemoteConfig.SponsorshipDataURL
 	keys = append(keys, "sponsorship-data-url")
+	valMap["addon-data-url"] = globalconfig.DdevGlobalConfig.RemoteConfig.AddonDataURL
+	keys = append(keys, "addon-data-url")
 	valMap["remote-config-update-interval"] = fmt.Sprintf("%d", globalconfig.DdevGlobalConfig.RemoteConfig.UpdateInterval)
 	keys = append(keys, "remote-config-update-interval")
+
+	if changed := changedGlobalConfigKeys(cmd, valMap); len(changed) > 0 {
+		keys = changed
+	}
 
 	sort.Strings(keys)
 	if !output.JSONOutput {
@@ -288,11 +314,40 @@ func handleGlobalConfig(cmd *cobra.Command, _ []string) {
 			output.UserOut.Printf("%s=%v", label, valMap[label])
 		}
 	} else {
-		output.UserOut.WithField("raw", valMap).Println("")
+		raw := make(map[string]string, len(keys))
+		for _, k := range keys {
+			raw[k] = valMap[k]
+		}
+		output.UserOut.WithField("raw", raw).Println("")
 	}
 }
 
-func init() {
+// changedGlobalConfigKeys returns the display keys for the settings named by
+// the flags given on the command line, so that only those are reported back.
+// web-environment values can hold tokens, so only the names of the variables
+// given on the command line are reported, never their values.
+func changedGlobalConfigKeys(cmd *cobra.Command, valMap map[string]string) []string {
+	var keys []string
+	cmd.Flags().Visit(func(f *pflag.Flag) {
+		key := strings.TrimSuffix(f.Name, "-reset")
+		if key == "web-environment-add" || key == "web-environment" {
+			key = "web-environment"
+			var names []string
+			for e := range strings.SplitSeq(strings.Trim(strings.TrimSpace(f.Value.String()), `"'`), ",") {
+				if name, _, _ := strings.Cut(e, "="); name != "" {
+					names = append(names, name)
+				}
+			}
+			valMap[key] = fmt.Sprintf("%v", names)
+		}
+		if _, ok := valMap[key]; ok && !slices.Contains(keys, key) {
+			keys = append(keys, key)
+		}
+	})
+	return keys
+}
+
+func registerConfigGlobalCmd() {
 	configGlobalCommand.Flags().StringVarP(&omitContainers, "omit-containers", "", "", `For example, --omit-containers=ddev-ssh-agent or --omit-containers=""`)
 	_ = configGlobalCommand.RegisterFlagCompletionFunc("omit-containers", configCompletionFuncWithCommas(globalconfig.GetValidOmitContainers()))
 	configGlobalCommand.Flags().StringVarP(&webEnvironmentGlobal, "web-environment", "", "", `Set the environment variables in the web container: --web-environment="TYPO3_CONTEXT=Development,SOMEENV=someval"`)
@@ -325,12 +380,8 @@ func init() {
 
 	configGlobalCommand.Flags().String("table-style", "default", fmt.Sprintf(`Table style for "ddev list" and "ddev describe", possible values are "%s"`, strings.Join(globalconfig.ValidTableStyleList(), `", "`)))
 	_ = configGlobalCommand.RegisterFlagCompletionFunc("table-style", configCompletionFunc(globalconfig.ValidTableStyleList()))
-	configGlobalCommand.Flags().String("required-docker-compose-version", "", "Override default docker-compose version (used only in development testing)")
-	_ = configGlobalCommand.Flags().MarkHidden("required-docker-compose-version")
 	configGlobalCommand.Flags().String("project-tld", nodeps.DdevDefaultTLD, "Set the default top-level domain to be used for all projects, can be overridden by project configuration")
 	_ = configGlobalCommand.RegisterFlagCompletionFunc("project-tld", configCompletionFunc([]string{nodeps.DdevDefaultTLD}))
-	configGlobalCommand.Flags().Bool("use-docker-compose-from-path", false, fmt.Sprintf("If true, use docker-compose from path instead of private %s (used only in development testing)", fileutil.ShortHomeJoin(globalconfig.GetDDEVBinDir(), "docker-compose")))
-	_ = configGlobalCommand.Flags().MarkHidden("use-docker-compose-from-path")
 	configGlobalCommand.Flags().Bool("no-bind-mounts", false, "If true, don't use bind-mounts. Useful for environments like remote Docker where bind-mounts are impossible")
 	_ = configGlobalCommand.RegisterFlagCompletionFunc("no-bind-mounts", configCompletionFunc([]string{"true", "false"}))
 	configGlobalCommand.Flags().String("xdebug-ide-location", "", "For less usual IDE locations specify where the IDE is running for Xdebug to reach it (for advanced use only)")
@@ -343,10 +394,29 @@ func init() {
 	_ = configGlobalCommand.RegisterFlagCompletionFunc("mailpit-http-port", configCompletionFunc([]string{nodeps.DdevDefaultMailpitHTTPPort}))
 	configGlobalCommand.Flags().String("mailpit-https-port", nodeps.DdevDefaultMailpitHTTPSPort, "The default Mailpit HTTPS port for all projects, can be overridden by project configuration")
 	_ = configGlobalCommand.RegisterFlagCompletionFunc("mailpit-https-port", configCompletionFunc([]string{nodeps.DdevDefaultMailpitHTTPSPort}))
-	configGlobalCommand.Flags().String("router", globalconfigTypes.RouterTypeTraefik, fmt.Sprintf("The only valid router types are %s", strings.Join(globalconfigTypes.GetValidRouterTypes(), ", ")))
-	_ = configGlobalCommand.Flags().MarkDeprecated("router", "\nThe only router used now is traefik, so --router is no longer needed")
-	_ = configGlobalCommand.Flags().MarkHidden("router")
 	configGlobalCommand.Flags().String("traefik-monitor-port", nodeps.TraefikMonitorPortDefault, `Can be used to change the Traefik monitor port in case of port conflicts, for example "ddev config global --traefik-monitor-port=11999"`)
 	_ = configGlobalCommand.RegisterFlagCompletionFunc("traefik-monitor-port", configCompletionFunc([]string{nodeps.TraefikMonitorPortDefault}))
+	configGlobalCommand.Flags().String("ssh-agent-upstream", "", `Make ddev-ssh-agent relay to an existing SSH agent: "host" for the host's agent, or the path to an agent socket; empty uses DDEV's own agent`)
+	_ = configGlobalCommand.RegisterFlagCompletionFunc("ssh-agent-upstream", configCompletionFunc([]string{"host", `""`}))
+	configGlobalCommand.Flags().String("share-default-provider", "", `The default share provider for all projects (ngrok, cloudflared, or custom), can be overridden by project configuration`)
+	_ = configGlobalCommand.RegisterFlagCompletionFunc("share-default-provider", configCompletionFunc([]string{"ngrok", "cloudflared"}))
+	configGlobalCommand.Flags().Bool("no-tui", false, "If true, disable the interactive TUI dashboard when running bare 'ddev'")
+	_ = configGlobalCommand.RegisterFlagCompletionFunc("no-tui", configCompletionFunc([]string{"true", "false"}))
+	configGlobalCommand.Flags().Bool("omit-snapshot-on-delete", false, "If true, omit the snapshot on 'ddev delete' by default")
+	_ = configGlobalCommand.RegisterFlagCompletionFunc("omit-snapshot-on-delete", configCompletionFunc([]string{"true", "false"}))
+
+	// Hidden flags
+	configGlobalCommand.Flags().String("docker-buildx-version", "system", `docker-buildx version: "system" uses the installed plugin (default, no download), or specify a version like "0.33.0" to download it`)
+	_ = configGlobalCommand.RegisterFlagCompletionFunc("docker-buildx-version", configCompletionFunc([]string{"system"}))
+	_ = configGlobalCommand.Flags().MarkHidden("docker-buildx-version")
+
+	// Deprecated flags
+	configGlobalCommand.Flags().String("required-docker-compose-version", "", "")
+	_ = configGlobalCommand.Flags().MarkDeprecated("required-docker-compose-version", "docker-compose is now embedded")
+	configGlobalCommand.Flags().Bool("use-docker-compose-from-path", false, "")
+	_ = configGlobalCommand.Flags().MarkDeprecated("use-docker-compose-from-path", "docker-compose is now embedded")
+	configGlobalCommand.Flags().String("router", globalconfigTypes.RouterTypeTraefik, "")
+	_ = configGlobalCommand.Flags().MarkDeprecated("router", "traefik is the only router")
+
 	ConfigCommand.AddCommand(configGlobalCommand)
 }

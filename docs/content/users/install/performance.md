@@ -36,6 +36,10 @@ Mutagen is enabled by default on Mac and traditional Windows, and it can be disa
     On macOS and traditional Windows, Mutagen is enabled globally by default. 
 
     To disable Mutagen on a single project, run `ddev config --performance-mode=none && ddev restart`.
+
+    To revert Mutagen back to the default globally controlled mode for a single project, run `ddev config --performance-mode-reset && ddev restart`.
+    
+    (This removes the configuration line so global settings are used instead.)
     
     To disable Mutagen globally on all ddev projects, run `ddev mutagen reset && ddev config global --performance-mode=none && ddev config --performance-mode=none`. To then use Mutagen on a specific project, run [`ddev stop`](../usage/commands.md#stop), enable it with `ddev config --performance-mode=mutagen`, and [`ddev start`](../usage/commands.md#start) again.
 
@@ -82,7 +86,17 @@ Mutagen is enabled by default on Mac and traditional Windows, and it can be disa
     * **It’s a filesystem feature. Make backups!**<br>
     If we’ve learned anything from computer file-storage adventures, it’s that backups are always a good idea!
     * **Large `node_modules` can cause cause slow sync times**<br>
-    When you’re compiling static, front-end assets with tools like `npm` and `yarn`, e.g. Drupal themes, syncing the `node_modules` directory can be very slow. We recommend excluding `node_modules` by adding it to the `sync:defaults:ignore:paths` list in `mutagen.yml`; see [Advanced Mutagen Configuration Options](#advanced-mutagen-configuration-options) for details. This problem can also occur with directories that contain large binaries or fonts, for example.
+    When you're compiling static, front-end assets with tools like `npm` and `yarn`, e.g. Drupal themes, syncing the `node_modules` directory can be very slow. **The solution is to add `node_modules` to the `upload_dirs` list in `.ddev/config.yaml`**, which will exclude it from Mutagen sync while still making it available in the container via Docker bind-mount.
+
+    **Important:** When overriding `upload_dirs`, you must include any existing CMS-specific defaults (like `sites/default/files` for Drupal) or they will be lost. For example, for a Drupal project:
+
+    ```yaml
+    upload_dirs:
+      - sites/default/files  # Keep the CMS default
+      - node_modules         # Add your exclusion
+    ```
+
+    Then run `ddev restart`. This problem can also occur with directories that contain large binaries or fonts, for example.
 
     ### Syncing After `git checkout`
 
@@ -103,20 +117,36 @@ Mutagen is enabled by default on Mac and traditional Windows, and it can be disa
 
     ### Advanced Mutagen Configuration Options
 
+    !!!warning "Editing mutagen.yml is rarely needed"
+        **In almost all cases, you should use `upload_dirs` in `.ddev/config.yaml` to exclude directories from Mutagen sync** (see example above). This is simpler and doesn't require understanding Mutagen's configuration format. Only edit `.ddev/mutagen/mutagen.yml` if you need advanced control beyond what `upload_dirs` provides.
+
     The Mutagen project provides [extensive configuration options](https://mutagen.io/documentation/introduction/configuration).
 
     Each DDEV project includes a `.ddev/mutagen/mutagen.yml` file by default, with basic defaults you can override if you remove the `#ddev-generated` line at the beginning of the file.
 
-    If you edit the `.ddev/mutagen/mutagen.yml` file:
+    If you need to edit the `.ddev/mutagen/mutagen.yml` file:
 
     * Remove the `#ddev-generated` line
     * Execute a [`ddev mutagen reset`](../usage/commands.md#mutagen-reset) to avoid the situation where the Docker volume and Mutagen session still have files from an older configuration.
 
-    The most likely thing you'll want to do is to exclude a path from mutagen syncing, which you can do in the `paths:` section of the `ignore:` stanza in the `.ddev/mutagen/mutagen.yml`.
+    The most common need is to exclude a path from Mutagen syncing:
 
-    You can exclude a path from Mutagen syncing and bind-mount something from the host or a different volume on that path with a `docker-compose.*.yaml` file. So if you have a heavy project subdirectory (lots of fonts or user-generated content, for example), you could exclude that subdirectory in `.ddev/mutagen/mutagen.yml` and add a `docker-compose.exclude.yaml`.
+    * **Recommended approach:** Add directories to the `upload_dirs` list in `.ddev/config.yaml` (see example above). This automatically excludes them from Mutagen sync while making them available in the container via Docker bind-mount.
+    * **Advanced approach:** Manually configure exclusions in the `paths:` section of the `ignore:` stanza in `.ddev/mutagen/mutagen.yml` and set up custom bind mounts with `docker-compose.*.yaml` files.
 
-    For example, if you want the `node_modules` subdirectory of the project to be available inside the container, but don’t need Mutagen to be syncing it, you can use normal Docker bind-mounting for that subdirectory:
+    For example, if you want the `node_modules` subdirectory of the project to be available inside the container, but don't need Mutagen to be syncing it, you can either:
+
+    **Option 1 (Recommended - Simple):** Add to `upload_dirs` in `.ddev/config.yaml` (remember to include existing defaults):
+
+    ```yaml
+    upload_dirs:
+      - sites/default/files  # Keep existing CMS default (if applicable)
+      - node_modules         # Add your exclusion
+    ```
+
+    Then `ddev restart`.
+
+    **Option 2 (Advanced):** Manually configure Mutagen exclusion and bind mount:
 
     * Take over the `.ddev/mutagen/mutagen.yml` by removing the `#ddev-generated` line.
     * Add `/web/core/node_modules` to the excluded paths:
@@ -142,7 +172,15 @@ Mutagen is enabled by default on Mac and traditional Windows, and it can be disa
     ### Troubleshooting Mutagen Sync Issues
 
     * Please make sure that DDEV projects work *without* Mutagen before troubleshooting it. Run `ddev config --performance-mode=none && ddev restart`.
-    * Rename your project’s `.ddev/mutagen/mutagen.yml` file to `.ddev/mutagen/mutagen.yml.bak` and run `ddev restart`. This ensures you’ll have a fresh version in case the file has been changed and `#ddev-generated` removed.
+    * **Run `ddev utility mutagen-diagnose`** to automatically check for common Mutagen issues. This command analyzes:
+        * Volume sizes (warns if >5GB, critical if >10GB)
+        * Upload directories configuration
+        * Sync session status and problems
+        * Large files being synced that could impact performance
+        * Ignore pattern configuration
+
+        The diagnostic output provides actionable recommendations for improving sync performance. Use `ddev utility mutagen-diagnose --all` to see all Mutagen volumes across all projects. See the [command reference](../usage/commands.md#utility-mutagen-diagnose) for details.
+    * Rename your project's `.ddev/mutagen/mutagen.yml` file to `.ddev/mutagen/mutagen.yml.bak` and run `ddev restart`. This ensures you'll have a fresh version in case the file has been changed and `#ddev-generated` removed.
     * Avoid having Mutagen sync large binaries, which can cause `ddev start` to take a long time. The `.tarballs` directory is automatically excluded, so Mutagen will ignore anything you move there. To see what Mutagen is trying to sync, run `ddev mutagen status -l` in another window.
     * `DDEV_DEBUG=true ddev start` will provide more information about what’s going on with Mutagen.
     * DDEV’s Mutagen daemon keeps its data in a DDEV-only `MUTAGEN_DATA_DIRECTORY` in `$HOME/.ddev_mutagen_data_directory`.

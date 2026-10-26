@@ -11,10 +11,11 @@ DDEV add-ons provide a powerful way to extend development environments. You can 
 
 1. Use the [`ddev-addon-template`](https://github.com/ddev/ddev-addon-template) repository
 2. Click "Use this template" to create your own repository
-3. Customize the `install.yaml` file
-4. Test with `tests.bats`
-5. Create a release when ready
-6. Add the `ddev-get` label to your GitHub repository
+3. Customize the `install.yaml` file - see the [example](https://github.com/ddev/ddev-addon-template/blob/main/install.yaml)
+4. Add the [`#ddev-generated`](#the-ddev-generated-comment) comment to all files installed by the add-on
+5. Test with [Bats](#bats-testing-framework)
+6. Create a release when ready
+7. If you expect to support and maintain the add-on, add the `ddev-get` [topic](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/classifying-your-repository-with-topics) to the add-on's GitHub repository. This helps developers find the add-on and encourages reporting issues and feedback.
 
 See this [screencast](https://www.youtube.com/watch?v=fPVGpKGr0f4) for a walkthrough.
 
@@ -38,7 +39,20 @@ removal_actions: []
 - **`project_files`**: Files copied to the project's `.ddev` directory
 - **`global_files`**: Files copied to the [global configuration directory](../usage/architecture.md#global-files)
 - **`post_install_actions`**: Scripts executed after files are copied
-- **`removal_actions`**: Scripts executed when removing the add-on
+- **`removal_actions`**: Scripts executed when removing the add-on. Use these to clean up files that don't carry `#ddev-generated` (e.g. files placed outside `.ddev/`, or files the user may have modified).
+
+    ```yaml
+    removal_actions:
+      - |
+        #ddev-description: Remove generated settings file if unmodified
+        if [ -f "${DDEV_APPROOT}/${DDEV_DOCROOT}/sites/default/settings.ddev.myservice.php" ]; then
+          if grep -q '#ddev-generated' "${DDEV_APPROOT}/${DDEV_DOCROOT}/sites/default/settings.ddev.myservice.php"; then
+            rm -f "${DDEV_APPROOT}/${DDEV_DOCROOT}/sites/default/settings.ddev.myservice.php"
+          else
+            echo "Skipping removal: settings.ddev.myservice.php has been modified."
+          fi
+        fi
+    ```
 
 ### Advanced Sections
 
@@ -144,6 +158,8 @@ $_ENV['DDEV_MUTAGEN_ENABLED'] // 'true' or 'false'
 ```
 
 #### PHP Action Execution Environment
+
+PHP actions run **inside a temporary container**, unlike Bash actions which run on the host.
 
 - **Working directory**: `/var/www/html/.ddev` (your project's .ddev directory)
 - **Project access**: Full read/write access to project repository at `/var/www/html/`
@@ -284,12 +300,111 @@ pre_install_actions:
 
 ## Advanced Features
 
+### Customizing `ddev describe` Output
+
+Add-ons can customize what appears in `ddev describe` using `x-ddev.describe-*` extensions in your docker-compose file (requires DDEV v1.24.10+):
+
+```yaml
+services:
+  myservice:
+    image: myimage:latest
+    x-ddev:
+      describe-url-port: "https://${DDEV_HOSTNAME}:8080"
+      describe-info: "API key: ${MYSERVICE_API_KEY}"
+```
+
+See [Customizing ddev describe output](custom-docker-services.md#customizing-ddev-describe-output) for full details, and the [`x-ddev` Extension](custom-docker-services.md#x-ddev-extension) for all supported keys.
+
+### Minor Docker Image Customization
+
+For small tweaks to an existing image, use `dockerfile_inline` instead of maintaining a separate `Dockerfile`:
+
+```yaml
+services:
+  myservice:
+    image: myimage:latest
+    build:
+      dockerfile_inline: |
+        FROM myimage:latest
+        RUN apt-get update && apt-get install -y mypackage
+```
+
+### Tools That Update Themselves
+
+If your add-on installs a tool in the web image and the tool updates itself, the update is lost at the next `ddev restart`, and users fall back to the slow `ddev restart --no-cache`. Use one of these approaches instead. Either way, keep the tool's configuration and credentials apart from the program, as described in [Persisting Changes Across Restarts](in-container-configuration.md#persisting-changes-across-restarts).
+
+#### Keep the Tool in `ddev-global-cache`
+
+Install the tool at build time as the web container's user, not as `root`. The script below can't move files owned by `root`, so it would leave the tool in the home directory and its updates wouldn't be kept. Switch users around the install, as in [Installing into the home directory](customizing-images.md#installing-into-the-home-directory):
+
+```dockerfile
+# .ddev/web-build/Dockerfile.mytool
+#ddev-generated
+USER $username
+RUN curl -fsSL https://example.com/mytool/install.sh | bash
+USER root
+```
+
+Then add a `web-entrypoint.d/mytool.sh` script to `project_files`. It's the script from [Persisting Home Subdirectories in `ddev-global-cache`](in-container-configuration.md#persisting-home-subdirectories-in-ddev-global-cache) with one change: `cp -an` adds files from a newer image but never replaces the stored ones, so the tool's own updates are kept. This example is for a tool installed in `~/.mytool`:
+
+```bash
+# .ddev/web-entrypoint.d/mytool.sh
+#ddev-generated
+# Keep mytool in ddev-global-cache so its own updates survive restarts.
+# cp -n adds files from a newer image but keeps the stored ones.
+(
+  for dir in .mytool; do
+    target="/mnt/ddev-global-cache/mytool/${HOSTNAME}/${dir}"
+    mkdir -p "${target}" "$(dirname ~/"${dir}")" &&
+      if [ -d ~/"${dir}" ] && [ ! -L ~/"${dir}" ]; then
+        cp -an ~/"${dir}"/. "${target}"/ && rm -rf ~/"${dir}"
+      fi &&
+      ln -sfn "${target}" ~/"${dir}" ||
+      echo "mytool.sh: unable to keep ~/${dir}" >&2
+  done
+)
+```
+
+The first start copies the tool from the image, and after that the tool's updater writes to the volume. Starting needs no network, and `ddev delete` removes the copy. Keep `${HOSTNAME}` directly under your add-on's directory, because `ddev delete` doesn't look deeper. Only keep directories that belong to your tool: if two add-ons link a shared directory like `~/.local/bin`, the last one wins. [ddev-nvm](https://github.com/ddev/ddev-nvm) also keeps `~/.nvm` in `ddev-global-cache/nvm_dir/${HOSTNAME}`, but it copies from the image only on the first start, so a newer image doesn't add anything.
+
+To go back to the version in the image, users can run:
+
+```bash
+ddev exec 'rm -rf /mnt/ddev-global-cache/mytool/${HOSTNAME}'
+ddev restart
+```
+
+#### Pin the Version
+
+Set the version in an `ARG` and release a new add-on version for each tool update. After `ddev add-on get`, a plain `ddev restart` [rebuilds only from that step on](customizing-images.md#rebuilding-only-what-changed). Turn off the tool's own updater, because its updates would be lost.
+
+### Environment Variables
+
+Users configure an add-on through the [env files](../configuration/environment-variables.md) named after it, so `.ddev/.env.myaddon` reaches the `myaddon` service and, with DDEV v1.25.4+, the add-on's own install actions as well.
+
+To add variables to a service you don't own, such as `web`, use a labeled file named after your add-on:
+
+```bash
+ddev dotenv set .ddev/.env.web.myaddon --api-url=https://example.com
+```
+
+That reaches the `web` container, and two add-ons doing this leave each other's file alone, which is not the case when both write `.ddev/.env.web`.
+
+Ask for a token or any other secret in a `.local` file, like `.ddev/.env.myaddon.local`, which DDEV keeps out of Git.
+
+!!!warning "Require v1.25.4 for labeled and `.local` files"
+    Older DDEV versions don't raise an error on `.ddev/.env.<service>.<label>` or `.local` files, they simply never read them, so the add-on installs cleanly and misbehaves later. If yours ships or reads one, say so in `install.yaml`:
+
+    ```yaml
+    ddev_version_constraint: '>= v1.25.4'
+    ```
+
 ### Version Constraints
 
 Specify minimum DDEV version requirements:
 
 ```yaml
-ddev_version_constraint: '>= v1.24.8'
+ddev_version_constraint: '>= v1.25.2'
 ```
 
 ### Dependencies
@@ -484,17 +599,21 @@ project_files:
 
 ### YAML File Processing
 
-Read project YAML files for advanced templating:
+(Using YAML file processing is very unusual.)
+
+`yaml_read_files` reads external YAML files and makes their contents available as Go template variables in **Bash actions**. This is a Go template feature and cannot be used inside PHP actions.
 
 ```yaml
 yaml_read_files:
-  config: "config.yaml"
+  platformapp: ".platform.app.yaml"
+  services: ".platform/services.yaml"
 
 post_install_actions:
   - |
-    <?php
-    // Access YAML data via templating: {{ .config.some_value }}
-    ?>
+    #ddev-description: Configure PHP version from platform config
+    cat <<EOF >${DDEV_APPROOT}/.ddev/config.platformsh.yaml
+    php_version: {{ trimPrefix "php:" .platformapp.type }}
+    EOF
 ```
 
 ### Error Handling
@@ -516,6 +635,37 @@ echo "Requirements validated\n";
 ```
 
 ## Special Directives
+
+### The `#ddev-generated` Comment
+
+Add `#ddev-generated` as a comment in any file your add-on creates or copies into a project. DDEV uses this marker to:
+
+1. **Track managed files** - on a subsequent `ddev add-on get`, DDEV replaces the file automatically if it contains `#ddev-generated`, even if the user has modified it. Files with `#ddev-generated` that are listed in the `project_files` or `global_files` will be automatically removed on `ddev add-on remove` if the `#ddev-generated` is found in the file.
+2. **Enable clean removal** - `ddev add-on remove` deletes all files that still contain `#ddev-generated`
+
+Files that do **not** contain this comment are left in place during removal (assumed to be user-modified). The [`removal_actions`](#core-sections) section is the place to clean up any such files.
+
+```yaml
+# docker-compose.myservice.yaml
+#ddev-generated
+services:
+  myservice:
+    image: myimage:latest
+```
+
+In PHP actions, include it as the first line of generated files:
+
+```php
+file_put_contents('docker-compose.myservice.yaml', "#ddev-generated\n" . yaml_emit($config));
+```
+
+In JSON files, add it as a property:
+
+```json
+{
+    "#ddev-generated": true
+}
+```
 
 ### Description Display
 
@@ -543,32 +693,81 @@ post_install_actions:
     some-command-that-might-fail
 ```
 
+### Interactive Actions
+
+Add `#ddev-interactive` to a Bash action that needs direct terminal input or live output. DDEV runs these actions
+interactively only when stdin is a terminal and JSON output is disabled. In non-interactive environments, such as CI,
+DDEV keeps the standard buffered action behavior.
+
+```yaml
+post_install_actions:
+  - |
+    #ddev-description: Configure API credentials
+    #ddev-interactive
+    if [ "$(ddev dotenv get .ddev/.env.myaddon.local --api-token 2>/dev/null)" = "" ]; then
+      read -p "Enter your API token: " TOKEN
+      ddev dotenv set .ddev/.env.myaddon.local --api-token="${TOKEN}"
+    fi
+```
+
 ## Testing Your Add-on
 
 ### Bats Testing Framework
 
-The add-on template includes a `tests.bats` file for testing:
+The add-on template includes a `tests/test.bats` file for testing:
 
 ```bash
 #!/usr/bin/env bats
 
-@test "install add-on" {
-  ddev add-on get . --project my-test
-  cd my-test
-  ddev restart
-  # Add your tests here
+setup() {
+  set -eu -o pipefail
+
+  # Override this variable for your add-on:
+  export GITHUB_REPO=owner/repo
+
+  # ...
 }
 
-@test "verify service is running" {
-  cd my-test
-  ddev exec "curl -s http://myservice:8080/health"
+health_checks() {
+  # Do something useful here that verifies the add-on
+
+  # You can check for specific information in headers:
+  run curl -sfI https://${PROJNAME}.ddev.site
+  assert_output --partial "HTTP/2 200"
+  assert_output --partial "test_header"
+
+  # Or check if some command gives expected output:
+  DDEV_DEBUG=true run ddev launch
+  assert_success
+  assert_output --partial "FULLURL https://${PROJNAME}.ddev.site"
+}
+
+@test "install from directory" {
+  set -eu -o pipefail
+  echo "# ddev add-on get ${DIR} with project ${PROJNAME} in $(pwd)" >&3
+  run ddev add-on get "${DIR}"
+  assert_success
+  run ddev restart -y
+  assert_success
+  health_checks
+}
+
+# bats test_tags=release
+@test "install from release" {
+  set -eu -o pipefail
+  echo "# ddev add-on get ${GITHUB_REPO} with project ${PROJNAME} in $(pwd)" >&3
+  run ddev add-on get "${GITHUB_REPO}"
+  assert_success
+  run ddev restart -y
+  assert_success
+  health_checks
 }
 ```
 
-Run tests with:
+Run tests in the add-on root directory:
 
 ```bash
-bats tests.bats
+bats ./tests/test.bats --filter-tags '!release'
 ```
 
 ### Manual Testing
@@ -590,7 +789,7 @@ bats tests.bats
 
 1. **Test thoroughly** using the test framework
 2. **Create proper releases** with semantic versioning
-3. **Add the `ddev-get` label** to your GitHub repository
+3. If you expect the add-on to be maintained and useful to others, **add the `ddev-get` [topic](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/classifying-your-repository-with-topics)** to your GitHub repository.
 4. **Write clear documentation** in your readme
 5. **Include examples** and configuration options
 
@@ -603,26 +802,36 @@ To become an officially supported add-on:
 3. Commit to maintaining the add-on
 4. Subscribe to repository activity and be responsive
 
+### Keeping Your Add-on Up to Date
+
+The [`ddev-addon-template`](https://github.com/ddev/ddev-addon-template) evolves over time - workflows, test scripts, tooling, and other components get updated. Run the [`ddev utility addon-update-checker`](../usage/commands.md#utility-addon-update-checker) command regularly from your add-on directory (or a workspace containing multiple add-ons) to check whether your add-on is up to date with the template and current best practises:
+
+```shell
+ddev utility addon-update-checker
+```
+
 ### Best Practices
 
 - **Follow semantic versioning** for releases
 - **Maintain backward compatibility** when possible
 - **Test with different DDEV versions**
-- **Update dependencies regularly**
+- **Update dependencies regularly** - use `ddev utility addon-update-checker` to keep scripts and tooling in sync with the template
 - **Respond to user issues promptly**
 - **Keep documentation up to date**
 - **Use namespaced directories** (e.g., `myservice/scripts/` not just `scripts/`)
+- **Expect changes inside the container to be lost on restart**, see [Tools That Update Themselves](#tools-that-update-themselves)
 
 ## Examples and References
 
 - **Add-on Template**: [ddev-addon-template](https://github.com/ddev/ddev-addon-template)
 - **Official Add-ons**: Browse examples at [addons.ddev.com](https://addons.ddev.com/)
-- **Redis Add-on**: [ddev-redis](https://github.com/ddev/ddev-redis) - Good example of PHP actions with `redis/scripts/`
+- **Redis Add-on**: [ddev-redis](https://github.com/ddev/ddev-redis) - Example of add-on with `removal_actions` and namespaced scripts directory
 
 ## Getting Help
 
+- **Maintenance Guide**: [DDEV Add-on Maintenance Guide](https://ddev.com/blog/ddev-add-on-maintenance-guide/)
 - **DDEV Discord**: Join [DDEV Discord](https://ddev.com/s/discord) for development support
 - **GitHub Issues**: Use [DDEV Issues](https://github.com/ddev/ddev/issues) for problems and questions
-- **Add-on Trainings and Resources**: [ddev.com search](https://ddev.com/search/)
+- **Add-on Trainings**: [DDEV Add-ons: Creating, maintaining, testing](https://www.youtube.com/watch?v=OtmVJtwsHMg) (YouTube) and [Advanced Add-On Techniques](https://ddev.com/blog/advanced-add-on-contributor-training/)
 
 Creating DDEV add-ons is a powerful way to contribute to the DDEV ecosystem. Whether you use traditional Bash actions or the new PHP-based actions, you can create sophisticated extensions that help developers worldwide.

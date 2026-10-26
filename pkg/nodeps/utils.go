@@ -1,15 +1,18 @@
 package nodeps
 
 import (
+	"errors"
 	"fmt"
 	"math/rand"
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 	"unicode"
 
@@ -50,18 +53,15 @@ func RemoveItemFromSlice(slice []string, item string) []string {
 	return slice
 }
 
-// From https://www.calhoun.io/creating-random-strings-in-go/
-// nolint: revive
-var seededRand *rand.Rand = rand.New(
-	rand.NewSource(time.Now().UnixNano()))
-
 // RandomString creates a random string with a set length
+// From https://www.calhoun.io/creating-random-strings-in-go/
+// We don't need rand.Rand here for seed, see https://pkg.go.dev/math/rand#Seed
 func RandomString(length int) string {
 	const charset = "abcdefghijklmnopqrstuvwxyz"
 
 	b := make([]byte, length)
 	for i := range b {
-		b[i] = charset[seededRand.Intn(len(charset))]
+		b[i] = charset[rand.Intn(len(charset))]
 	}
 	return string(b)
 }
@@ -88,10 +88,18 @@ func IsLinux() bool {
 
 // IsCodespaces returns true if running on GitHub Codespaces
 func IsCodespaces() bool {
-	if os.Getenv("DDEV_PRETEND_CODESPACES") == "true" {
+	if IsEnvTrue("DDEV_PRETEND_CODESPACES") {
 		return true
 	}
 	return IsLinux() && os.Getenv("CODESPACES") == "true"
+}
+
+// IsDevcontainer returns true if running in any Devcontainer (including Codespaces)
+func IsDevcontainer() bool {
+	if IsEnvTrue("DDEV_PRETEND_DEVCONTAINER") {
+		return true
+	}
+	return IsLinux() && (os.Getenv("CODESPACES") == "true" || os.Getenv("IN_DEVCONTAINER") == "true")
 }
 
 // GetWSLDistro returns the WSL2 distro name if on Linux
@@ -119,12 +127,13 @@ func IsInteger(s string) bool {
 	return err == nil
 }
 
-// GetTerminalWidthHeight returns width, height if on terminal
-// or 80, 0 if not. If we can't get terminal info, we'll assume 80x24
-func GetTerminalWidthHeight() (int, int) {
-	if term.IsTerminal(int(os.Stdout.Fd())) {
-		width, height, err := term.GetSize(int(os.Stdout.Fd()))
-		if err == nil {
+// GetTerminalWidthHeight returns the width and height of the terminal f writes
+// to, or 80x24 when f isn't a terminal or reports a zero size, as a pty with
+// no size set does.
+func GetTerminalWidthHeight(f *os.File) (int, int) {
+	if term.IsTerminal(int(f.Fd())) {
+		width, height, err := term.GetSize(int(f.Fd()))
+		if err == nil && width > 0 && height > 0 {
 			return width, height
 		}
 	}
@@ -155,7 +164,7 @@ func GrepStringInBuffer(buffer string, needle string) []string {
 func PathWithSlashesToArray(path string) []string {
 	var paths []string
 	var partial string
-	for _, p := range strings.Split(path, "/") {
+	for p := range strings.SplitSeq(path, "/") {
 		partial += p
 		if len(partial) > 0 {
 			paths = append(paths, partial)
@@ -196,4 +205,59 @@ func ParseURL(rawURL string) (scheme string, urlWithoutPort string, port string)
 	}
 
 	return scheme, urlWithoutPort, port
+}
+
+// IsEnvTrue returns true if the given environment variable
+// has a value accepted by strconv.ParseBool.
+func IsEnvTrue(envVar string) bool {
+	val, _ := strconv.ParseBool(os.Getenv(envVar))
+	return val
+}
+
+// IsEnvFalse returns the opposite of IsEnvTrue
+func IsEnvFalse(envVar string) bool {
+	return !IsEnvTrue(envVar)
+}
+
+// WriteFileAtomic writes data to a temp file beside path and renames it into
+// place, so readers see the old or the new content, never a truncated file,
+// and a failed write leaves the old file intact. A symlinked path keeps its
+// link and the target is replaced.
+func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(tmp.Name()) }()
+
+	if _, err = tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err = tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+	if err = os.Chmod(tmp.Name(), perm); err != nil {
+		return err
+	}
+	err = os.Rename(tmp.Name(), path)
+	if IsWindows() {
+		// Windows fails with ERROR_ACCESS_DENIED (5) or ERROR_SHARING_VIOLATION (32)
+		// while another process, such as a concurrent ddev or an antivirus scanner,
+		// has either file open, so retry briefly.
+		var errno syscall.Errno
+		deadline := time.Now().Add(time.Second)
+		for errors.As(err, &errno) && (errno == 5 || errno == 32) && time.Now().Before(deadline) {
+			time.Sleep(20 * time.Millisecond)
+			err = os.Rename(tmp.Name(), path)
+		}
+	}
+	return err
 }

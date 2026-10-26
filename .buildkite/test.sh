@@ -3,14 +3,30 @@
 
 set -eu -o pipefail
 
+# Disable git pager
+export GIT_PAGER=""
+
 # We can skip builds with commit message of [skip buildkite] or [skip ci]
-DDEV_COMMIT_MESSAGE=$(GIT_PAGER="" git log -1 --pretty=%s 2>/dev/null || echo "")
+DDEV_COMMIT_MESSAGE=$(git log -1 --pretty=%s 2>/dev/null || echo "")
 if [[ ${BUILDKITE_MESSAGE:-} == *"[skip buildkite]"* ]] || [[ ${BUILDKITE_MESSAGE:-} == *"[skip ci]"* ]] || [[ ${DDEV_COMMIT_MESSAGE} == *"[skip buildkite]"* ]] || [[ ${DDEV_COMMIT_MESSAGE} == *"[skip ci]"* ]]; then
-  echo "Skipping build because message has '[skip buildkite]' or '[skip ci]':"
+  echo "+++ SKIP: Build skipped due to commit message"
   echo "BUILDKITE_MESSAGE=${BUILDKITE_MESSAGE:-}"
   echo "DDEV_COMMIT_MESSAGE=${DDEV_COMMIT_MESSAGE}"
   exit 0
 fi
+
+git fetch --depth=1 --no-tags https://github.com/ddev/ddev public-variables:refs/public-variables-tmp
+while IFS= read -r varname; do
+  [[ "$varname" == "README.md" ]] && continue
+  # MSYS_NO_PATHCONV prevents Git for Windows bash from mangling the ref:path syntax
+  value=$(MSYS_NO_PATHCONV=1 git show "refs/public-variables-tmp:.github/public-variables/$varname" | tr -d '\r' | paste -s -d '|' -)
+  echo "$varname=${value}"
+  export "$varname=$value"
+done < <(MSYS_NO_PATHCONV=1 git ls-tree --name-only refs/public-variables-tmp:.github/public-variables/)
+git update-ref -d refs/public-variables-tmp
+
+# A changed image may still be waiting on image-push.yml's approval
+"$(dirname "$0")/../containers/wait-for-images.sh"
 
 export PATH=$PATH:/home/linuxbrew/.linuxbrew/bin
 os=$(go env GOOS)
@@ -24,27 +40,22 @@ export DDEV_SKIP_NODEJS_TEST=true
 export DOCKER_SCAN_SUGGEST=false
 export DOCKER_SCOUT_SUGGEST=false
 
+# Provider bring-up/cleanup logic (TIMEOUT detection, provider_bringup,
+# provider_shutdown) is shared with perf.sh -- see lib-provider.sh.
+# shellcheck source=lib-provider.sh
+source "$(dirname "$0")/lib-provider.sh"
+
 # On macOS, we can have several different docker providers, allow testing all
 # In cleanup, stop everything we know of but leave either Orbstack or Docker Desktop running
 if [ "${os:-}" = "darwin" ]; then
   function cleanup {
-    command -v orb 2>/dev/null && echo "Stopping orbstack" && (nohup orb stop &)
-    sleep 3 # Since we backgrounded orb stop, make sure it completes
-    if [ -f /Applications/Docker.app ]; then echo "Stopping Docker Desktop" && (killall com.docker.backend || true); fi
-    command -v colima 2>/dev/null && echo "Stopping colima" && (colima stop || true)
-    command -v colima 2>/dev/null && echo "Stopping colima_vz" && (colima stop vz || true)
-    command -v limactl 2>/dev/null && echo "Stopping lima" && (limactl stop lima-vz || true)
-    if [ -f ~/.rd/bin/rdctl ]; then echo "Stopping Rancher Desktop" && (~/.rd/bin/rdctl shutdown || true); fi
-    docker context use default
-    # Leave orbstack running as the most likely to be reliable, otherwise Docker Desktop
-    if command -v orb 2>/dev/null ; then
-      docker context use orbstack
-      echo "Starting orbstack" && (nohup orb start &)
-    else
-      docker context use desktop-linux
-      open -a Docker
+    # Post-test maintenance, while the provider is still up and before we stop it.
+    # Guarded so it doesn't run on the initial cleanup call at startup.
+    if [ "${RAN_TESTS:-false}" = "true" ]; then
+      echo "--- running testbot_maintenance.sh (post-test)"
+      ${TIMEOUT} 10m bash "$(dirname "$0")/testbot_maintenance.sh" || true
     fi
-    sleep 5
+    provider_shutdown
   }
   trap cleanup EXIT
 
@@ -53,87 +64,18 @@ if [ "${os:-}" = "darwin" ]; then
 
   echo "initial docker context situation:"
   docker context ls
-
-  # For Lima and Colima, as of Lima 1.0.4, having orbstack running
-  # makes lima fail, see https://github.com/lima-vm/lima/issues/3145#issuecomment-2613728408
-  command -v orb 2>/dev/null && echo "Stopping orbstack" && (nohup orb stop &)
-  sleep 3 # Since we backgrounded orb stop, make sure it completes
-
-  # Now start the docker provider we want
-  case ${DOCKER_TYPE:=none} in
-    "colima")
-      colima start
-      # Colima seems to end up working better with less failures if we restart after starting
-      colima restart
-      docker context use colima
-      ;;
-    "colima_vz")
-      colima start vz
-      colima restart vz
-      docker context use colima-vz
-      ;;
-
-    "lima")
-      limactl start lima-vz
-      docker context use lima-lima-vz
-      ;;
-
-    "docker-desktop")
-      open -a Docker
-      docker context use desktop-linux
-      ;;
-
-    "orbstack")
-      nohup orb start &
-      sleep 3
-      docker context use orbstack
-      ;;
-
-    "rancher-desktop")
-      ~/.rd/bin/rdctl start
-      for i in {1..120}; do
-        if docker context use rancher-desktop >/dev/null 2>&1 ; then
-          break
-        fi
-        echo "$(date): Waiting for rancher-desktop context to be available"
-        sleep 1
-      done
-      docker context use rancher-desktop
-      ;;
-
-    *)
-      echo "no DOCKER_TYPE specified, exiting" && exit 10
-      ;;
-  esac
 fi
 
-# Find a suitable timeout command for reliability and readability
-if command -v gtimeout >/dev/null 2>&1; then
-  TIMEOUT="gtimeout"
-elif command -v timeout >/dev/null 2>&1; then
-  TIMEOUT="timeout"
-else
-  echo "Error: Neither 'gtimeout' nor 'timeout' found in PATH." >&2
-  exit 1
-fi
-
-# Make sure docker is working
-echo "Waiting for docker provider to come up: $(date)"
-date && ${TIMEOUT} 3m bash -c 'while ! docker ps >/dev/null 2>&1 ; do
-  sleep 10
-  echo "Waiting: $(date)"
-done'
-echo "Testing again to make sure docker came up: $(date)"
-if ! docker ps >/dev/null 2>&1 ; then
-  echo "Docker is not running, exiting"
-  exit 1
-fi
+provider_bringup
 
 echo
 echo "buildkite building ${BUILDKITE_JOB_ID:-} at $(date) on $(hostname) as USER=${USER:-unknown} for OS=${os:-} DOCKER_TYPE=${DOCKER_TYPE:-notset} in ${PWD} with GOTEST_SHORT=${GOTEST_SHORT:-notset} golang=$(go version | awk '{print $3}') ddev version=$(ddev --version | awk '{print $3}')"
 
 echo
 case ${DOCKER_TYPE:-none} in
+  "docker-ce")
+    echo "Running docker-ce (Docker CE)"
+    ;;
   "docker-desktop")
     echo "docker-desktop for mac version=$(scripts/docker-desktop-version.sh)"
     ;;
@@ -143,12 +85,17 @@ case ${DOCKER_TYPE:-none} in
   "colima_vz")
     echo "colima version=$(colima version)"
     ;;
-
+  "lima")
+    echo "limactl --version=$(limactl --version)"
+    ;;
   "orbstack")
     echo "orbstack version=$(orbctl version)"
     ;;
   "rancher-desktop")
     echo "rancher-desktop=$(~/.rd/bin/rdctl version)"
+    ;;
+  "podman-rootless")
+    echo "podman version=$(podman --version)"
     ;;
   "wsl2dockerinside")
     echo "Running wsl2dockerinside"
@@ -183,8 +130,9 @@ if [ "${BUILDKITE_PULL_REQUEST:-false}" != "false" ]; then
   # Find the merge base between the PR branch and the base branch
   MERGE_BASE=$(git merge-base HEAD refs/remotes/origin/${BUILDKITE_PULL_REQUEST_BASE_BRANCH:-})
   # Check if there are any changes in the specified directories or files since the merge base
-  if ! git diff --name-only "$MERGE_BASE" | egrep -q '^(?:\.buildkite/|Makefile$|pkg/|cmd/|vendor/|winpkg/|go\.)'; then
-    echo "Skipping buildkite build since no code changes found"
+  if ! git diff --name-only "$MERGE_BASE" | grep -E '^(\.buildkite/|Makefile$|pkg/|cmd/|vendor/|winpkg/|go\.)' >/dev/null; then
+    echo "+++ SKIP: No relevant code changes found"
+    echo "No changes in: .buildkite/, Makefile, pkg/, cmd/, vendor/, winpkg/, go.*"
     exit 0
   fi
 
@@ -198,6 +146,14 @@ ${TIMEOUT} 10m bash "$(dirname "$0")/testbot_maintenance.sh"
 # Our testbot should be sane, run the testbot checker to make sure.
 echo "--- running sanetestbot.sh"
 ${TIMEOUT} 60s bash "$(dirname "$0")/sanetestbot.sh"
+
+# Rootless podman cannot bind privileged ports (<1024), so the DDEV router must
+# use non-privileged ports. This must run AFTER testbot_maintenance.sh, which
+# deletes ~/.ddev/global_config.yaml; otherwise the override is wiped and the
+# config regenerates with the default 80/443 (which rootless podman can't bind).
+if [ "${DOCKER_TYPE:-}" = "podman-rootless" ]; then
+  ddev config global --router-http-port=8080 --router-https-port=8443
+fi
 
 # Close the setup sections before starting tests
 echo "~~~ Setup complete, starting tests"
@@ -215,22 +171,30 @@ fi
 
 echo "--- Running tests..."
 
-# Run installer tests first on Windows
-if [ "${os:-}" = "windows" ]; then
-  echo "--- Running Windows installer tests first..."
-  export DDEV_TEST_USE_REAL_INSTALLER=true
-  make testwininstaller TESTARGS="-failfast" | sed -u 's/^--- /=== /; /\//!s/^=== RUN /--- RUN /'
-  INSTALLER_RV=$?
-  if [ $INSTALLER_RV -ne 0 ]; then
-    echo "Windows installer tests failed with status=$INSTALLER_RV"
-    exit $INSTALLER_RV
-  fi
-  echo "Windows installer tests completed successfully"
+# Note: Windows installer tests are no longer run here. They run in their own
+# dedicated Buildkite pipeline (.buildkite/installer-test.sh +
+# .buildkite/windows-installer.yml), decoupled from this suite so they can fan
+# out across runners.
+
+# From here on, cleanup (the EXIT trap) runs testbot_maintenance.sh post-test.
+RAN_TESTS=true
+# set -e would abort here on a test failure before RV is captured, skipping
+# the artifact upload below -- wrapping in `if` suppresses that so a failing
+# run still uploads its results (matches GHA's if: always() upload step).
+if make ${MAKE_TARGET:-test} TESTARGS="${TESTARGS:-}" TESTPKG="${TESTPKG:-}" TESTFILE="${TESTFILE:-}" | sed -u 's/^--- FAIL:/+++ FAIL:/; /\//!s/^=== RUN /--- RUN /'; then
+  RV=0
+else
+  RV=$?
+fi
+echo "test.sh completed with status=$RV"
+
+# Per-test JSON gotestsum wrote under GOTESTSUM_JSONFILE_DIR (Makefile) --
+# uploaded as a build artifact for the CI test-runtime collector (see
+# perf/collector/README.md). No-op if unset/empty.
+if [ -n "${GOTESTSUM_JSONFILE_DIR:-}" ] && [ -d "${GOTESTSUM_JSONFILE_DIR}" ]; then
+  buildkite-agent artifact upload "${GOTESTSUM_JSONFILE_DIR}/*.ndjson"
 fi
 
-make test TESTARGS="-failfast" | sed -u 's/^--- /=== /; /\//!s/^=== RUN /--- RUN /'
-RV=$?
-echo "test.sh completed with status=$RV"
 ddev poweroff || true
 
 exit $RV

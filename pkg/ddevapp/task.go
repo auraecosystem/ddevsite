@@ -1,18 +1,19 @@
 package ddevapp
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
-	"github.com/ddev/ddev/pkg/exec"
 	"github.com/ddev/ddev/pkg/nodeps"
 	"github.com/ddev/ddev/pkg/util"
 	"github.com/mattn/go-isatty"
 )
 
 // YAMLTask defines tasks like Exec to be run in hooks
-type YAMLTask map[string]interface{}
+type YAMLTask map[string]any
 
 // Task is the interface defining methods we'll use in various tasks
 type Task interface {
@@ -44,8 +45,11 @@ type ComposerTask struct {
 	app     *DdevApp
 }
 
-// Execute executes an ExecTask
+// Execute executes an ExecTask. Output is teed to a buffer so a failure's
+// error can carry it, the same way ExecOnHostOrService's does for providers;
+// the command still streams live exactly as before.
 func (c ExecTask) Execute() error {
+	var captured bytes.Buffer
 	opts := &ExecOpts{
 		Service:   c.service,
 		User:      c.user,
@@ -53,10 +57,16 @@ func (c ExecTask) Execute() error {
 		RawCmd:    c.execRaw,
 		Tty:       isatty.IsTerminal(os.Stdin.Fd()),
 		NoCapture: true,
+		Stdout:    io.MultiWriter(os.Stdout, &captured),
+		Stderr:    io.MultiWriter(os.Stderr, &captured),
+		// An exec task in a pre-exec or post-exec hook would otherwise run itself.
+		SkipHooks: true,
 	}
 	_, _, err := c.app.Exec(opts)
-
-	return err
+	if err != nil {
+		return errorWithOutput(err, captured.String())
+	}
+	return nil
 }
 
 // GetDescription returns a human-readable description of the task
@@ -75,36 +85,17 @@ func (c ExecHostTask) GetDescription() string {
 	return fmt.Sprintf("Exec command '%s' on the host (%s)", c.exec, hostname)
 }
 
-// Execute (HostTask) executes a command in a container, by default the web container,
-// and returns stdout, stderr, err
+// Execute (HostTask) executes a command on the host, keeping stdin and the
+// terminal connected, and attaches captured output to a failure the same
+// way ExecOnHostOrService's host branch does for providers.
 func (c ExecHostTask) Execute() error {
-	cwd, _ := os.Getwd()
-	err := os.Chdir(c.app.GetAppRoot())
-	if err != nil {
-		return err
-	}
-
-	bashPath := "bash"
-	if nodeps.IsWindows() {
-		bashPath = util.FindBashPath()
-	}
-
-	args := []string{
-		"-c",
-		c.exec,
-	}
-
-	err = exec.RunInteractiveCommand(bashPath, args)
-
-	_ = os.Chdir(cwd)
-
-	return err
+	return runHostCommandWithCapturedOutput(c.app, c.exec)
 }
 
 // Execute (ComposerTask) runs a Composer command in the web container
 // and returns stdout, stderr, err
 func (c ComposerTask) Execute() error {
-	_, _, err := c.app.Composer(c.execRaw)
+	_, _, err := c.app.composer(c.execRaw, true)
 
 	return err
 }

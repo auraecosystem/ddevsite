@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/ddev/ddev/pkg/ddevapp"
@@ -38,6 +39,8 @@ ddev composer create-project drupal/recommended-project .`,
 			}
 		}
 
+		showComposerWarningForNotPersistentChanges(args)
+
 		stdout, stderr, err := app.Composer(args)
 		if err != nil {
 			util.Failed("Composer %v failed, %v. stderr=%v", args, err, stderr)
@@ -47,7 +50,7 @@ ddev composer create-project drupal/recommended-project .`,
 	},
 }
 
-func init() {
+func registerComposerCmd() {
 	ComposerCmd.InitDefaultHelpFlag()
 	err := ComposerCmd.Flags().MarkHidden("help")
 	originalHelpFunc := ComposerCmd.HelpFunc()
@@ -121,7 +124,7 @@ func getComposerCompletionFunc(isCreateCommand bool) func(*cobra.Command, []stri
 		// Exclude create-project, which will already be provided in completion by cobra
 		// and isn't supported by ddev anyway
 		completion := []string{}
-		for _, val := range strings.Split(stdout, "\n") {
+		for val := range strings.SplitSeq(stdout, "\n") {
 			val = strings.TrimSpace(val)
 			if val != "create-project" {
 				completion = append(completion, val)
@@ -130,4 +133,29 @@ func getComposerCompletionFunc(isCreateCommand bool) func(*cobra.Command, []stri
 
 		return completion, cobra.ShellCompDirectiveNoFileComp
 	}
+}
+
+func showComposerWarningForNotPersistentChanges(args []string) {
+	// Find the first actual command argument (skip flags, handle -- separator)
+	command := ""
+	for i, arg := range args {
+		if arg == "--" {
+			if i+1 < len(args) {
+				command = args[i+1]
+			}
+			break
+		}
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		command = arg
+		break
+	}
+
+	// Warn for commands that modify the container in non-persistent ways
+	if !slices.Contains([]string{"self-update", "selfupdate", "global"}, command) {
+		return
+	}
+
+	util.Warning("Composer %s changes do not persist across DDEV restarts.\nSee https://docs.ddev.com/en/stable/users/usage/developer-tools/#composer-limitations for details.", command)
 }

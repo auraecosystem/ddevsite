@@ -3,16 +3,23 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ddev/ddev/pkg/amplitude"
 	"github.com/ddev/ddev/pkg/ddevapp"
+	ddevImages "github.com/ddev/ddev/pkg/docker"
 	"github.com/ddev/ddev/pkg/dockerutil"
 	"github.com/ddev/ddev/pkg/globalconfig"
+	"github.com/ddev/ddev/pkg/interrupt"
+	"github.com/ddev/ddev/pkg/nodeps"
 	"github.com/ddev/ddev/pkg/output"
+	"github.com/ddev/ddev/pkg/tui"
 	"github.com/ddev/ddev/pkg/updatecheck"
 	"github.com/ddev/ddev/pkg/util"
 	"github.com/ddev/ddev/pkg/versionconstants"
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 	"golang.org/x/mod/semver"
 )
@@ -23,6 +30,8 @@ var (
 	serviceUser        string
 	updateDocURL       = "https://docs.ddev.com/en/stable/users/install/ddev-upgrade/"
 	instrumentationApp *ddevapp.DdevApp
+	// skipConfirmation is the value of the running command's `-y` flag, if it has one.
+	skipConfirmation bool
 )
 
 // RootCmd represents the base command when called without any subcommands
@@ -33,8 +42,48 @@ var RootCmd = &cobra.Command{
 Docs: https://docs.ddev.com
 Support: https://docs.ddev.com/en/stable/users/support/`,
 	Version: versionconstants.DdevVersion,
+	Run: func(cmd *cobra.Command, _ []string) {
+		// Launch TUI if: stdin is a TTY, not JSON output, not opted out, and DDEV_NO_TUI not set
+		if isatty.IsTerminal(os.Stdin.Fd()) &&
+			!output.JSONOutput &&
+			!globalconfig.DdevGlobalConfig.NoTUI &&
+			nodeps.IsEnvFalse("DDEV_NO_TUI") {
+			if err := tui.Launch(); err != nil {
+				util.Failed("TUI failed: %v", err)
+			}
+			return
+		}
+		// Fall back to showing help
+		_ = cmd.Help()
+	},
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
-		command := os.Args[1]
+		if !canRunWithoutDocker(cmd) {
+			if _, err := dockerutil.GetDockerVersion(); err != nil {
+				util.Failed("Docker error: %v\nFor help go to: https://docs.ddev.com/en/stable/users/install/docker-installation/#troubleshooting-docker", err)
+			}
+		}
+
+		// Most commands that can start containers offer `-y`, spelled either
+		// `--skip-confirmation` or `--yes`; honor it for the upgrade prompt
+		// regardless of which command we ended up in.
+		for _, name := range []string{"skip-confirmation", "yes"} {
+			if f := cmd.Flags().Lookup(name); f != nil {
+				if v, err := strconv.ParseBool(f.Value.String()); err == nil && v {
+					skipConfirmation = true
+				}
+			}
+		}
+
+		// A nested project that DDEV was never told about doesn't take over the registered
+		// project around it. Commands act on the registered project and say so, pointing
+		// at `ddev start`, which asks whether to switch and registers the nested project
+		// when it does. `ddev config` is left out, acting on the closest config.yaml.
+		switch {
+		case cmd == StartCmd && len(args) == 0 && !startAll:
+			ddevapp.PromptToUseNestedProject(skipConfirmation)
+		case cmd != ConfigCommand:
+			ddevapp.ShowNestedProjectWarning()
+		}
 
 		// Anonymize user defined custom commands.
 		cmdCopy := *cmd
@@ -49,12 +98,13 @@ Support: https://docs.ddev.com/en/stable/users/support/`,
 		// ddev describe -j over and over again.
 		// And we don't want to send __complete commands,
 		// that are called each time you press <TAB>.
-		if !output.JSONOutput && cmdCopy.Name() != cobra.ShellCompRequestCmd {
+		// Bare `ddev` launches the TUI rather than running a command, so it isn't tracked.
+		if cmd.Parent() != nil && !output.JSONOutput && cmdCopy.Name() != cobra.ShellCompRequestCmd {
 			amplitude.TrackCommand(&cmdCopy, argsCopy)
 		}
 
 		// Skip Docker and other validation for most commands
-		if command != "start" && command != "restart" {
+		if cmd != StartCmd && cmd != RestartCmd {
 			return
 		}
 
@@ -114,12 +164,36 @@ Support: https://docs.ddev.com/en/stable/users/support/`,
 // Execute adds all child commands to the root command sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() {
+	Setup()
+	// Finalizers run before cobra prints a command's error and usage.
+	cobra.OnFinalize(interrupt.WaitIfExiting)
 	if err := RootCmd.Execute(); err != nil {
 		os.Exit(-1)
 	}
 }
 
+// Setup performs the filesystem-dependent setup that used to run
+// implicitly via init(), which meant it ran before main() even started -
+// including before main()'s "refuse to run as root" check. It must run
+// once, explicitly, before RootCmd.Execute() dispatches to a command.
+func Setup() {
+	RegisterCommands()
+	setupGlobalConfig()
+	activeAppRoot, activeAppRootErr := ddevapp.GetActiveAppRoot("")
+	setupRootCmd(activeAppRoot, activeAppRootErr)
+	addPullProviderSubcommands(activeAppRoot, activeAppRootErr)
+	addPushProviderSubcommands(activeAppRoot, activeAppRootErr)
+}
+
 func init() {
+	// Run the upgrade check from anything that starts containers, not just
+	// `ddev start`. ddevapp calls this at most once per command.
+	ddevapp.UpgradeCheck = func() {
+		if err := checkDdevVersionAndOptInInstrumentation(skipConfirmation); err != nil {
+			util.Warning("Unable to write global config: %v", err)
+		}
+	}
+
 	// This flag represents the output.JSONOutput variable, and parsed very early in pkg/output/output_setup.go
 	RootCmd.PersistentFlags().BoolP("json-output", "j", false, "If true, user-oriented output will be in JSON format.")
 	RootCmd.PersistentFlags().BoolVarP(&ddevapp.SkipHooks, "skip-hooks", "", false, "If true, any hook normally run by the command will be skipped.")
@@ -130,15 +204,35 @@ func init() {
 		output.UserOut.WithField("raw", map[string]string{"version": RootCmd.Version}).Printf("%s version %s", RootCmd.DisplayName(), RootCmd.Version)
 		RootCmd.SetVersionTemplate(userOutFunc())
 	}
+}
 
-	// Determine if Docker is running by getting the version.
-	// This helps to prevent a user from seeing the Cobra error: "Error: unknown command "<custom command>" for ddev"
-	_, err := dockerutil.GetDockerVersion()
+// NoDockerCommand is the annotation for a command that works without Docker.
+// Subcommands don't inherit it, so a parent that only prints help can carry it.
+const NoDockerCommand = "noDocker"
 
-	if err != nil && !dockerutil.CanRunWithoutDocker() {
-		util.Failed("Docker error: %v\nFor help go to: https://docs.ddev.com/en/stable/users/install/docker-installation/#troubleshooting-docker", err)
+// canRunWithoutDocker reports whether cmd can run without Docker: bare ddev,
+// a NoDockerCommand-annotated command, or help and completion.
+func canRunWithoutDocker(cmd *cobra.Command) bool {
+	if _, ok := cmd.Annotations[NoDockerCommand]; ok || !cmd.HasParent() {
+		return true
 	}
+	top := cmd
+	for top.Parent().HasParent() {
+		top = top.Parent()
+	}
+	// Cobra adds these itself, so they can't carry the annotation
+	switch top.Name() {
+	case "help", "completion", cobra.ShellCompRequestCmd, cobra.ShellCompNoDescRequestCmd:
+		return true
+	}
+	return false
+}
 
+// setupRootCmd does the filesystem-dependent RootCmd setup that
+// cannot run at package init() time: it needs to run after main()'s
+// root-privilege check, and needs the active project root (if any),
+// computed once by Setup(), rather than discovering it again itself.
+func setupRootCmd(activeAppRoot string, activeAppRootErr error) {
 	// Populate custom/script commands so they're visible.
 	// We really don't want ~/.ddev or .ddev/homeadditions to have root ownership, breaks things.
 	if os.Geteuid() != 0 {
@@ -147,7 +241,7 @@ func init() {
 			util.Warning("populateExamplesAndCommands() failed: %v", err)
 		}
 
-		err = addCustomCommands(RootCmd)
+		err = addCustomCommands(RootCmd, activeAppRoot, activeAppRootErr)
 		if err != nil {
 			util.Warning("Adding custom/shell commands failed: %v", err)
 		}
@@ -163,34 +257,48 @@ func init() {
 // from the last saved version. If it is, prompt to request anon DDEV usage stats
 // and update the info.
 func checkDdevVersionAndOptInInstrumentation(skipConfirmation bool) error {
-	if !output.JSONOutput && semver.Compare(versionconstants.DdevVersion, globalconfig.DdevGlobalConfig.LastStartedVersion) > 0 && !globalconfig.DdevGlobalConfig.InstrumentationOptIn && !globalconfig.DdevNoInstrumentation && !skipConfirmation {
-		allowStats := util.Confirm("It looks like you have a new DDEV release.\nMay we send anonymous DDEV usage statistics and errors?\nTo know what we will see please take a look at\nhttps://docs.ddev.com/en/stable/users/usage/diagnostics/#opt-in-usage-information\nPermission to beam up?")
-		if allowStats {
-			globalconfig.DdevGlobalConfig.InstrumentationOptIn = true
-		}
-	}
-
-	if globalconfig.DdevGlobalConfig.LastStartedVersion != versionconstants.DdevVersion && !skipConfirmation {
-		// If they have a new version (but not first-timer) then prompt to poweroff
-		if globalconfig.DdevGlobalConfig.LastStartedVersion != "v0.0" {
-			output.UserOut.Printf("You seem to have a new DDEV version (new=%s, old=%s)", versionconstants.DdevVersion, globalconfig.DdevGlobalConfig.LastStartedVersion)
-			okPoweroff := util.Confirm("During an upgrade it's important to `ddev poweroff`.\nMay I do `ddev poweroff` before continuing?\nThis does no harm and loses no data.")
-			if okPoweroff {
-				ddevapp.PowerOff()
-			}
-		}
-
-		// If they have a new version write the new version into last-started
-		globalconfig.DdevGlobalConfig.LastStartedVersion = versionconstants.DdevVersion
-		err := globalconfig.WriteGlobalConfig(globalconfig.DdevGlobalConfig)
-		if err != nil {
-			return err
-		}
-
+	if globalconfig.DdevGlobalConfig.LastStartedVersion == versionconstants.DdevVersion {
 		return nil
 	}
 
-	return nil
+	if !skipConfirmation {
+		if !output.JSONOutput && semver.Compare(versionconstants.DdevVersion, globalconfig.DdevGlobalConfig.LastStartedVersion) != 0 && !globalconfig.DdevGlobalConfig.InstrumentationOptIn && !globalconfig.DdevNoInstrumentation {
+			allowStats := util.Confirm("It looks like you have a new DDEV release.\nMay we send anonymous DDEV usage statistics and errors?\nTo know what we will see please take a look at\nhttps://docs.ddev.com/en/stable/users/usage/diagnostics/#opt-in-usage-information\nPermission to beam up?")
+			if allowStats {
+				globalconfig.DdevGlobalConfig.InstrumentationOptIn = true
+			}
+		}
+
+		// If they have a new version (but not first-timer) then prompt to poweroff
+		if globalconfig.DdevGlobalConfig.LastStartedVersion != "v0.0" {
+			// Check if any containers are running before prompting for poweroff
+			activeProjects := ddevapp.GetActiveProjects()
+			sshAgent, _ := dockerutil.FindContainerByName("ddev-ssh-agent")
+			// skip check for sshAgent if it's already new
+			if sshAgent != nil &&
+				strings.HasSuffix(sshAgent.Image, ddevImages.GetSSHAuthImage()) &&
+				(sshAgent.State == "running" || sshAgent.State == "starting") {
+				sshAgent = nil
+			}
+			router, _ := dockerutil.FindContainerByName("ddev-router")
+
+			// Only prompt for poweroff if there are active containers
+			// If all are nil/empty, the user has effectively already done a poweroff
+			if len(activeProjects) > 0 || sshAgent != nil || router != nil {
+				output.UserOut.Printf("You seem to have a new DDEV version (new=%s, old=%s)", versionconstants.DdevVersion, globalconfig.DdevGlobalConfig.LastStartedVersion)
+				okPoweroff := util.Confirm("During an upgrade it's important to `ddev poweroff`.\nMay I do `ddev poweroff` before continuing?\nThis does no harm and loses no data.")
+				if okPoweroff {
+					ddevapp.PowerOff()
+				}
+			}
+		}
+	}
+
+	// Record the new version even when confirmation was skipped; otherwise `-y`
+	// users are asked about the same upgrade by every later command.
+	globalconfig.DdevGlobalConfig.LastStartedVersion = versionconstants.DdevVersion
+
+	return globalconfig.WriteGlobalConfig(globalconfig.DdevGlobalConfig)
 }
 
 // addCommandIfNotExists adds cmdToAdd to rootCmd if a command with the same name does not already exist.

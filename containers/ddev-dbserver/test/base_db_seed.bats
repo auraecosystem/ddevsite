@@ -1,0 +1,153 @@
+#!/usr/bin/env bats
+
+# Run these tests from the repo root directory, for example
+# ./test/bats tests
+#
+# Exercises the two ways docker-entrypoint.sh fills a brand-new datadir:
+#   - the base_db seed lookup, checked in priority order:
+#       1. /mysqlbase/custom/base_db.*  - baked into a derived image
+#       2. /mysqlbase/base_db.*         - the stock DDEV starter database
+#   - a `restore_snapshot` argument, which ddev uses for
+#     `ddev start --seed-snapshot` and takes either a name in /mnt/snapshots or
+#     an absolute path to a snapshot mounted anywhere.
+# A .zst seed is preferred over .gz; .gz is exercised too, since db versions
+# without zstd (e.g. MariaDB 5.5) still produce it.
+
+load functions.sh
+
+function setup_file {
+  # base_db seed overrides aren't supported on these very old, EOL database
+  # versions. (The stock, unmounted base_db path for them is still covered
+  # by basic_database.bats.)
+  if [ "${DB_TYPE}:${DB_VERSION}" = "mysql:5.5" ] || [ "${DB_TYPE}:${DB_VERSION}" = "mariadb:5.5" ]; then
+    skip "base_db seed overrides are not supported on ${DB_TYPE} ${DB_VERSION}"
+  fi
+
+  export SEED_DIR="${BATS_FILE_TMPDIR}/base_db_seeds"
+  mkdir -p "${SEED_DIR}"
+
+  # Match whatever compressor create_base_db.sh actually used to build this
+  # image's stock seed, so the override seeds we build here use the same
+  # extension the entrypoint expects for this ${DB_TYPE} ${DB_VERSION}.
+  # zstdmt isn't available on every image that has zstd, so check (and use)
+  # each individually rather than assuming zstdmt if either is present.
+  if docker run --rm --entrypoint bash "${IMAGE}" -c 'command -v zstdmt' >/dev/null 2>&1; then
+    export SEED_EXT="zst"
+    export SEED_COMPRESS="zstdmt --quiet"
+  elif docker run --rm --entrypoint bash "${IMAGE}" -c 'command -v zstd' >/dev/null 2>&1; then
+    export SEED_EXT="zst"
+    export SEED_COMPRESS="zstd --quiet"
+  else
+    export SEED_EXT="gz"
+    export SEED_COMPRESS="gzip"
+  fi
+
+  # Matches the extension docker-entrypoint.sh's own BACKUPTOOL/STREAMTOOL
+  # detection produces for an uncompressed seed on this image.
+  if docker run --rm --entrypoint bash "${IMAGE}" -c 'command -v xtrabackup' >/dev/null 2>&1; then
+    export STREAM_EXT="xbstream"
+  else
+    export STREAM_EXT="mbstream"
+  fi
+  # The snapshot naming ddev's Snapshot() uses, e.g. seed-mariadb_11.8.zst
+  export SEED_SNAPSHOT_NAME="seed-${DB_TYPE}_${DB_VERSION}.${SEED_EXT}"
+
+  export UNCOMPRESSED_SEED_SNAPSHOT_NAME="seed-${DB_TYPE}_${DB_VERSION}.${STREAM_EXT}"
+
+  make_seed "marker_seed_a" "${SEED_DIR}/seed_a.${SEED_EXT}" "${SEED_COMPRESS}"
+  make_seed "marker_seed_b" "${SEED_DIR}/seed_b.${SEED_EXT}" "${SEED_COMPRESS}"
+  make_seed "marker_seed_c" "${SEED_DIR}/seed_c.${STREAM_EXT}" ""
+}
+
+# Build a base_db seed containing a single marker table, using the same
+# backup tool (mariabackup/xtrabackup via xbstream) the entrypoint expects.
+# An empty compress_cmd writes the raw, uncompressed backup-tool stream.
+function make_seed {
+  local marker_table=$1
+  local outfile=$2
+  local compress_cmd=$3
+  local name="seedbuilder-$$-${RANDOM}"
+  local vol="seedbuilder-vol-$$-${RANDOM}"
+
+  docker run --rm -v "${vol}:/var/lib/mysql:nocopy" busybox:stable chown -R 33:33 /var/lib/mysql
+  docker run -d --user=33:33 -v "${vol}:/var/lib/mysql:nocopy" --name="${name}" "${IMAGE}"
+
+  local health=""
+  for i in {60..0}; do
+    health="$(docker inspect --format '{{json .State.Health }}' "${name}" | jq -r .Status)"
+    if [ "${health}" = "healthy" ]; then
+      break
+    fi
+    sleep 1
+  done
+  [ "${health}" = "healthy" ]
+
+  docker exec "${name}" mysql -udb -pdb --database=db -e "CREATE TABLE ${marker_table} (id INT);"
+  # mariabackup/mbstream on MariaDB, xtrabackup/xbstream on MySQL (and some
+  # older MariaDB) -- same detection docker-entrypoint.sh itself uses.
+  local pipe_to_compressor=""
+  if [ -n "${compress_cmd}" ]; then
+    pipe_to_compressor="| ${compress_cmd}"
+  fi
+  docker exec "${name}" bash -c "
+    backuptool=mariabackup; streamtool=mbstream
+    if command -v xtrabackup >/dev/null 2>&1; then backuptool=xtrabackup; streamtool=xbstream; fi
+    \${backuptool} --backup --stream=\${streamtool} --user=root --password=root --socket=/var/tmp/mysql.sock 2>/tmp/seed.log ${pipe_to_compressor}
+  " >"${outfile}"
+
+  docker rm -f "${name}" >/dev/null
+  docker volume rm "${vol}" >/dev/null
+}
+
+function setup {
+  basic_setup
+}
+
+@test "stock base_db seed is used when no override is present for ${DB_TYPE} ${DB_VERSION}" {
+  docker run -u "$MOUNTUID:$MOUNTGID" -v $VOLUME:/var/lib/mysql:nocopy --name=$CONTAINER_NAME -p $HOSTPORT:3306 -d $IMAGE
+  containercheck
+  run docker logs $CONTAINER_NAME
+  [[ "$output" == *"snapshot=/mysqlbase/base_db.${SEED_EXT}"* ]]
+  mysql ${SKIP_SSL:-} -udb -pdb --database=db --host=127.0.0.1 --port=$HOSTPORT -e "SHOW TABLES;"
+}
+
+@test "derived-image custom base_db seed overrides the stock seed for ${DB_TYPE} ${DB_VERSION}" {
+  docker run -u "$MOUNTUID:$MOUNTGID" -v $VOLUME:/var/lib/mysql:nocopy \
+    -v "${SEED_DIR}/seed_b.${SEED_EXT}:/mysqlbase/custom/base_db.${SEED_EXT}:ro" \
+    --name=$CONTAINER_NAME -p $HOSTPORT:3306 -d $IMAGE
+  containercheck
+  run docker logs $CONTAINER_NAME
+  [[ "$output" == *"snapshot=/mysqlbase/custom/base_db.${SEED_EXT}"* ]]
+  run mysql ${SKIP_SSL:-} -udb -pdb --database=db --host=127.0.0.1 --port=$HOSTPORT -e "SHOW TABLES;"
+  [[ "$output" == *"marker_seed_b"* ]]
+}
+
+@test "restore_snapshot seeds an empty datadir from an uncompressed snapshot for ${DB_TYPE} ${DB_VERSION}" {
+  docker run -u "$MOUNTUID:$MOUNTGID" -v $VOLUME:/var/lib/mysql:nocopy \
+    -v "${SEED_DIR}/seed_c.${STREAM_EXT}:/mnt/snapshots/${UNCOMPRESSED_SEED_SNAPSHOT_NAME}:ro" \
+    --name=$CONTAINER_NAME -p $HOSTPORT:3306 -d $IMAGE restore_snapshot "${UNCOMPRESSED_SEED_SNAPSHOT_NAME}"
+  containercheck
+  run mysql ${SKIP_SSL:-} -udb -pdb --database=db --host=127.0.0.1 --port=$HOSTPORT -e "SHOW TABLES;"
+  [[ "$output" == *"marker_seed_c"* ]]
+}
+
+@test "restore_snapshot seeds an empty datadir from /mnt/snapshots for ${DB_TYPE} ${DB_VERSION}" {
+  docker run -u "$MOUNTUID:$MOUNTGID" -v $VOLUME:/var/lib/mysql:nocopy \
+    -v "${SEED_DIR}/seed_a.${SEED_EXT}:/mnt/snapshots/${SEED_SNAPSHOT_NAME}:ro" \
+    -v "${SEED_DIR}/seed_b.${SEED_EXT}:/mysqlbase/custom/base_db.${SEED_EXT}:ro" \
+    --name=$CONTAINER_NAME -p $HOSTPORT:3306 -d $IMAGE restore_snapshot "${SEED_SNAPSHOT_NAME}"
+  containercheck
+  run mysql ${SKIP_SSL:-} -udb -pdb --database=db --host=127.0.0.1 --port=$HOSTPORT -e "SHOW TABLES;"
+  # The seed wins over the derived-image base_db mounted alongside it.
+  [[ "$output" == *"marker_seed_a"* ]]
+  [[ "$output" != *"marker_seed_b"* ]]
+}
+
+@test "restore_snapshot accepts an absolute path outside /mnt/snapshots for ${DB_TYPE} ${DB_VERSION}" {
+  docker run -u "$MOUNTUID:$MOUNTGID" -v $VOLUME:/var/lib/mysql:nocopy \
+    -v "${SEED_DIR}:/mnt/seed:ro" \
+    --name=$CONTAINER_NAME -p $HOSTPORT:3306 -d $IMAGE restore_snapshot "/mnt/seed/seed_a.${SEED_EXT}"
+  containercheck
+  run mysql ${SKIP_SSL:-} -udb -pdb --database=db --host=127.0.0.1 --port=$HOSTPORT -e "SHOW TABLES;"
+  [[ "$output" == *"marker_seed_a"* ]]
+}

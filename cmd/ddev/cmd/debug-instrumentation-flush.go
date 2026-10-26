@@ -9,8 +9,9 @@ import (
 
 // DebugInstrumentationFlushCmd implements the ddev utility instrumentation flush command
 var DebugInstrumentationFlushCmd = &cobra.Command{
-	Use:   "flush",
-	Short: "Transmits usage statistics from the local cache",
+	Use:         "flush",
+	Annotations: map[string]string{NoDockerCommand: "true"},
+	Short:       "Transmits usage statistics from the local cache",
 	Run: func(_ *cobra.Command, _ []string) {
 		amplitude.CheckSetUp()
 
@@ -32,6 +33,6 @@ var DebugInstrumentationFlushCmd = &cobra.Command{
 	},
 }
 
-func init() {
+func registerDebugInstrumentationFlushCmd() {
 	DebugInstrumentationCmd.AddCommand(DebugInstrumentationFlushCmd)
 }

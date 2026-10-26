@@ -95,6 +95,9 @@ The standard approach:
     RUN update-ca-certificates
     ```
 
+    !!!tip "Apply to all projects"
+        Put these Dockerfiles in `$HOME/.ddev/web-build/` and `$HOME/.ddev/db-build/` to apply them to every project, see [Global Dockerfiles](../extend/customizing-images.md#global-dockerfiles).
+
 4. If you're using Node.js/npm make it trust both the DDEV `mkcert` CA and your corporate CA by combining the two into a single file and then making the environment variable `NODE_EXTRA_CA_CERTS` point to that file. Add a post-start hook to concatenate the required files into the needed `/usr/local/share/ca-certificates/node_ca_certs.pem`. For example, in a `.ddev/config.vpn.yaml` add `post-start` hook:
 
     ```yaml
@@ -104,6 +107,15 @@ The standard approach:
       post-start:
         - exec: "cat /mnt/ddev-global-cache/mkcert/rootCA.pem /usr/local/share/ca-certificates/mycorp-ca.crt > /usr/local/share/ca-certificates/node_ca_certs.pem"
     ```
+
+    !!!tip "Apply to all projects"
+        The same `web_environment` and `hooks` can go in `$HOME/.ddev/global_config.yaml` to apply to every project, see [Global Hooks](../configuration/hooks.md#global-hooks). On machines that are not behind the proxy the certificate is missing and the `cat` would report a failed hook, so guard it:
+
+        ```yaml
+        hooks:
+          post-start:
+            - exec: "if test -f /usr/local/share/ca-certificates/mycorp-ca.crt; then cat /mnt/ddev-global-cache/mkcert/rootCA.pem /usr/local/share/ca-certificates/mycorp-ca.crt > /usr/local/share/ca-certificates/node_ca_certs.pem; fi"
+        ```
 
 5. Run:
 
@@ -164,6 +176,7 @@ If your file contains this header, renaming it to `.crt` is sufficient for use w
 
 ### Corporate Packet-inspection VPN Resources
 
+- [Network Test Environments: Packet-Inspection VPN Simulation](../../developers/network-test-environments.md)
 - [Adding Self-signed Registry Certs to Docker & Docker for Mac](https://blog.container-solutions.com/adding-self-signed-registry-certs-docker-mac)
 - [Docker Docs: How Do I Add TLS Certificates](https://docs.docker.com/desktop/troubleshoot-and-support/faqs/macfaqs/#how-do-i-add-tls-certificates)
 
@@ -176,6 +189,35 @@ If your file contains this header, renaming it to `.crt` is sufficient for use w
 | Colima           | Yes                  | 🚫                        | Requires pre-start copy of certs       |
 | Rancher Desktop  | Yes (dockerd)        | Partial                   | Depends on Lima config and backend     |
 | WSL2 + docker-ce | Yes                  | 🚫                        | Must configure trust inside WSL        |
+
+### Cloudflare WARP (Zero Trust)
+
+If you are using [Cloudflare WARP](https://developers.cloudflare.com/cloudflare-one/team-and-resources/devices/warp/) (Zero Trust), you might find that `*.ddev.site` domains (or other domains you might use that resolve to 127.0.0.1) do not resolve because WARP intercepts and routes all traffic through its network, bypassing your local loopback.
+
+To fix this, configure **Split Tunneling** in your Cloudflare dashboard (or local settings):
+
+1. Log in to your Cloudflare Zero Trust dashboard.
+2. Go to **Settings** > **WARP Client** > **Device Settings**.
+3. Locate your profile and click **Edit**.
+4. Under **Split Tunnels**, ensure the mode is set to **Exclude**.
+5. Add the following **Selector** entries:
+
+**Domains:**
+
+- `*.ddev.site`
+- `ddev.site`
+- Any other domain you use with DDEV which resolves to `127.0.0.1`
+
+**IP Addresses:**
+
+- `127.0.0.1/8` (Localhost)
+- `172.16.0.0/12` (Standard Docker range)
+
+!!!note
+    The `172.16.0.0/12` range might overlap with your internal corporate networks. If you lose access to corporate resources:
+
+    - Identify the specific Docker ranges you need using a CIDR calculator and only exclude those.
+    - Or [reconfigure Docker's default IP ranges](https://www.lullabot.com/articles/fixing-docker-and-vpn-ip-address-conflicts) to use a different range and exclude that one instead.
 
 <!-- textlint-disable -->
 ## Corporate or Internet Provider Proxy
@@ -247,11 +289,28 @@ After configuration, restart the DDEV project if it is already running.
 
 ### Proxy Resources
 
+- [HTTP Proxy Test Environments](../../developers/http-proxy-test-environments.md)
 - [Configuring Rancher Desktop Proxy](https://github.com/rancher-sandbox/rancher-desktop/issues/2259#issuecomment-1136833849)
 - [Colima proxy setup](https://gist.github.com/res0nat0r/e182f23272a331f20b83195156eef83f)
 - [Linux Docker Daemon Proxy Configuration](https://docs.docker.com/engine/daemon/proxy/#daemon-configuration)
 - [Linux Docker Client Proxy Configuration](https://docs.docker.com/engine/cli/proxy/#configure-the-docker-client)
 - [Colima Proxy Configuration](https://gist.github.com/res0nat0r/e182f23272a331f20b83195156eef83f)
+
+## WSL2 VirtioProxy Mode (Netskope and Similar VPNs)
+
+Some corporate VPNs, notably **Netskope**, intercept network traffic in a way that is incompatible with the default WSL2 NAT networking mode. The WSL2 `VirtioProxy` networking mode can work around this, and is the primary reason users end up in VirtioProxy mode.
+
+VirtioProxy mode is experimental and poorly documented by Microsoft. On some machines it works well; on others, the WSL2 distro has no internet access at all, which means tools like Composer and npm will not function. DDEV treats this mode as best-effort.
+
+See the [WSL2 VirtioProxy system requirements](../../index.md#windows-wsl2) for setup instructions.
+
+**Known limitations of VirtioProxy mode:**
+
+- On some machines, the WSL2 distro has no internet access at all (Composer, npm, etc. will not work).
+- The WSL2 distro and Docker containers cannot make outgoing connections to the Windows host. This means a Windows-side IDE cannot receive Xdebug connections. Use an IDE inside WSL2 via WSLg and set `ddev config global --xdebug-ide-location=wsl2`.
+- Accessing DDEV sites from a Windows browser works normally.
+
+If you are not required to use VirtioProxy, the [Traditional Windows](../../index.md#traditional-windows) approach (Docker Desktop with WSL2 backend) avoids these limitations entirely.
 
 ## Restrictive DNS servers, especially Fritz!Box (FritzBox) routers
 

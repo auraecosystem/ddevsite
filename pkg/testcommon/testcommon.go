@@ -2,21 +2,18 @@ package testcommon
 
 import (
 	"crypto/sha256"
-	"crypto/tls"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"testing"
-	"time"
 
 	"github.com/ddev/ddev/pkg/archive"
+	"github.com/ddev/ddev/pkg/config/types"
 	"github.com/ddev/ddev/pkg/ddevapp"
 	"github.com/ddev/ddev/pkg/dockerutil"
 	"github.com/ddev/ddev/pkg/fileutil"
@@ -25,7 +22,6 @@ import (
 	"github.com/ddev/ddev/pkg/output"
 	"github.com/ddev/ddev/pkg/util"
 	copy2 "github.com/otiai10/copy"
-	asrt "github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -82,14 +78,6 @@ type TestSite struct {
 	// FullSiteArchiveExtPath is the path that should be extracted from inside an archive when
 	// importing the files from a full site archive
 	FullSiteArchiveExtPath string
-}
-
-// HTTPRequestOpts contains options for HTTP requests
-type HTTPRequestOpts struct {
-	// TimeoutSeconds is the number of seconds to wait for a response before timing out
-	TimeoutSeconds int
-	// MaxRetries is the number of times to retry the request
-	MaxRetries int
 }
 
 // Prepare downloads and extracts a site codebase to a temporary directory.
@@ -214,6 +202,17 @@ func OsTempDir() (string, error) {
 	return tmpDir, nil
 }
 
+// SetTestHome sets HOME (and USERPROFILE on Windows) to the given directory.
+// On Windows, os.UserHomeDir() reads USERPROFILE, not HOME, so both must be
+// set for tests that need to isolate the home directory.
+func SetTestHome(t *testing.T, home string) {
+	t.Helper()
+	t.Setenv("HOME", home)
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", home)
+	}
+}
+
 // CreateTmpDir creates a temporary directory in the homedir
 // and returns its path as a string. It's important that it's in
 // homedir since Colima doesn't mount things outside that.
@@ -230,11 +229,11 @@ func CreateTmpDir(prefix string) string {
 }
 
 // CopyGlobalDdevDir creates a temporary global config directory for DDEV
-// using a temporary directory which is set to $XDG_CONFIG_HOME/ddev
+// using a temporary directory which is set to $DDEV_XDG_CONFIG_HOME/ddev
 // Don't forget to run ResetGlobalDdevDir(t, tmpXdgConfigHomeDir)
 // in the test's cleanup function.
 func CopyGlobalDdevDir(t *testing.T) string {
-	// Create $XDG_CONFIG_HOME
+	// Create $DDEV_XDG_CONFIG_HOME
 	tmpXdgConfigHomeDir := CreateTmpDir("Home_" + util.RandString(5))
 	// Global DDEV config directory should be named "ddev"
 	tmpGlobalDdevDir := filepath.Join(tmpXdgConfigHomeDir, "ddev")
@@ -252,24 +251,32 @@ func CopyGlobalDdevDir(t *testing.T) string {
 	// Stop the Mutagen daemon running in the ~/.ddev
 	ddevapp.StopMutagenDaemon("")
 	t.Logf("stopped mutagen daemon %s in MUTAGEN_DATA_DIRECTORY=%s", globalconfig.GetMutagenPath(), globalconfig.GetMutagenDataDirectory())
-	// Set $XDG_CONFIG_HOME for tests
-	t.Setenv("XDG_CONFIG_HOME", tmpXdgConfigHomeDir)
-	// Make sure that the global config directory is set to $XDG_CONFIG_HOME/ddev
+	// Set $DDEV_XDG_CONFIG_HOME for tests (works on all platforms)
+	t.Setenv("DDEV_XDG_CONFIG_HOME", tmpXdgConfigHomeDir)
+	// Make sure that the global config directory is set to $DDEV_XDG_CONFIG_HOME/ddev
 	require.Equal(t, tmpGlobalDdevDir, globalconfig.GetGlobalDdevDir())
 	// And it should be created by now
 	require.DirExists(t, tmpGlobalDdevDir)
-	// Create the global config in $XDG_CONFIG_HOME/ddev
+	// Create the global config in $DDEV_XDG_CONFIG_HOME/ddev
 	globalconfig.EnsureGlobalConfig()
-	// Copy some settings from ~/.ddev to $XDG_CONFIG_HOME/ddev
+	// Copy some settings from ~/.ddev to $DDEV_XDG_CONFIG_HOME/ddev
 	globalconfig.DdevGlobalConfig.PerformanceMode = originalGlobalConfig.PerformanceMode
+	globalconfig.DdevGlobalConfig.NoBindMounts = originalGlobalConfig.NoBindMounts
 	globalconfig.DdevGlobalConfig.LastStartedVersion = originalGlobalConfig.LastStartedVersion
+	globalconfig.DdevGlobalConfig.RouterHTTPPort = originalGlobalConfig.RouterHTTPPort
+	globalconfig.DdevGlobalConfig.RouterHTTPSPort = originalGlobalConfig.RouterHTTPSPort
+	globalconfig.DdevGlobalConfig.RouterMailpitHTTPPort = originalGlobalConfig.RouterMailpitHTTPPort
+	globalconfig.DdevGlobalConfig.RouterMailpitHTTPSPort = originalGlobalConfig.RouterMailpitHTTPSPort
+	globalconfig.DdevGlobalConfig.RouterXHGuiHTTPPort = originalGlobalConfig.RouterXHGuiHTTPPort
+	globalconfig.DdevGlobalConfig.RouterXHGuiHTTPSPort = originalGlobalConfig.RouterXHGuiHTTPSPort
+	globalconfig.DdevGlobalConfig.TraefikMonitorPort = originalGlobalConfig.TraefikMonitorPort
 	err = globalconfig.WriteGlobalConfig(globalconfig.DdevGlobalConfig)
 	require.NoError(t, err)
 	// Make sure we have the .ddev/bin dir we need for docker-compose and Mutagen
 	sourceBinDir := filepath.Join(originalGlobalDdevDir, "bin")
 	_, err = os.Stat(sourceBinDir)
 	if !os.IsNotExist(err) {
-		// Copy ~/.ddev/bin to $XDG_CONFIG_HOME/ddev/bin
+		// Copy ~/.ddev/bin to $DDEV_XDG_CONFIG_HOME/ddev/bin
 		err = copy2.Copy(sourceBinDir, filepath.Join(tmpGlobalDdevDir, "bin"))
 		require.NoError(t, err)
 	}
@@ -286,14 +293,14 @@ func CopyGlobalDdevDir(t *testing.T) string {
 	return tmpXdgConfigHomeDir
 }
 
-// ResetGlobalDdevDir removes temporary $XDG_CONFIG_HOME directory
+// ResetGlobalDdevDir removes temporary $DDEV_XDG_CONFIG_HOME directory
 func ResetGlobalDdevDir(t *testing.T, tmpXdgConfigHomeDir string) {
-	// Stop the Mutagen daemon running in the $XDG_CONFIG_HOME/ddev
+	// Stop the Mutagen daemon running
 	ddevapp.StopMutagenDaemon("")
 	t.Logf("stopped mutagen daemon '%s' with MUTAGEN_DATA_DIRECTORY=%s", globalconfig.GetMutagenPath(), globalconfig.GetMutagenDataDirectory())
-	// After the $XDG_CONFIG_HOME directory is removed,
+	// After the $DDEV_XDG_CONFIG_HOME directory is removed,
 	// globalconfig.GetGlobalDdevDir() should point to ~/.ddev
-	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("DDEV_XDG_CONFIG_HOME", "")
 	_ = os.RemoveAll(tmpXdgConfigHomeDir)
 	// Make sure that the global config directory is set to ~/.ddev
 	originalGlobalDdevDir := globalconfig.GetGlobalDdevDirLocation()
@@ -358,6 +365,7 @@ func ClearDockerEnv() {
 		"LINES",
 		"DDEV_XDEBUG_ENABLED",
 		"IS_DDEV_PROJECT",
+		"DDEV_BUILD_GITHUB_TOKEN",
 	}
 	for _, env := range envVars {
 		err := os.Unsetenv(env)
@@ -443,161 +451,6 @@ func GetCachedArchive(_, _, internalExtractionPath, sourceURL string) (string, s
 	return extractPath, archiveFullPath, nil
 }
 
-// GetLocalHTTPResponse takes a URL and optional parameters,
-// hits the local Docker for it, returns result
-// Returns error (with the body) if not 200 status code.
-// Parameters can be either:
-// - HTTPRequestOpts struct with TimeoutSeconds and MaxRetries fields
-// - int representing timeout seconds (for backward compatibility)
-func GetLocalHTTPResponse(t *testing.T, rawurl string, params ...interface{}) (string, *http.Response, error) {
-	options := parseHTTPRequestOpts(60, params...)
-
-	timeoutTime := time.Duration(options.TimeoutSeconds) * time.Second
-	assert := asrt.New(t)
-
-	u, err := url.Parse(rawurl)
-	if err != nil {
-		t.Fatalf("Failed to parse url %s: %v", rawurl, err)
-	}
-	port := u.Port()
-
-	dockerIP, err := dockerutil.GetDockerIP()
-	assert.NoError(err)
-
-	fakeHost := u.Hostname()
-	// Add the port if there is one.
-	u.Host = dockerIP
-	if port != "" {
-		u.Host = u.Host + ":" + port
-	}
-	localAddress := u.String()
-
-	// Use ServerName: fakeHost to verify basic usage of certificate.
-	// This technique is from https://stackoverflow.com/a/47169975/215713
-	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{ServerName: fakeHost},
-	}
-
-	// Do not follow redirects, https://stackoverflow.com/a/38150816/215713
-	client := &http.Client{
-		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-		Transport: transport,
-		Timeout:   timeoutTime,
-	}
-
-	var lastErr error
-	var resp *http.Response
-	var bodyString string
-
-	for attempt := 1; attempt <= options.MaxRetries; attempt++ {
-		req, err := http.NewRequest("GET", localAddress, nil)
-		if err != nil {
-			return "", nil, fmt.Errorf("failed to NewRequest GET %s: %v", localAddress, err)
-		}
-		req.Host = fakeHost
-
-		resp, err = client.Do(req)
-		if err != nil {
-			lastErr = err
-			if attempt < options.MaxRetries {
-				time.Sleep(time.Second)
-				continue
-			}
-			return "", resp, err
-		}
-
-		bodyBytes, err := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		if err != nil {
-			lastErr = fmt.Errorf("unable to ReadAll resp.body: %v", err)
-			if attempt < options.MaxRetries {
-				time.Sleep(time.Second)
-				continue
-			}
-			return "", resp, lastErr
-		}
-
-		bodyString = string(bodyBytes)
-		if resp.StatusCode != 200 {
-			lastErr = fmt.Errorf("http status code for '%s' was %d, not 200", localAddress, resp.StatusCode)
-			if attempt < options.MaxRetries {
-				time.Sleep(time.Second)
-				continue
-			}
-			return bodyString, resp, lastErr
-		}
-
-		// Success
-		return bodyString, resp, nil
-	}
-
-	// This should never be reached, but just in case
-	return bodyString, resp, lastErr
-}
-
-// GetLocalHTTPResponseWithBackoff calls GetLocalHTTPResponse with an external
-// retry/backoff strategy. It takes a number of attempts and an initialDelay
-// duration. params follow the same conventions as GetLocalHTTPResponse
-// (HTTPRequestOpts or int timeout). The inner call has MaxRetries forced to 1
-// to avoid nested retries.
-func GetLocalHTTPResponseWithBackoff(t *testing.T, rawurl string, attempts int, initialDelay time.Duration, params ...interface{}) (string, *http.Response, error) {
-	if attempts < 1 {
-		attempts = 1
-	}
-	// Build options from params but force inner MaxRetries to 1 to avoid nested retries.
-	innerOpts := parseHTTPRequestOpts(60, params...)
-	innerOpts.MaxRetries = 1
-
-	var lastBody string
-	var lastResp *http.Response
-	var lastErr error
-	delay := initialDelay
-
-	for attempt := 1; attempt <= attempts; attempt++ {
-		body, resp, err := GetLocalHTTPResponse(t, rawurl, innerOpts)
-		if err == nil {
-			return body, resp, nil
-		}
-		lastBody = body
-		lastResp = resp
-		lastErr = err
-
-		if attempt < attempts {
-			// Log and sleep with exponential backoff
-			t.Logf("GetLocalHTTPResponseWithBackoff attempt %d/%d failed for %s: %v; retrying after %s", attempt, attempts, rawurl, err, delay)
-			time.Sleep(delay)
-			// Double the delay for next attempt
-			delay *= 2
-		}
-	}
-
-	return lastBody, lastResp, lastErr
-}
-
-// EnsureLocalHTTPContent will verify a URL responds with a 200, expected content string, and optional parameters.
-// Parameters can be either:
-// - HTTPRequestOpts struct with TimeoutSeconds and MaxRetries fields
-// - int representing timeout seconds (for backward compatibility)
-func EnsureLocalHTTPContent(t *testing.T, rawurl string, expectedContent string, params ...interface{}) (*http.Response, error) {
-	options := parseHTTPRequestOpts(40, params...)
-	assert := asrt.New(t)
-
-	body, resp, err := GetLocalHTTPResponse(t, rawurl, options)
-	// We see intermittent php-fpm SIGBUS failures, only on macOS.
-	// That results in a 502/503. If we get a 502/503 on macOS, try again.
-	// It seems to be a 502 with nginx-fpm and a 503 with apache-fpm
-	if nodeps.IsMacOS() && resp != nil && (resp.StatusCode >= 500) {
-		t.Logf("Received %d error on macOS, retrying GetLocalHTTPResponse", resp.StatusCode)
-		time.Sleep(time.Second)
-		body, resp, err = GetLocalHTTPResponse(t, rawurl, options)
-	}
-	assert.NoError(err, "GetLocalHTTPResponse returned err on rawurl %s, resp=%v, body=%v: %v", rawurl, resp, body, err)
-	assert.Contains(body, expectedContent, "request %s got resp=%v, body:\n========\n%s\n==========\n", rawurl, resp, body)
-	return resp, err
-}
-
 // CheckGoroutineOutput makes sure that goroutines
 // aren't beyond specified level
 func CheckGoroutineOutput(t *testing.T, out string) {
@@ -605,45 +458,56 @@ func CheckGoroutineOutput(t *testing.T, out string) {
 	// regex to find "goroutines=4 at exit of main()"
 	re := regexp.MustCompile(`goroutines=(\d+) at exit of main\(\)`)
 	matches := re.FindAllStringSubmatch(out, -1)
-	require.Equal(t, 1, len(matches), "must be exactly one match for goroutines=<value>, DDEV_GOROUTINES=%s actual output='%s'", os.Getenv(`DDEV_GOROUTINES`), out)
+	require.Equal(t, 1, len(matches), "must be exactly one match for goroutines=<value>, DDEV_GOROUTINES=%s actual output='%s'", os.Getenv("DDEV_GOROUTINES"), out)
 	num, err := strconv.Atoi(matches[0][1])
 	require.NoError(t, err, "can't convert %s to number: %v", matches[0][1])
 	require.LessOrEqual(t, num, goroutineLimit, "number of goroutines=%v, higher than limit=%d", num, goroutineLimit)
+}
+
+// SkipUnlessDefaultEnvironment skips t unless the test is running with the
+// plain default settings: nginx webserver, Mutagen off, bind mounts on,
+// normal (non-rootless) Docker. Use it for tests that don't actually check
+// webserver type, Mutagen, or rootless Docker - running them again under each
+// of those special setups just repeats the same check with nothing new to
+// show for it. Mutagen is checked both ways because DDEV_TEST_USE_MUTAGEN sets
+// only each project's performance_mode, while the global config carries the
+// macOS/Windows default. See ddev/ddev#8696 and ddev/ddev#8919.
+func SkipUnlessDefaultEnvironment(t *testing.T) {
+	if nodeps.WebserverDefault != nodeps.WebserverNginxFPM ||
+		nodeps.PerformanceModeDefault == types.PerformanceModeMutagen ||
+		globalconfig.DdevGlobalConfig.IsMutagenEnabled() ||
+		nodeps.NoBindMountsDefault ||
+		dockerutil.IsPodman() || dockerutil.IsDockerRootless() {
+		t.Skip("skipping: this test doesn't depend on webserver type, Mutagen, or rootless Docker, so it only needs to run once, under the plain default setup; see ddev/ddev#8696")
+	}
+}
+
+// SkipIfGotestShort skips t when GOTEST_SHORT is set, unless
+// DDEV_RUN_TEST_ANYWAY=true. The all-project-types CI job runs every test that
+// calls it, IsGotestShort, or UsesAllTestSites with GOTEST_SHORT unset, so
+// tests must not read GOTEST_SHORT themselves.
+func SkipIfGotestShort(t *testing.T) {
+	t.Helper()
+	if os.Getenv("GOTEST_SHORT") != "" && nodeps.IsEnvFalse("DDEV_RUN_TEST_ANYWAY") {
+		t.Skip("Skip because GOTEST_SHORT is set; set DDEV_RUN_TEST_ANYWAY=true to run it anyway")
+	}
+}
+
+// IsGotestShort reports whether GOTEST_SHORT is set, for a test that covers
+// less when it is.
+func IsGotestShort(t *testing.T) bool {
+	t.Helper()
+	return os.Getenv("GOTEST_SHORT") != ""
+}
+
+// UsesAllTestSites marks t as covering every test site, which GOTEST_SHORT
+// cuts down to one.
+func UsesAllTestSites(t *testing.T) {
+	t.Helper()
 }
 
 // PortPair is for tests to use naming portsets for tests
 type PortPair struct {
 	HTTPPort  string
 	HTTPSPort string
-}
-
-// parseHTTPRequestOpts extracts HTTPRequestOpts from interface{} parameters with defaults
-func parseHTTPRequestOpts(defaultTimeout int, params ...interface{}) HTTPRequestOpts {
-	var options HTTPRequestOpts
-
-	// Handle different parameter types for backward compatibility
-	if len(params) > 0 {
-		switch param := params[0].(type) {
-		case HTTPRequestOpts:
-			options = param
-		case int:
-			// Backward compatibility: int parameter is timeout in seconds
-			options.TimeoutSeconds = param
-		default:
-			options.TimeoutSeconds = defaultTimeout // Default if invalid type
-		}
-	}
-	// Set defaults if not provided
-	if options.TimeoutSeconds == 0 {
-		options.TimeoutSeconds = defaultTimeout
-	}
-	// Negative timeout means no timeout
-	if options.TimeoutSeconds < 0 {
-		options.TimeoutSeconds = 0
-	}
-	if options.MaxRetries < 1 {
-		options.MaxRetries = 1
-	}
-
-	return options
 }

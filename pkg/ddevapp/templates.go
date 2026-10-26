@@ -9,16 +9,16 @@ const ConfigInstructions = `
 # If the name is omitted, the project will take the name of the enclosing directory,
 # which is useful if you want to have a copy of the project side by side with this one.
 
-# type: <projecttype>  # backdrop, cakephp, craftcms, drupal, drupal6, drupal7, drupal8, drupal9, drupal10, drupal11, generic, laravel, magento, magento2, php, shopware6, silverstripe, symfony, typo3, wordpress
+# type: <projecttype>  # asterios, backdrop, cakephp, codeigniter, craftcms, drupal, drupal6, drupal7, drupal8, drupal9, drupal10, drupal11, drupal12, generic, joomla, laravel, magento, magento2, maho, modx, php, shopware6, silverstripe, symfony, typo3, wordpress, wp-bedrock
 # See https://docs.ddev.com/en/stable/users/quickstart/ for more
 # information on the different project types
 
 # docroot: <relative_path> # Relative path to the directory containing index.php.
 
-# php_version: "8.4"  # PHP version to use, "5.6" through "8.5"
+# php_version: "8.4"  # PHP version to use; see https://docs.ddev.com/en/stable/users/configuration/config/#php_version.
 
 # You can explicitly specify the webimage but this
-# is not recommended, as the images are often closely tied to DDEV's' behavior,
+# is not recommended, as the images are often closely tied to DDEV's behavior,
 # so this can break upgrades.
 
 # webimage: <docker_image>
@@ -28,9 +28,17 @@ const ConfigInstructions = `
 # database:
 #   type: <dbtype> # mysql, mariadb, postgres
 #   version: <version> # database version, like "10.11" or "8.0"
-#   MariaDB versions can be 5.5-10.8, 10.11, 11.4, 11.8
-#   MySQL versions can be 5.5-8.0, 8.4
+#   MariaDB versions can be 5.5-10.8, 10.11, 11.4, 11.8, 12.3
+#   MySQL versions can be 5.5-8.0, 8.4, 9.7
 #   PostgreSQL versions can be 9-18
+
+# You can explicitly specify the dbimage but this
+# is not recommended, as the images are often closely tied to DDEV's behavior,
+# so this can break upgrades.
+
+# dbimage: <docker_image>
+# It’s unusual to change this option, and we don’t recommend it without Docker experience and a good reason.
+# Typically, this means additions to the existing db image using a .ddev/db-build/Dockerfile.*
 
 # router_http_port: <port>  # Port to be used for http (defaults to global configuration, usually 80)
 # router_https_port: <port> # Port for https (defaults to global configuration, usually 443)
@@ -69,15 +77,19 @@ const ConfigInstructions = `
 # commands are executed.
 
 # composer_version: "2"
-# You can set it to "" or "2" (default) for Composer v2 or "1" for Composer v1
+# You can set it to "" or "2" (default) for Composer v2
 # to use the latest major version available at the time your container is built.
-# It is also possible to use each other Composer version channel. This includes:
+# It is also possible to use any other Composer version channel. This includes:
 #   - 2.2 (latest Composer LTS version)
 #   - stable
 #   - preview
 #   - snapshot
 # Alternatively, an explicit Composer version may be specified, for example "2.2.18".
 # To reinstall Composer after the image was built, run "ddev utility rebuild".
+
+# nodejs_root: <relative_path>
+# Relative path to the directory containing the Node.js version file from the
+# project root. Only used with "nodejs_version: auto" or "nodejs_version: engine".
 
 # nodejs_version: "24"
 # change from the default system Node.js version to any other version.
@@ -172,10 +184,10 @@ const ConfigInstructions = `
 # The mailpit port is not normally bound on the host at all, instead being routed
 # through ddev-router, but it can be bound directly to localhost if specified here.
 
-# webimage_extra_packages: [php7.4-tidy, php-bcmath]
+# webimage_extra_packages: ['php${DDEV_PHP_VERSION}-tidy', 'php${DDEV_PHP_VERSION}-yac']
 # Extra Debian packages that are needed in the webimage can be added here
 
-# dbimage_extra_packages: [telnet,netcat]
+# dbimage_extra_packages: [netcat, telnet, sudo]
 # Extra Debian packages that are needed in the dbimage can be added here
 
 # use_dns_when_possible: true
@@ -187,12 +199,15 @@ const ConfigInstructions = `
 # project_tld: ddev.site
 # The top-level domain used for project URLs
 # The default "ddev.site" allows DNS lookup via a wildcard
-# If you prefer you can change this to "ddev.local" to preserve
-# pre-v1.9 behavior.
 
-# ngrok_args: --basic-auth username:pass1234
-# Provide extra flags to the "ngrok http" command, see
-# https://ngrok.com/docs/agent/config/v3/#agent-configuration or run "ngrok http -h"
+# share_default_provider: ngrok
+# The default share provider to use for "ddev share"
+# Defaults to global configuration, usually "ngrok"
+# Can be "ngrok" or "cloudflared" or the name of a custom provider from .ddev/share-providers/
+
+# share_provider_args: --basic-auth username:pass1234
+# Provide extra flags to the share provider script
+# See https://docs.ddev.com/en/stable/users/configuration/config/#share_provider_args
 
 # disable_settings_management: false
 # If true, DDEV will not create CMS-specific settings files like
@@ -254,7 +269,7 @@ const ConfigInstructions = `
 # override_config: false
 # By default, config.*.yaml files are *merged* into the configuration
 # But this means that some things can't be overridden
-# For example, if you have 'use_dns_when_possible: true'' you can't override it with a merge
+# For example, if you have 'use_dns_when_possible: true' you can't override it with a merge
 # and you can't erase existing hooks or all environment variables.
 # However, with "override_config: true" in a particular config.*.yaml file,
 # 'use_dns_when_possible: false' can override the existing values, and
@@ -264,7 +279,7 @@ const ConfigInstructions = `
 # web_environment: []
 # or
 # additional_hostnames: []
-# can have their intended affect. 'override_config' affects only behavior of the
+# can have their intended effect. 'override_config' affects only behavior of the
 # config.*.yaml file it exists in.
 
 # Many DDEV commands can be extended to run tasks before or after the
@@ -275,65 +290,3 @@ const ConfigInstructions = `
 # for them. Example:
 #hooks:
 `
-
-// SequelproTemplate is the template for Sequelpro config.
-var SequelproTemplate = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>ContentFilters</key>
-    <dict/>
-    <key>auto_connect</key>
-    <true/>
-    <key>data</key>
-    <dict>
-        <key>connection</key>
-        <dict>
-            <key>database</key>
-            <string>%s</string>
-            <key>host</key>
-            <string>%s</string>
-            <key>name</key>
-            <string>ddev/%s</string>
-            <key>password</key>
-            <string>%s</string>
-            <key>port</key>
-            <integer>%s</integer>
-            <key>rdbms_type</key>
-            <string>mysql</string>
-            <key>sslCACertFileLocation</key>
-            <string></string>
-            <key>sslCACertFileLocationEnabled</key>
-            <integer>0</integer>
-            <key>sslCertificateFileLocation</key>
-            <string></string>
-            <key>sslCertificateFileLocationEnabled</key>
-            <integer>0</integer>
-            <key>sslKeyFileLocation</key>
-            <string></string>
-            <key>sslKeyFileLocationEnabled</key>
-            <integer>0</integer>
-            <key>type</key>
-            <string>SPTCPIPConnection</string>
-            <key>useSSL</key>
-            <integer>0</integer>
-            <key>user</key>
-            <string>%s</string>
-        </dict>
-    </dict>
-    <key>encrypted</key>
-    <false/>
-    <key>format</key>
-    <string>connection</string>
-    <key>queryFavorites</key>
-    <array/>
-    <key>queryHistory</key>
-    <array/>
-    <key>rdbms_type</key>
-    <string>mysql</string>
-    <key>rdbms_version</key>
-    <string>5.5.44</string>
-    <key>version</key>
-    <integer>1</integer>
-</dict>
-</plist>`

@@ -18,10 +18,6 @@ import (
 	copy2 "github.com/otiai10/copy"
 )
 
-// DefaultDrupalSettingsVersion is the version used for settings.php/settings.ddev.php
-// when no known Drupal version is detected
-const DefaultDrupalSettingsVersion = "10"
-
 // DrupalSettings encapsulates all the configurations for a Drupal site.
 type DrupalSettings struct {
 	DeployName       string
@@ -40,6 +36,7 @@ type DrupalSettings struct {
 	SyncDir          string
 	DockerIP         string
 	DBPublishedPort  int
+	HasDBContainer   bool
 }
 
 // NewDrupalSettings produces a DrupalSettings object with default.
@@ -62,6 +59,7 @@ func NewDrupalSettings(app *DdevApp) *DrupalSettings {
 		SyncDir:          path.Join("files", "sync"),
 		DockerIP:         dockerIP,
 		DBPublishedPort:  dbPublishedPort,
+		HasDBContainer:   !app.IsDBOmitted(),
 	}
 	if app.Type == "drupal6" {
 		settings.DatabaseDriver = "mysqli"
@@ -123,7 +121,7 @@ func writeDrupalSettingsPHP(app *DdevApp) error {
 	} else {
 		drupalVersion, err := GetDrupalVersion(app)
 		if err != nil || drupalVersion == "" {
-			drupalVersion = DefaultDrupalSettingsVersion
+			drupalVersion = nodeps.DefaultDrupalSettingsVersion
 		}
 		appType = "drupal" + drupalVersion
 	}
@@ -190,7 +188,7 @@ func writeDrupalSettingsDdevPhp(settings *DrupalSettings, filePath string, app *
 
 	drupalVersion, err := GetDrupalVersion(app)
 	if err != nil || drupalVersion == "" {
-		drupalVersion = DefaultDrupalSettingsVersion
+		drupalVersion = nodeps.DefaultDrupalSettingsVersion
 	}
 	t, err := template.New("settings.ddev.php").ParseFS(bundledAssets, path.Join("drupal", "drupal"+drupalVersion, "settings.ddev.php"))
 	if err != nil {
@@ -211,11 +209,11 @@ func writeDrupalSettingsDdevPhp(settings *DrupalSettings, filePath string, app *
 	if err != nil {
 		return err
 	}
+	defer util.CheckClose(file)
 	err = t.Execute(file, settings)
 	if err != nil {
 		return err
 	}
-	util.CheckClose(file)
 	return nil
 }
 
@@ -313,18 +311,29 @@ func setDrupalSiteSettingsPaths(app *DdevApp) {
 	app.SiteDdevSettingsFile = filepath.Join(settingsFileBasePath, drupalConfig.SitePath, drupalConfig.SiteSettingsDdev)
 }
 
-// GetDrupalVersion finds the drupal8+ version so it can be used
+// GetDrupalVersion finds the drupal version so it can be used
 // for setting requirements.
-// It can only work if there is configured Drupal8+ code
+// For explicit versioned types (drupal6-drupal12), returns the version from app.Type.
+// For the generic "drupal" type, detects from core/lib/Drupal.php if available.
 func GetDrupalVersion(app *DdevApp) (string, error) {
-	// For drupal6/7 we use the apptype provided as version
+	// For explicitly versioned types, return the version from the configured type
 	switch app.Type {
 	case nodeps.AppTypeDrupal6:
 		return "6", nil
 	case nodeps.AppTypeDrupal7:
 		return "7", nil
+	case nodeps.AppTypeDrupal8:
+		return "8", nil
+	case nodeps.AppTypeDrupal9:
+		return "9", nil
+	case nodeps.AppTypeDrupal10:
+		return "10", nil
+	case nodeps.AppTypeDrupal11:
+		return "11", nil
+	case nodeps.AppTypeDrupal12:
+		return "12", nil
 	}
-	// Otherwise figure out the version from existing code
+	// For generic "drupal" type, detect from existing code
 	f := filepath.Join(app.GetAbsDocroot(false), "core/lib/Drupal.php")
 	hasVersion, matches, err := fileutil.GrepStringInFile(f, `const VERSION = '([0-9]+)`)
 	v := ""
@@ -386,6 +395,15 @@ func isDrupal11App(app *DdevApp) bool {
 	return vStr == "11"
 }
 
+// isDrupal12App detects whether the code found is Drupal 12
+func isDrupal12App(app *DdevApp) bool {
+	vStr, err := GetDrupalVersion(app)
+	if err != nil {
+		return false
+	}
+	return vStr == "12"
+}
+
 // isDrupalApp returns true if the app is modern Drupal (drupal8+)
 func isDrupalApp(app *DdevApp) bool {
 	vStr, err := GetDrupalVersion(app)
@@ -428,15 +446,20 @@ func drupalConfigOverrideAction(app *DdevApp) error {
 		drupalVersion = 9
 	case nodeps.AppTypeDrupal10:
 		drupalVersion = 10
+	// AppTypeDrupal is an alias for latest stable (currently drupal11)
 	case nodeps.AppTypeDrupal:
 		fallthrough
 	case nodeps.AppTypeDrupal11:
 		app.CorepackEnable = true
 		drupalVersion = 11
+	case nodeps.AppTypeDrupal12:
+		app.CorepackEnable = true
+		drupalVersion = 12
+		app.PHPVersion = nodeps.PHP85
 	}
 	// If there is no database, update it to the default one,
 	// otherwise show a warning to the user.
-	if !nodeps.ArrayContainsString(app.GetOmittedContainers(), "db") {
+	if !app.IsDBOmitted() {
 		if dbType, err := app.GetExistingDBType(); err == nil && dbType == "" {
 			app.Database = DatabaseDefault
 		} else if app.Database.Type == DatabaseDefault.Type && app.Database != DatabaseDefault && drupalVersion >= 8 {
@@ -449,7 +472,7 @@ func drupalConfigOverrideAction(app *DdevApp) error {
 }
 
 func drupalPostStartAction(app *DdevApp) error {
-	if !nodeps.ArrayContainsString(app.GetOmittedContainers(), "db") && (isDrupalApp(app)) {
+	if !app.IsDBOmitted() && isDrupalApp(app) {
 		err := app.Wait([]string{nodeps.DBContainer})
 		if err != nil {
 			return err
@@ -567,6 +590,12 @@ func drupalEnsureWritePerms(app *DdevApp) error {
 	// So we chmod +w the two files that a Drupal install may set read-only
 	// *inside* the container, allowing mutagen access to it again
 	if app.IsMutagenEnabled() && status == SiteRunning {
+		// Flush Mutagen so any host-side settings files are in the container
+		// before we attempt to chmod them. Without this, sites/default may not
+		// exist in the container yet (e.g. after an interrupted ddev start).
+		if err := app.MutagenSyncFlush(); err != nil {
+			util.Warning("Unable to flush Mutagen before setting permissions: %v", err)
+		}
 		settingsFiles := []string{
 			path.Join(app.GetAbsDocroot(true), `sites/default`),
 			path.Join(app.GetAbsDocroot(true), `sites/default/settings.php`),

@@ -7,6 +7,7 @@ Things might go wrong! In addition to this page, consider checking [the DDEV iss
 * Please use the [current stable version of DDEV](../install/ddev-upgrade.md) and of your Docker provider before going too far or asking for support.
 * Run [`ddev utility diagnose`](commands.md#utility-diagnose) to get a quick assessment of your DDEV installation and current project. This provides concise, actionable diagnostics for common issues.
 * Start by running [`ddev poweroff`](commands.md#poweroff) to make sure all containers can start fresh.
+* Try a trivial project to see if the problem is something about your project or if it's something about DDEV and your environment. See the simple instructions at [ddev/trivial-project](https://github.com/ddev/trivial-project).
 * Temporarily disable firewalls, VPNs, tunnels, network proxies, and virus checkers while you’re troubleshooting.
 * Temporarily disable any proxies you’ve established in Docker’s settings.
 * Check to see if you're out of disk space. On macOS, make sure that your Docker provider has adequate disk space allocated. (DDEV will normally warn you about problems in this situation.)
@@ -16,7 +17,7 @@ Things might go wrong! In addition to this page, consider checking [the DDEV iss
 * Use [`ddev utility dockercheck`](commands.md#utility-dockercheck) and [`ddev utility test`](commands.md#utility-test) to help sort out Docker problems.
 * Make sure you do not have disk space problems on your computer. This can be especially tricky on WSL2, where you need to check both the main Windows disk space and WSL2 disk space as well.
 * On macOS, check to make sure your Docker provider is not out of disk space. In *Settings* (or *Preferences*) → *Resources* → *Disk image size* there should be ample space left; try not to let usage exceed 80% because the reported number can be unreliable. If it says zero used, something is wrong.
-* If you have customizations like PHP overrides, nginx or Apache overrides, MySQL/PostgreSQL overrides, custom services, or `config.yaml` changes, please back them out while troubleshooting. It’s important to have the simplest possible environment while troubleshooting.
+* If you have customizations like PHP overrides, nginx or Apache overrides, MySQL/PostgreSQL overrides, custom services, or `config.yaml` changes, please back them out while troubleshooting, see [`ddev utility check-custom-config`](commands.md#utility-check-custom-config). It’s important to have the simplest possible environment while troubleshooting.
 * Restart Docker. Consider a Docker factory reset in serious cases, which will destroy any databases you’ve loaded. See [Docker Troubleshooting](../install/docker-installation.md#troubleshooting-docker) for more.
 * Try the simplest possible DDEV project (like [`ddev utility test`](commands.md#utility-test) does):
 
@@ -41,6 +42,8 @@ Two environment variables meant for DDEV development may also be useful for broa
 
 You can set either one in your current session by running `export DDEV_DEBUG=true` and `export DDEV_VERBOSE=true`.
 
+Logs from a container that fails to start are printed with `DDEV_DEBUG=true` or `CI=true`.
+
 ## Front-End Development Tools
 
 ### Vite Issues
@@ -59,12 +62,30 @@ If you're experiencing issues with Vite development servers (like "Bad Gateway" 
 On `ddev start` you may see a message like this:
 
 ```bash
-Port 443 is busy, using 33001 instead, see https://ddev.com/s/port-conflict
+Port 443 is not available, using 30001 instead, see https://ddev.com/s/port-conflict
 ```
 
-This means that DDEV has detected that it can't use the expected port (`443`) in this example, because another application is using it. If this is OK, you don't need to take any action. Most users want to use the default ports though (`80` and `443`) so you may want to figure out what the conflict is and solve it (usually by stopping the competing application).
+This means that DDEV has detected that it can't use the expected port (`443`) in this example, usually because another application is using it. (It can also mean the port was occupied when the `ddev-router` container was created, and DDEV keeps using the substitute port until the router is recreated, for example by `ddev poweroff && ddev start`.) If this is OK, you don't need to take any action. Most users want to use the default ports though (`80` and `443`) so you may want to figure out what the conflict is and solve it (usually by stopping the competing application).
 
-If you want to figure out what is using the default ports, use the techniques listed below to stop the competing application or to change the default ports.
+`ddev utility port-diagnose`, run from your project directory, can likely explain what's going on. It checks each port your project needs, identifies the blocking process by name and PID, and suggests how to stop it:
+
+```
+$ ddev utility port-diagnose
+Port diagnostics for project: my-project
+Port 80 (router HTTP): IN USE by apache2 (PID 1234, cmd=/usr/sbin/apache2 -k start) [Linux]
+  sudo systemctl stop apache2 && sudo systemctl disable apache2
+Port 443 (router HTTPS): Available
+```
+
+On WSL2, it checks both Linux/WSL2 and Windows. If a port conflict is held by a root-owned process (such as `docker-proxy` under rootful Docker CE), the tool will ask for permission before running any `sudo` command, showing the exact command it intends to run. You can pre-approve this with `--allow-sudo`:
+
+```
+ddev utility port-diagnose --allow-sudo
+```
+
+The `--allow-sudo` flag is useful in scripts or when you know elevated detection will be needed and want to avoid the interactive prompt. When running non-interactively (CI, pipes) without `--allow-sudo`, sudo escalation is skipped.
+
+If port-diagnose doesn't resolve it, the methods below explain how to stop the competing application or configure DDEV to use different ports.
 
 If you do get messages like:
 
@@ -74,32 +95,11 @@ or
 
 > Error response from daemon: Ports are not available: exposing port TCP 127.0.0.1:8025 -> 0.0.0.0:0: listen tcp 127.0.0.1:8025: bind: Only one usage of each socket address (protocol/network address/port) is normally permitted.
 
-it means that some other process is using a needed port, and use a number of techniques to sort this out, although this is rarely necessary now the DDEV can use alternate ports.
+it means some other process is using a needed port. Stop all Docker containers that might be using the port by running `ddev poweroff && docker rm -f $(docker ps -aq)`, then restart Docker.
 
-1. Stop all Docker containers that might be using the port by running `ddev poweroff && docker rm -f $(docker ps -aq)`, then restart Docker.
-2. If you’re using another local development environment that uses these ports (MAMP, WAMP, Lando, etc.), consider stopping it.
-3. Fix port conflicts by configuring DDEV globally to use different ports.
-4. Fix port conflicts by stopping the competing application.
-
-### Method 1: Stop the conflicting application
+### Method 1: Stop the competing application
 
 Consider `lando poweroff` for Lando, or `fin system stop` for Docksal, or stop MAMP using GUI interface or [`stop.sh`](https://stackoverflow.com/a/17750194/215713).
-
-### Method 2: Fix port conflicts by configuring your project to use different ports
-
-To configure DDEV to use non-conflicting ports, remove router port configuration from the project and set it globally to different values. This will work for most people:
-
-```
-ddev config global --router-http-port=8080 --router-https-port=8443
-ddev config --router-http-port="" --router-https-port=""
-ddev restart
-```
-
-This changes all projects' HTTP URLs to `http://yoursite.ddev.site:8080` and the HTTPS URLs to `https://yoursite.ddev.site:8443`.
-
-### Method 3: Fix port conflicts by stopping the competing application
-
-Alternatively, stop the other application.
 
 Probably the most common conflicting application is Apache running locally. It can often be stopped gracefully (but temporarily) with:
 
@@ -127,56 +127,36 @@ Most people will want to use ports 80 and 443, the default HTTP and HTTPS ports 
 * Lando: If you’ve previously used Lando, try running `lando poweroff`.
 * IIS on Windows (can affect WSL2). You’ll have to disable it in the Windows settings.
 
-To dig deeper, you can use a number of tools to find out what process is listening.
+You can also probe a port with `curl` to get a hint about which application is responding: `curl -I localhost` or `curl -I -k https://localhost:443`.
 
-On macOS and Linux, try the `lsof` tool on ports 80 or 443 or whatever port you’re having trouble with:
+### Method 2: Fix port conflicts by configuring your project to use different ports
 
-```
-$ sudo lsof -i :443 -sTCP:LISTEN
-COMMAND  PID     USER   FD   TYPE DEVICE SIZE/OFF NODE NAME
-nginx   1608 www-data   46u  IPv4  13913      0t0  TCP *:http (LISTEN)
-nginx   5234     root   46u  IPv4  13913      0t0  TCP *:http (LISTEN)
-```
-
-You can also use the `netstat -anv -p tcp` command to examine processes running on specific ports:
+To configure DDEV to use non-conflicting ports, remove router port configuration from the project and set it globally to different values. This will work for most people:
 
 ```
-$ sudo netstat -anv -p tcp | egrep 'Proto|(\*\.(80|443))'
-Proto Recv-Q Send-Q  Local Address          Foreign Address        (state)      rhiwat  shiwat    pid   epid state  options           gencnt    flags   flags1 usscnt rtncnt fltrs
-tcp4       0      0  *.80                   *.*                    LISTEN       131072  131072  10521      0 00100 00000006 000000000000965d 00000000 00000900      1      0 000001
-tcp4       0      0  *.443                  *.*                    LISTEN       131072  131072  10521      0 00100 00000006 000000000000965c 00000000 00000900      1      0 000001```
+ddev config global --router-http-port=8080 --router-https-port=8443
+ddev config --router-http-port="" --router-https-port=""
+ddev restart
 ```
 
-The `pid` column shows the process ID of the process listening on the port. In this case, it’s `10521`. You can use `ps` to find out what process that is:
+This changes all projects’ HTTP URLs to `http://yoursite.ddev.site:8080` and the HTTPS URLs to `https://yoursite.ddev.site:8443`.
+
+We welcome your [suggestions](https://github.com/ddev/ddev/issues/new) based on other issues you've run into and your troubleshooting technique.
+
+### Security Software Interfering with Port Detection
+
+If you see messages like:
 
 ```
-$ ps -p 10521
-$ ps -fp 10521
-UID   PID  PPID   C STIME   TTY           TIME CMD
-501 10521     1   0 12:35PM ??         0:05.16 /Applications/OrbStack.app/Contents/MacOS/../Frameworks/OrbStack Helper.app/Contents/MacOS/OrbStack Helper vmgr -build-id 339077377 -handoff
+Unable to check port availability
+Assuming ports are available, see https://ddev.com/s/port-conflict
 ```
 
-On Windows CMD, use [sysinternals tcpview](https://docs.microsoft.com/en-us/sysinternals/downloads/tcpview) or try using `netstat` and `tasklist` to find the process ID:
-
-```
-> netstat -aon | findstr ":80.*LISTENING"
-  TCP    127.0.0.1:80           0.0.0.0:0              LISTENING       5760
-  TCP    127.0.0.1:8025         0.0.0.0:0              LISTENING       5760
-  TCP    127.0.0.1:8036         0.0.0.0:0              LISTENING       5760
-
-> tasklist | findstr "5760"
-com.docker.backend.exe        5760 Services                   0      9,536 K
-```
-
-The resulting output displays which command is running and its PID. Choose the appropriate method to stop the other server.
-
-You may also be able to find what’s using a port using `curl`. On Linux, macOS, or in Git Bash on Windows, `curl -I localhost` or `curl -I -k https://localhost:443`. The result may give you a hint about which application is at fault.
-
-We welcome your [suggestions](https://github.com/ddev/ddev/issues/new) based on other issues you’ve run into and your troubleshooting technique.
+DDEV will rely on Docker to report actual port conflicts. This can happen when security software intercepts localhost traffic.
 
 ### Debugging Port Issues on WSL2
 
-On WSL2 it’s harder to debug this because the port may be occupied either on the traditional Windows side, or within your WSL2 distro. This means you may have to debug it in both places, perhaps using both the Windows techniques shown above and the Linux techniques shown above. The ports are shared between Windows and WSL2, so they can be broken on either side.
+On WSL2 the port may be occupied either on the traditional Windows side or within the WSL2 distro. `ddev utility port-diagnose` checks both sides automatically. The ports are shared between Windows and WSL2, so a conflict on either side blocks DDEV.
 
 ## Database Container Fails to Start
 
@@ -188,7 +168,7 @@ To solve this:
 
 * Change the configuration in `.ddev/config.yaml` back to the original configuration.
 * Export the database with [`ddev export-db`](commands.md#export-db).
-* Delete the project with [`ddev delete`](commands.md#delete), or stop the project and remove the database volume using `docker volume rm <project>-mariadb` or `docker volume rm <project>-postgres`.
+* Delete the project with [`ddev delete`](commands.md#delete), or remove just the database volume with [`ddev utility delete-volume database`](commands.md#utility-delete-volume), which stops the project first if it's running.
 * Update `.ddev/config.yaml` to use the new [database type or version](../extend/database-types.md).
 * Start the project and import the database from your export.
 
@@ -206,6 +186,8 @@ If you get a 404 with “No input file specified” (nginx) or a 403 with “For
 
 * Misconfigured docroot: If the docroot isn’t where the web server thinks it is, then the web server won’t find `index.php`. Look at your `.ddev/config.yaml` to verify it has a docroot containing `index.php`. It should be a relative path.
 * Missing `index.php`: There may not be an `index.php` or `index.html` in your project.
+
+`ddev logs` shows the exact reason the web server gave for a 403. To browse a directory that has no index file at all, turn directory listing on yourself, with `Options +Indexes` in an `.htaccess` file (Apache) or `autoindex on;` in a `.ddev/nginx/*.conf` file (nginx).
 
 ## `ddev start` Fails and Logs Contain "failed (28: No space left on device)" - Docker File Space
 
@@ -246,7 +228,7 @@ Don’t forget to check logs using `ddev logs` for the `web` container, and `dde
 
 For `ddev-router` and `ddev-ssh-agent`: `docker logs ddev-router` and `docker logs ddev-ssh-agent`.
 
-## `ddev start` Fails with "Failed to start [project name]: No such container: ddev-router"
+## `ddev start` Fails with "Failed to start \[project name\]: No such container: ddev-router"
 
 Deleting the images and re-pulling them generally solves this problem.
 
@@ -259,6 +241,24 @@ docker rmi -f $(docker images -q)
 ```
 
 You should then be able to start your DDEV machine.
+
+## Waiting for Another DDEV Process
+
+DDEV commands take turns while they set up what all projects share: the `ddev-router`, the `ddev-ssh-agent`, and the `ddev_default` network. If another `ddev` command is in the middle of that, you’ll see something like:
+
+```
+Waiting for 'ddev start' in ~/workspace/d11 (pid 41233, running 3s), which is doing ddev-router setup. Press Ctrl-C to cancel.
+```
+
+This usually clears within seconds. The other command may be running in another terminal, an IDE integration, a script, or a hook.
+
+If it doesn’t clear:
+
+* Look at the process with `ps -p 41233` (on Windows, `tasklist /fi "PID eq 41233"`), and stop it if it’s stuck.
+* Press Ctrl-C to cancel the waiting command; that is safe.
+* After two minutes DDEV gives up waiting and continues anyway, warning that the two commands may conflict, and doesn't wait on that process again for the rest of the command. If something then fails, run `ddev poweroff` and try again.
+
+The lock is the file `~/.ddev/.global.lock`, which the operating system releases when the process holding it exits, so you never need to delete it.
 
 ## `ddev --version` shows an old version
 
@@ -305,8 +305,8 @@ The Docker build environment (where all projects have a little bit happening) is
 You may see one of these messages in your browser:
 
 * `403` Forbidden
-* *[url] server IP address could not be found*
-* *We can’t connect to the server at [url]*
+* *\[url\] server IP address could not be found*
+* *We can’t connect to the server at \[url\]*
 
 If you get the `403 Forbidden` it's almost always because your [docroot is set wrong](faq.md#why-do-i-get-a-403-or-404-on-my-project-after-ddev-launch). You should have something like `docroot: web` or `docroot: ""` or `docroot: docroot` with the relative path to the directory where your `index.php` lives in the project.
 
@@ -320,6 +320,12 @@ While DDEV can create a web server and a Docker network infrastructure for a pro
 * DDEV assumes that hostnames can be resolved within 3 seconds. That assumption is not valid on all networks or computers, so you can increase the amount of time it waits for resolution. Increasing to 5 seconds, for example: `ddev config global --internet-detection-timeout-ms=5000`.
 * If DDEV detects that it can’t look up one of the hostnames assigned to your project for that or other reasons, it will try to add that to the hosts file on your computer, which requires administrative privileges (sudo or Windows UAC).
     * This technique may not work on Windows WSL2, see below.
+
+### Router Ports Not Reachable
+
+If `ddev start` warns that nothing answers on the router's host ports, the router is running but your Docker provider isn't forwarding its ports to your computer. Restarting the Docker provider often fixes it.
+
+With Lima or Colima on Linux, ports below 1024, such as 80 and 443, can't be forwarded unless your system allows it. Either allow them with `echo 'net.ipv4.ip_unprivileged_port_start=0' | sudo tee -a /etc/sysctl.d/60-rootless.conf && sudo sysctl --system` and restart Lima or Colima, or move the router to higher ports with `ddev config global --router-http-port=8080 --router-https-port=8443`.
 
 ### DNS Rebinding Prohibited (Mostly on Fritzbox Routers)
 
@@ -342,9 +348,37 @@ In this case, you can take any one of the following approaches:
 
 An extensive discussion of this class of problem is on [ddev.com](https://ddev.com/blog/ddev-name-resolution-wildcards).
 
+<a name="browser-certificate-error"></a>
+
+## Browser Shows Certificate Error for DDEV Sites
+
+If your browser shows a certificate warning such as `NET::ERR_CERT_AUTHORITY_INVALID`, `SEC_ERROR_UNKNOWN_ISSUER`, or "Your connection is not private" when visiting a DDEV HTTPS URL, the mkcert certificate authority (CA) is not trusted by your browser or OS.
+
+Run [`ddev utility tls-diagnose`](commands.md#utility-tls-diagnose) to identify the specific problem:
+
+```
+ddev utility tls-diagnose
+```
+
+The command checks mkcert installation, OS trust store, certificate files, and live HTTPS connectivity, and prints actionable fix instructions for each issue it finds.
+
+**Common causes and fixes:**
+
+* **mkcert CA not installed in OS trust store** — Run `mkcert -install` and restart your browser.
+* **Firefox on Windows** — Firefox on Windows does not use the Windows certificate store. You must import the mkcert CA manually: Firefox Settings → Privacy & Security → View Certificates → Authorities → Import. Select `rootCA.pem` from the path shown by `mkcert -CAROOT`. Firefox Nightly, Developer Edition, and ESR each maintain a separate trust store and need the same treatment. On macOS and Linux, standard Firefox works via the OS trust store after `mkcert -install`; only special builds (Flatpak, snap, Nightly, Developer Edition) may need a manual import.
+* **Linux: `certutil` not installed** — Firefox on Linux relies on `certutil` (from `libnss3-tools`) for `mkcert -install` to register the CA. Install it with `sudo apt install libnss3-tools` (or `brew install nss`), then run `mkcert -install` again.
+* **Expired or CA-rotated certificates** — Run `ddev poweroff && ddev start` to regenerate certificates, or the nuclear option: `ddev poweroff && mkcert -uninstall && rm -rf "$(mkcert -CAROOT)" && mkcert -install && ddev start`.
+
+**On WSL2:** The mkcert CA is installed on Windows using `mkcert -install` in PowerShell. WSL2 then points its `$CAROOT` at the Windows mkcert directory so both sides use the same CA. `ddev utility tls-diagnose` checks all the WSL2-specific requirements:
+
+* `$CAROOT` must point to the Windows mkcert directory (e.g. `/mnt/c/Users/<user>/AppData/Local/mkcert`)
+* `CAROOT` must be listed in `$WSLENV` so it propagates into WSL2 sessions
+* The mkcert CA must be installed in the Windows certificate store (via `mkcert -install` in PowerShell)
+
+If any of these are missing, follow the setup instructions in [WSL2 and Certificates](../install/ddev-installation.md).
+
 ## Windows WSL2 Network Issues
 
-* Some recent WSL2 versions have had very slow or completely failed network access inside the container or during the Docker build process. A `wsl --shutdown` or a reboot seems to clear these up.
 * If you’re using a browser on Windows, accessing a project in WSL2, you can end up with confusing results when your project is listening on a port inside WSL2 while a Windows process is listening on that same port. The way to sort this out is to stop your project inside WSL2, verify that nothing is listening on the port there, and then study the port on the Windows side by visiting it with a browser or using other tools as described above.
 
 ## Limitations on Symbolic Links (symlinks)

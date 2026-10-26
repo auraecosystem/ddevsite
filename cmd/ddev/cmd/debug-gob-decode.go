@@ -23,14 +23,19 @@ type sponsorshipFileStorageData struct {
 	SponsorshipData types.SponsorshipData `json:"sponsorship_data"`
 }
 
+// addonFileStorageData is used for gob decoding of add-on data storage
+type addonFileStorageData struct {
+	AddonData types.AddonData
+}
+
 // Amplitude event cache structures (not available in remoteconfig/types)
 type StorageEvent struct {
-	EventType  string                 `json:"event_type,omitempty"`
-	UserID     string                 `json:"user_id,omitempty"`
-	DeviceID   string                 `json:"device_id,omitempty"`
-	Time       int64                  `json:"time,omitempty"`
-	EventProps map[string]interface{} `json:"event_properties,omitempty"`
-	UserProps  map[string]interface{} `json:"user_properties,omitempty"`
+	EventType  string         `json:"event_type,omitempty"`
+	UserID     string         `json:"user_id,omitempty"`
+	DeviceID   string         `json:"device_id,omitempty"`
+	Time       int64          `json:"time,omitempty"`
+	EventProps map[string]any `json:"event_properties,omitempty"`
+	UserProps  map[string]any `json:"user_properties,omitempty"`
 }
 
 type eventCache struct {
@@ -40,15 +45,17 @@ type eventCache struct {
 
 // DebugGobDecodeCmd implements the ddev utility gob-decode command
 var DebugGobDecodeCmd = &cobra.Command{
-	Use:    "gob-decode [file]",
-	Short:  "Decode and display contents of a gob-encoded file",
-	Hidden: true,
+	Use:         "gob-decode [file]",
+	Annotations: map[string]string{NoDockerCommand: "true"},
+	Short:       "Decode and display contents of a gob-encoded file",
+	Hidden:      true,
 	Long: `Decode and display the contents of Go gob-encoded binary files.
 
 This command can decode various gob files used by DDEV, including:
   - .remote-config files (remote configuration cache)
   - .amplitude.cache files (analytics event cache)
-  - sponsorship data files (contributor sponsorship information)
+  - .sponsorship-data files (contributor sponsorship information)
+  - .addon-data files (add-on registry cache)
 
 The decoder automatically detects the file type and uses the appropriate structure.
 The output is displayed as formatted JSON for readability.
@@ -56,6 +63,8 @@ The output is displayed as formatted JSON for readability.
 Note: Generic gob files with unknown concrete types may not be decodable due to
 Go's gob encoding limitations.`,
 	Example: `ddev utility gob-decode ~/.ddev/.remote-config
+ddev utility gob-decode ~/.ddev/.sponsorship-data
+ddev utility gob-decode ~/.ddev/.addon-data
 ddev utility gob-decode ~/.ddev/.amplitude.cache
 ddev utility gob-decode /path/to/some/file.gob`,
 	Args: cobra.ExactArgs(1),
@@ -99,6 +108,7 @@ func decodeGobFile(filename string) error {
 	}{
 		{"remote config", tryDecodeRemoteConfig},
 		{"sponsorship data", tryDecodeSponsorshipData},
+		{"add-on data", tryDecodeAddonData},
 		{"amplitude event cache", tryDecodeAmplitudeCache},
 	}
 
@@ -121,7 +131,7 @@ func tryDecodeGeneric(filename string) error {
 	defer file.Close()
 
 	decoder := gob.NewDecoder(file)
-	var data interface{}
+	var data any
 	err = decoder.Decode(&data)
 	if err != nil {
 		// If we can't decode as interface{}, return the error
@@ -192,6 +202,32 @@ func tryDecodeSponsorshipData(filename string) error {
 	return nil
 }
 
+// tryDecodeAddonData attempts to decode the file as add-on data
+func tryDecodeAddonData(filename string) error {
+	file, err := os.Open(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	var data addonFileStorageData
+	decoder := gob.NewDecoder(file)
+	err = decoder.Decode(&data)
+	if err != nil {
+		return err
+	}
+
+	// Convert to JSON for readable output
+	jsonData, err := json.MarshalIndent(data.AddonData, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	output.UserErr.Printf("Add-on data file contents:\n")
+	output.UserOut.Printf("%s\n", string(jsonData))
+	return nil
+}
+
 // tryDecodeAmplitudeCache attempts to decode the file as amplitude event cache
 func tryDecodeAmplitudeCache(filename string) error {
 	file, err := os.Open(filename)
@@ -218,6 +254,6 @@ func tryDecodeAmplitudeCache(filename string) error {
 	return nil
 }
 
-func init() {
+func registerDebugGobDecodeCmd() {
 	DebugCmd.AddCommand(DebugGobDecodeCmd)
 }

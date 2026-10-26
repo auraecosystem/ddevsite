@@ -44,7 +44,7 @@ A project’s `.ddev` directory can be intimidating at first, so let’s take a 
 : Where Docker-friendly users can provide their own [custom compose files](../extend/custom-compose-files.md) that add or override services. Read more in [Additional Service Configurations & Add-ons](../extend/additional-services.md).
 
 `homeadditions` directory
-: Files to be copied into the web container on startup. You could use this, for example, to override the default home directory contents (`.profile`, `.bashrc`, `.composer`, `.ssh`), or include scripts that you’d like to be available inside the container. (You can do the same thing globally in `$HOME/.ddev/homeadditions`.) Check out the [homeadditions docs](../extend/in-container-configuration.md) for more.
+: Files to be copied into the web container on startup. You could use this, for example, to override the default home directory contents (`.profile`, `.bashrc`, `.composer`, `.ssh`), or include scripts that you’d like to be available inside the container. (You can do the same thing globally in `$HOME/.ddev/homeadditions`.) Check out the [homeadditions docs](../extend/in-container-configuration.md) for more. Changes made in the container aren't copied back, see [Persisting Changes Across Restarts](../extend/in-container-configuration.md#persisting-changes-across-restarts).
 
 `mutagen` directory
 : Contains `mutagen.yml`, where you can [override the default Mutagen configuration](../install/performance.md#advanced-mutagen-configuration-options).
@@ -65,7 +65,7 @@ A project’s `.ddev` directory can be intimidating at first, so let’s take a 
 : Contains examples and implementations to demonstrate how the [`ddev pull`](../usage/commands.md#pull) command can work with [hosting providers](../providers/index.md).
 
 `traefik` directory
-: Configures the `ddev-router` when it is using [Traefik](../extend/traefik-router.md).
+: Configures the [Traefik](../extend/traefik-router.md)-based `ddev-router`. Full details in the [Traefik docs](../extend/traefik-router.md).
 
 `web-build` directory
 : Can be used to provide a [custom Dockerfile](../extend/customizing-images.md) for the web container.
@@ -102,12 +102,12 @@ Files beginning with `.` are hidden because they shouldn’t be fiddled with; mo
 
 There’s only one global `.ddev` directory, which normally lives in your home directory: `$HOME/.ddev`, but can be overwritten (first match wins):
 
-1. `$XDG_CONFIG_HOME/ddev` if `$XDG_CONFIG_HOME` is set
+1. `$DDEV_XDG_CONFIG_HOME/ddev` if `$DDEV_XDG_CONFIG_HOME` is set (all platforms)
 2. `$HOME/.ddev`, which means:
     - `/Users/<username>/.ddev` on macOS
     - `/home/<username>/.ddev` on Linux/WSL2
     - `C:\Users\<username>\.ddev` on Windows
-3. `$HOME/.config/ddev` on Linux/WSL2 only, if `$HOME/.ddev` doesn't exist
+3. `$HOME/.config/ddev` on Linux/WSL2 only, if `$HOME/.ddev` doesn’t exist
 
 To find your actual location, run:
 
@@ -115,20 +115,16 @@ To find your actual location, run:
 ddev version | grep global-ddev-dir
 ```
 
-!!!tip "Using `$XDG_CONFIG_HOME` or `$HOME/.config/ddev`"
-    DDEV can use the `$XDG_CONFIG_HOME` environment variable from [XDG Base Directory Specification](https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html) to move `$HOME/.ddev` to the `$XDG_CONFIG_HOME/ddev` directory if `$XDG_CONFIG_HOME` is [defined](https://superuser.com/questions/365847/where-should-the-xdg-config-home-variable-be-defined/).
-
-    To use `$HOME/.config/ddev` (or any other directory) instead of `$HOME/.ddev`:
+!!!tip "Moving `$HOME/.ddev` to a custom location"
+    To use a custom directory instead of `$HOME/.ddev`, set `$DDEV_XDG_CONFIG_HOME` to the parent directory. For example, to use `$HOME/.config/ddev`:
 
     ```bash
     ddev poweroff
-    # permanently set environment variable using a directory that works for you
-    export XDG_CONFIG_HOME="$HOME/.config"
-    # restart the terminal and run:
-    mv $HOME/.ddev ${XDG_CONFIG_HOME}/ddev
+    export DDEV_XDG_CONFIG_HOME="$HOME/.config"
+    mv $HOME/.ddev ${DDEV_XDG_CONFIG_HOME}/ddev
     ```
 
-    On Linux/WSL2, you can move the directory to `$HOME/.config/ddev` without setting `$XDG_CONFIG_HOME`:
+    On Linux/WSL2, you can also move the directory to `$HOME/.config/ddev` without setting the variable:
 
     ```bash
     mv $HOME/.ddev $HOME/.config/ddev
@@ -137,17 +133,26 @@ ddev version | grep global-ddev-dir
 `global_config.yaml`
 : This YAML file defines your global configuration, which consists of various [config settings](../configuration/config.md).
 
+`global_config.*.yaml`
+: Files like `global_config.local.yaml` are merged over `global_config.yaml` in alphabetical order, with the same rules as [`config.*.yaml` files](../extend/customization-extendibility.md#extending-configyaml-with-custom-configyaml-files): simple values are replaced and lists are merged, unless the file sets `override_config: true`. DDEV never writes their values into `global_config.yaml`.
+
 `project_list.yaml`
 : This YAML file defines your project list that lets DDEV keep track of the projects you’ve added.
 
 `bin` directory
-: This is where DDEV stores private executable binaries it needs, like `mutagen` and `docker-compose`.
+: This is where DDEV stores private executable binaries it needs, like [`mutagen`](../configuration/config.md#performance_mode) and [`docker-buildx`](../configuration/config.md#docker_buildx_version).
 
 `commands` directory
 : Directory for storing DDEV commands that should be available in containers, like `npm`, `artisan`, `cake` and `drush` for example. These are organized in subdirectories named for where they’ll be used: `db`, `host`, and `web`. You can add your own [custom commands](../extend/custom-commands.md) here.
 
+`db-build` directory
+: Like the per-project `db-build` directory, can be used to provide a [custom Dockerfile](../extend/customizing-images.md#global-dockerfiles) for the database container, applied to **every** project on this machine.
+
 `homeadditions` directory
 : Like the per-project `homeadditions` directory, files you add here will automatically be copied into the web container’s home directory. Files from the _global_ homeadditions directory will be copied into **every** web container’s home directory.
+
+`web-build` directory
+: Like the per-project `web-build` directory, can be used to provide a [custom Dockerfile](../extend/customizing-images.md#global-dockerfiles) for the web container, applied to **every** project on this machine.
 
 #### Hidden Global Files
 
@@ -155,6 +160,12 @@ Again, these files are mostly regenerated on every `ddev start` so it’s best t
 
 `.gitignore`
 : Prevents files from getting checked in when they shouldn’t be.
+
+`.global.lock`
+: A lockfile that makes concurrent `ddev` commands take turns while they set up the shared router, SSH agent, and `ddev_default` network. It’s safe to delete when no `ddev` command is running.
+
+`.global.lock.info`
+: Which `ddev` command holds `.global.lock`, so another command waiting for it can say what it’s waiting for. See [Waiting for Another DDEV Process](troubleshooting.md#waiting-for-another-ddev-process).
 
 `.router-compose-full.yaml`
 : The complete, generated docker-compose directive used for DDEV’s router.
@@ -173,9 +184,6 @@ Again, these files are mostly regenerated on every `ddev start` so it’s best t
 
 `ssh-auth-compose.*.yaml`
 : `docker-compose` files with the name `ssh-auth-compose.*.yaml` can be used to override stanzas in the `.ssh-auth-compose.yaml` file.
-
-`.sshimageBuild`
-: Directory used for storing DDEV’s generated `Dockerfile` used in building the SSH agent image.
 
 `.update`
 : An empty file whose purpose is mysterious and intriguing.
@@ -203,3 +211,31 @@ Now for the two oddball global containers (there’s only one of each):
 Here’s a basic diagram of how it works inside the Docker network:
 
 ![DDEV Docker Network Architecture](../../images/container-diagram.png)
+
+## The `ddev-global-cache` Volume
+
+`ddev-global-cache` is a Docker volume shared by all projects and mounted at `/mnt/ddev-global-cache`. The `web`, `db`, and `ddev-router` containers use it, and so do custom services that run [custom commands](../extend/custom-commands.md#container-commands). Unlike the containers, it survives [`ddev restart`](commands.md#restart) and [`ddev poweroff`](commands.md#poweroff).
+
+| Directory | Scope | Contents |
+| --- | --- | --- |
+| `bashhistory/<project>-db`, `bashhistory/<project>-web` | Per project | Bash history |
+| `composer` | Shared | Composer cache |
+| `corepack` | Shared | Package managers installed by `corepack` |
+| `global-commands` | Shared | [Global commands](../extend/custom-commands.md#global-commands), copied from the host |
+| `mkcert` | Shared | The mkcert certificate authority, copied from the host and used for HTTPS certificates |
+| `mysqlhistory/<project>-db`, `mysqlhistory/<project>-web` | Per project | MySQL client history |
+| `n_prefix/<project>-web` | Per project | Node.js versions downloaded by `n` |
+| `npm` | Shared | npm cache |
+| `pip` | Shared | pip cache, created only if you install pip, for example with [`webimage_extra_packages`](../configuration/config.md#webimage_extra_packages) |
+| `terminus/cache` | Shared | Terminus cache |
+| `traefik` | Shared | Router configuration and certificates, with files for each project |
+| `yarn/berry`, `yarn/classic` | Shared | Yarn caches |
+
+[`ddev delete`](commands.md#delete) removes the project's own directories and router files. To keep your own files in this volume, see [Persisting Changes Across Restarts](../extend/in-container-configuration.md#persisting-changes-across-restarts).
+
+To clear the volume, for example to free Docker provider disk space, remove it. (Any stored global cache for all projects will be lost, but will be rebuilt as needed.) This also removes the Bash and MySQL history of every project. DDEV creates the volume again on the next [`ddev start`](commands.md#start):
+
+```bash
+ddev poweroff
+docker volume rm ddev-global-cache
+```

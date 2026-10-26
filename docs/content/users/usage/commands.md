@@ -2,10 +2,15 @@
 
 You can tell DDEV what to do by running its commands. This page details each of the available commands and their options, or flags.
 
-Run DDEV without any commands or flags to see this list in your terminal:
+!!!tip "Using TUI (Terminal UI)"
+    Running `ddev` without any arguments will launch the [interactive dashboard](../usage/cli.md#interactive-dashboard) in your terminal.
+
+    To disable the dashboard and show the classic help text instead, set [`no_tui: true`](../configuration/config.md#no_tui) in your global configuration (`$HOME/.ddev/global_config.yaml`), or set the environment variable `DDEV_NO_TUI=true`.
+
+Type `ddev help` or `ddev --help` or `ddev -h` to see this list in your terminal:
 
 ```
-→  ddev
+→  ddev help
 Create and maintain a local web development environment.
 Docs: https://docs.ddev.com
 Support: https://docs.ddev.com/en/stable/users/support
@@ -88,8 +93,12 @@ Flags:
 
 * `--skip-deps`: Skip installing add-on dependencies (default `false`)
 * `--project <projectName>`: Specify a project to install the add-on into. Defaults to checking for a project in the current directory.
-* `--version <version>`: Specify a version to download
+* `--version <version>`: Specify a version, branch name, or commit SHA to download
+* `--default-branch`: Install from the last commit in the default branch (default `false`)
+* `--pr <number>`: Install from a pull request number
 * `--verbose`, `-v`: Output verbose error information with Bash `set -x` (default `false`)
+
+Note: The `--version`, `--default-branch`, and `--pr` flags are mutually exclusive.
 
 Example:
 
@@ -102,6 +111,18 @@ ddev add-on get ddev/ddev-redis --verbose
 
 # Download the official Redis add-on, version v1.0.4
 ddev add-on get ddev/ddev-redis --version v1.0.4
+
+# Download the official Redis add-on from the main branch
+ddev add-on get ddev/ddev-redis --version main
+
+# Download the official Redis add-on from a specific commit SHA
+ddev add-on get ddev/ddev-redis --version b50ac77
+
+# Download the official Redis add-on from the latest commit in the default branch
+ddev add-on get ddev/ddev-redis --default-branch
+
+# Download the official Redis add-on from pull request #54
+ddev add-on get ddev/ddev-redis --pr 54
 
 # Download the Drupal Solr add-on from its v1.2.3 release tarball
 ddev add-on get https://github.com/ddev/ddev-drupal-solr/archive/refs/tags/v1.2.3.tar.gz
@@ -134,10 +155,38 @@ When an add-on declares dependencies in its `install.yaml`, DDEV will automatica
 
 DDEV will detect and prevent circular dependencies with clear error messages.
 
-In general, you can run `ddev add-on get` multiple times without doing any damage. Updating an add-on can be done by running `ddev add-on get <add-on-name>`. If you have changed an add-on file and removed the `#ddev-generated` marker in the file, that file will not be touched and DDEV will let you know about it.
+In general, you can run `ddev add-on get` multiple times without doing any damage. Updating an add-on can be done by running `ddev add-on get <add-on-name>`, or use `ddev add-on update` to update every installed add-on at once. If you have changed an add-on file and removed the `#ddev-generated` marker in the file, that file will not be touched and DDEV will let you know about it.
 
 !!!tip "How to install add-ons from private repositories?"
     See [Private Add-ons](../extend/using-add-ons.md#private-add-ons) for details.
+
+### `add-on update`
+
+Check installed add-ons for a newer release and install it. If no add-on names are provided, all installed add-ons are checked. Add-ons installed from a local directory or from a non-GitHub tarball URL can't be checked automatically and are skipped.
+
+Flags:
+
+* `--dry-run`: Show which add-ons would be updated without installing anything (default `false`)
+* `--project <projectName>`: Specify a project to update the add-ons for. Defaults to checking for a project in the current directory.
+* `--verbose`, `-v`: Output verbose error information with Bash `set -x` (default `false`)
+* `--yes`, `-y`: Skip confirmation prompt.
+
+Example:
+
+```shell
+# Check and update all installed add-ons
+ddev add-on update
+
+# Update a single installed add-on
+ddev add-on update redis
+ddev add-on update ddev/ddev-redis
+
+# See what would be updated without installing anything
+ddev add-on update --dry-run
+
+# Update add-ons for a specific project
+ddev add-on update --project my-project
+```
 
 ### `add-on remove`
 
@@ -165,6 +214,7 @@ Flags:
 
 * `--installed`: List installed add-ons
 * `--project <projectName>`: Specify the project for which to list add-ons. Can only be used with the `--installed` flag. Defaults to checking for a project in the current directory.
+* `--wrap-table`, `-W`: Display table with wrapped text instead of truncating.
 
 Example:
 
@@ -177,11 +227,18 @@ ddev add-on list --installed
 
 # List installed add-ons for a specific project
 ddev add-on list --installed --project my-project
+
+# List with full untruncated add-on names and descriptions
+ddev add-on list --wrap-table
 ```
 
 ### `add-on search`
 
 Search available DDEV add-ons by name or description.
+
+Flags:
+
+* `--wrap-table`, `-W`: Display table with wrapped text instead of truncating.
 
 Example:
 
@@ -197,6 +254,9 @@ ddev add-on search redis web
 
 # Search with multiple terms using quotes (currently same behavior)
 ddev add-on search "redis insight"
+
+# Search with full untruncated output
+ddev add-on search redis --wrap-table
 ```
 
 ## `aliases`
@@ -219,6 +279,17 @@ Run the `artisan` command; available only in projects of type `laravel`, and onl
 ddev artisan list
 ```
 
+## `asterios`
+
+*Alias: `ast`.*
+
+Run the `asterios` command; available only in projects of type `asterios`, and only available if `asterios` is in the project root.
+
+```shell
+# Show all asterios subcommands
+ddev asterios list
+```
+
 ## `auth`
 
 Authentication commands.
@@ -229,6 +300,10 @@ Add [SSH key authentication](../usage/cli.md#ssh-into-containers) to the `ddev-s
 
 The command can be executed multiple times to add more keys, or you can use the `-f` flag for several individual keys for example `ddev auth ssh -f /path/to/first_id_rsa -f /path/to/second_id_rsa`.
 
+If [`ssh_agent_upstream`](../configuration/config.md#ssh_agent_upstream) is set, `ddev auth ssh` without flags lists the keys in that agent instead of adding keys.
+
+To add a key held in a secret manager or CI variable without writing it to a file, pipe it in with `-f -`. The key must not have a passphrase. On traditional Windows, where `ssh_agent_upstream` isn't available, this is how to use a key stored in 1Password; see [Using an Existing SSH Agent](../usage/cli.md#using-an-existing-ssh-agent).
+
 Example:
 
 ```shell
@@ -238,11 +313,13 @@ ddev auth ssh
 ddev auth ssh -d ~/custom/path/to/ssh
 # Add your SSH keys from ~/.ssh/id_ed25519 and ~/.ssh/id_rsa files
 ddev auth ssh -f ~/.ssh/id_ed25519 -f ~/.ssh/id_rsa
+# Add a key from 1Password's CLI, or any command that prints a private key
+op read "op://Private/deploy key/private key?ssh-format=openssh" | ddev auth ssh -f -
 ```
 
 Flags:
 
-* `--ssh-key-file`, `-f`: Path to SSH private key file, use the flag multiple times to add more keys.
+* `--ssh-key-file`, `-f`: Path to SSH private key file, use the flag multiple times to add more keys, or `-` to read one key without a passphrase from stdin.
 * `--ssh-key-path`, `-d`: Path to directory with SSH private key(s), use the flag multiple times to add more directories.
 
 ## `blackfire`
@@ -356,9 +433,11 @@ Flags:
 * `--bind-all-interfaces`: Bind host ports on all interfaces, not only on the localhost network interface.
 * `--composer-root`: The relative path, from the project root, to the directory containing `composer.json`. (This is where all Composer-related commands are executed.)
 * `--composer-root-default`: Unset a `web` service Composer root directory override, the same as `--composer-root=""`.
-* `--composer-version`: Specify override for Composer version in the web container. This may be `""`, `"1"`, `"2"`, `"2.2"`, `"stable"`, `"preview"`, `"snapshot"`, or a specific version.
+* `--composer-version`: Specify override for Composer version in the web container. This may be `""`, `"2"`, `"2.2"`, `"stable"`, `"preview"`, `"snapshot"`, or a specific version.
 * `--corepack-enable`: Whether to run `corepack enable` on Node.js configuration.
 * `--database`: Specify the database `type:version` to use (see [default](../configuration/config.md#database)).
+* `--db-image`: Set the `db` container image ([for advanced use only](../configuration/config.md#dbimage)).
+* `--db-image-default`: Set the default `db` container image, the same as `--db-image=""`.
 * `--db-working-dir`: Override the default working directory for the `db` service.
 * `--db-working-dir-default`: Unset a `db` service working directory override, the same as `--db-working-dir=""`.
 * `--dbimage-extra-packages`: Comma-delimited list of Debian packages that should be added to `db` container when the project is started or `--dbimage-extra-packages=""` to remove previously configured packages.
@@ -366,6 +445,7 @@ Flags:
 * `--default-container-timeout`: Default time in seconds that DDEV waits for all containers to become ready on start (see [default](../configuration/config.md#default_container_timeout)).
 * `--disable-settings-management`: Prevent DDEV from creating or updating CMS settings files.
 * `--disable-upload-dirs-warning`: Disable warnings about `upload-dirs` not being set when using `--performance-mode=mutagen`.
+* `--docker-buildx-version`: Control which `docker-buildx` plugin to use (see [default](../configuration/config.md#docker_buildx_version)).
 * `--docroot`: Provide the relative docroot of the project, like `docroot` or `htdocs` or `web`, defaults to empty, the current directory.
 * `--fail-on-hook-fail`: Decide whether `ddev start` should be interrupted by a failing hook.
 * `--host-db-port`: The `db` container’s localhost-bound port.
@@ -373,8 +453,9 @@ Flags:
 * `--host-webserver-port`: The `web` container’s localhost-bound HTTP port.
 * `--mailpit-http-port`: Router port to be used for Mailpit HTTP access (see [default](../configuration/config.md#mailpit_http_port)).
 * `--mailpit-https-port`: Router port to be used for Mailpit HTTPS access (see [default](../configuration/config.md#mailpit_https_port)).
-* `--ngrok-args`: Provide extra args to `ngrok` in `ddev share`.
+* `--ngrok-args`: Provide extra args to `ngrok` in `ddev share` (deprecated: use [`share_provider_args`](../configuration/config.md#share_provider_args) in `.ddev/config.yaml`).
 * `--no-project-mount`: Whether to skip mounting project code into the `web` container.
+* `--nodejs-root`: The relative path, from the project root, to the directory containing the Node.js version file (see [`nodejs_root`](../configuration/config.md#nodejs_root)).
 * `--nodejs-version`: Specify the Node.js version to use (see [default](../configuration/config.md#nodejs_version)).
 * `--omit-containers`: Comma-delimited list of container types that should not be started when the project is started.
 * `--performance-mode`: Performance optimization mode, possible values are `global`, `none`, `mutagen`.
@@ -385,6 +466,8 @@ Flags:
 * `--project-type`: Provide [the project type](../configuration/config.md#type) of project to configure. This is autodetected and this flag is necessary only to override the detection.
 * `--router-http-port`: The router HTTP port for this project (see [default](../configuration/config.md#router_http_port)).
 * `--router-https-port`: The router HTTPS port for this project (see [default](../configuration/config.md#router_https_port)).
+* `--share-default-provider`: Set the default share provider for the project (`ngrok`, `cloudflared`, or custom). Can be overridden globally with `ddev config global --share-default-provider=<provider>`.
+* `--share-provider-args`: Provide extra args to the share provider in `ddev share`.
 * `--show-config-location`: Output the location of the `.ddev/config.yaml` file if it exists, or error that it doesn’t exist.
 * `--timezone`: Specify timezone for containers and PHP, like `Europe/London` or `America/Denver` or `GMT` or `UTC`. If unset, DDEV will attempt to derive it from the host system timezone.
 * `--update`: Update project settings based on detection and `project-type` overrides (except for `generic` type).
@@ -422,8 +505,10 @@ ddev config global --omit-containers=ddev-ssh-agent
 * `--mailpit-http-port`: The default Mailpit HTTP port for all projects, can be overridden by project configuration (see [default](../configuration/config.md#mailpit_http_port)).
 * `--mailpit-https-port`: The default Mailpit HTTPS port for all projects, can be overridden by project configuration (see [default](../configuration/config.md#mailpit_https_port)).
 * `--no-bind-mounts`: If `true`, don't use bind-mounts. Useful for environments like remote Docker where bind-mounts are impossible.
+* `--no-tui`: If `true`, disable the interactive dashboard and show the classic help text instead (see [default](../configuration/config.md#no_tui)).
 * `--omit-containers`: For example, `--omit-containers=ddev-ssh-agent` or `--omit-containers=""`.
 * `--omit-project-name-by-default`: If `true`, `ddev config` will not write the `name` field to `.ddev/config.yaml` unless explicitly set with `--project-name` (see [default](../configuration/config.md#omit_project_name_by_default)).
+* `--omit-snapshot-on-delete`: If `true`, `ddev delete` will not take a snapshot before deleting a project (see [default](../configuration/config.md#omit_snapshot_on_delete)).
 * `--performance-mode`: Performance optimization mode, possible values are `none`, `mutagen`.
 * `--performance-mode-reset`: Reset performance optimization mode to operating system default (`none` for Linux and WSL2, `mutagen` for macOS and traditional Windows).
 * `--project-tld`: Set the default top-level domain to be used for all projects, can be overridden by project configuration (see [default](../configuration/config.md#project_tld)).
@@ -431,6 +516,7 @@ ddev config global --omit-containers=ddev-ssh-agent
 * `--router-http-port`: The default router HTTP port for all projects, can be overridden by project configuration (see [default](../configuration/config.md#router_http_port)).
 * `--router-https-port`: The default router HTTPS port for all projects, can be overridden by project configuration (see [default](../configuration/config.md#router_https_port)).
 * `--simple-formatting`: If `true`, use simple formatting for tables and implicitly set `NO_COLOR=1`.
+* `--ssh-agent-upstream`: Make `ddev-ssh-agent` relay to an existing SSH agent: `host` for the host's agent, or the path to an agent socket; empty uses DDEV's own agent (see [default](../configuration/config.md#ssh_agent_upstream)).
 * `--table-style`: Table style for `ddev list` and `ddev describe`, possible values are `default`, `bold`, `bright` (see [default](../configuration/config.md#table_style)).
 * `--traefik-monitor-port`: Can be used to change the Traefik monitor port in case of port conflicts, for example `ddev config global --traefik-monitor-port=11999` (see [default](../configuration/config.md#traefik_monitor_port)).
 * `--use-hardened-images`: If `true`, use more secure 'hardened' images for an actual internet deployment.
@@ -444,7 +530,7 @@ ddev config global --omit-containers=ddev-ssh-agent
 
 ## `console`
 
-Run the `console` command; available only in projects of type `symfony`, and only available if `bin/console` exists.
+Run the `console` command; available only in projects of type `symfony` and `shopware6`, and only available if `bin/console` exists.
 
 ```shell
 # Show all Symfony console subcommands
@@ -464,7 +550,7 @@ ddev craft up
 
 ## `dbeaver`
 
-Open [DBeaver](https://dbeaver.io/) with the current project’s database (global shell host container command). This command is only available if `DBeaver.app` is installed as `/Applications/DBeaver.app` for macOS, if `dbeaver.exe` is installed to all users as `C:/Program Files/dbeaver/dbeaver.exe` for WSL2, and if `dbeaver` (or another binary like `dbeaver-ce`) available inside `/usr/bin` for Linux (Flatpak and snap support included).
+Open [DBeaver](https://dbeaver.io/) with the current project’s database (global shell host container command). This command is only available if `DBeaver.app` is installed as `/Applications/DBeaver.app` for macOS, if `dbeaver.exe` is installed to all users as `C:/Program Files/dbeaver/dbeaver.exe` for WSL2 and Windows, and if `dbeaver` (or another binary like `dbeaver-ce`) available inside `/usr/bin` for Linux (Flatpak and snap support included).
 
 Example:
 
@@ -536,18 +622,61 @@ ddev describe my-project
 
 Commands for managing the contents of `.env` files.
 
+See [Environment Variables](../configuration/environment-variables.md) for which filename reaches which service, the order the files override each other in, and where to keep a secret.
+
 ### `dotenv get`
 
-Get the value of an environment variable from a .env file. Provide the path relative to the project root when specifying the file.
+Get the value of an environment variable from a `.env` file. Provide the path relative to the project root when specifying the file.
 
 Example:
 
 ```shell
-# Get the value of APP_KEY from the $DDEV_APPROOT/.env file
+# Get APP_KEY from $DDEV_APPROOT/.env
 ddev dotenv get .env --app-key
 
-# Get the value of ENV_KEY from the $DDEV_APPROOT/.ddev/.env file
-ddev dotenv get .ddev/.env --env-key
+# Get ENV_KEY from $DDEV_APPROOT/.ddev/.env.web
+ddev dotenv get .ddev/.env.web --env-key
+
+# Get REDIS_TAG from $DDEV_APPROOT/.ddev/.env.redis
+ddev dotenv get .ddev/.env.redis --redis-tag
+
+# Get API_KEY from the gitignored $DDEV_APPROOT/.ddev/.env.web.local
+ddev dotenv get .ddev/.env.web.local --api-key
+```
+
+### `dotenv global get`
+
+Get the value of an environment variable from a global `.env` file. Name the file as `.ddev/<file>`, the same way as in a project; it is read from the [global DDEV directory](architecture.md#global-files).
+
+Example:
+
+```shell
+# Get API_URL from the global .env.web
+ddev dotenv global get .ddev/.env.web --api-url
+
+# Get API_KEY from the gitignored global .env.web.local
+ddev dotenv global get .ddev/.env.web.local --api-key
+```
+
+### `dotenv global set`
+
+*Alias: `dotenv global add`.*
+
+Create or update a global `.env` file, which applies to every project, with values specified via long flags from the command line.
+Flags in the format `--env-key=value` will be converted to environment variable names like `ENV_KEY="value"`.
+Name the file as `.ddev/<file>`, the same way as in a project; it is written to the [global DDEV directory](architecture.md#global-files).
+
+Example:
+
+```shell
+# Set API_URL for the web service of every project
+ddev dotenv global set .ddev/.env.web --api-url=https://example.com
+
+# Set two variables for the db service of every project
+ddev dotenv global set .ddev/.env.db --extra value --another-key "extra value"
+
+# Set API_KEY in a gitignored file, for the web service of every project
+ddev dotenv global set .ddev/.env.web.local --api-key=secret
 ```
 
 ### `dotenv set`
@@ -555,29 +684,40 @@ ddev dotenv get .ddev/.env --env-key
 *Alias: `dotenv add`.*
 
 Create or update a `.env` file with values specified via long flags from the command line.
-Flags in the format `--env-key=value` will be converted to environment variable names
-like `ENV_KEY="value"`. The .env file should be named `.env` or `.env.<servicename>` or `.env.<something>`
-All environment variables can be used and expanded in `.ddev/docker-compose.*.yaml` files.
+Flags in the format `--env-key=value` will be converted to environment variable names like `ENV_KEY="value"`.
 Provide the path relative to the project root when specifying the file.
 
 Example:
 
 ```shell
-# Create or update $DDEV_APPROOT/.env file with APP_KEY="value"
+# Set APP_KEY in the application's own $DDEV_APPROOT/.env
 ddev dotenv set .env --app-key=value
 
-# Create or update $DDEV_APPROOT/.ddev/.env file with EXTRA="value" and ANOTHER_KEY="extra value"
-ddev dotenv set .ddev/.env --extra value --another-key "extra value"
+# Set two variables for the web service
+ddev dotenv set .ddev/.env.web --extra value --another-key "extra value"
 
-# Create or update $DDEV_APPROOT/.ddev/.env.redis file with REDIS_TAG="7-bookworm"
+# Set REDIS_TAG for the redis service
 ddev dotenv set .ddev/.env.redis --redis-tag 7-bookworm
+
+# Set API_URL for the web service, in a file labeled for one add-on
+ddev dotenv set .ddev/.env.web.myaddon --api-url=https://example.com
+
+# Set API_KEY in a gitignored file, for the web service
+ddev dotenv set .ddev/.env.web.local --api-key=secret
+```
+
+## `dr`
+
+Run the Drupal `dr` CLI; available only in projects of type `drupal11` and `drupal12`, and only if `dr` is available in the project (Drupal 11.4+).
+
+```shell
+# Show dr status
+ddev dr system:status
 ```
 
 ## `drush`
 
-*Alias: `dr`.*
-
-Run the `drush` command; available only in projects of type `drupal*`, and only available if `drush` is in the project. On projects of type `drupal`, `drush` should be installed in the project itself, (`ddev composer require drush/drush`). On projects of type `drupal7` `drush` 8 is provided by DDEV.
+Run the `drush` command; available only in projects of type `drupal*` and `backdrop`, and only available if `drush` is in the project. On projects of type `drupal`, `drush` should be installed in the project itself, (`ddev composer require drush/drush`). On projects of type `drupal7` `drush` 8 is provided by DDEV.
 
 ```shell
 # Show drush status/configuration
@@ -590,12 +730,14 @@ ddev drush st
 
 [Execute a shell command in the container](../usage/cli.md#executing-commands-in-containers) for a service. Uses the web service by default.
 
+To run your command in a different project, run `ddev exec --project <project> <cmd>`.
 To run your command in a different service container, run `ddev exec --service <service> <cmd>`. Use the `--raw` flag if you’d like to run a raw, uninterpreted command in a container.
 
 Flags:
 
 * `--dir`, `-d`: Define the execution directory within the container.
 * `--raw`: Use raw exec (do not interpret with Bash inside container). (default `true`)
+* `--project`, `-p`: Specify a project where to run the command. Defaults to the project in the current directory.
 * `--service`, `-s`: Define the service to connect to. (e.g. `web`, `db`) (default `"web"`)
 * `--quiet`, `-q`: Suppress detailed error message.
 * `--user`, `-u`: Defines the user to run shell as.
@@ -606,13 +748,16 @@ Example:
 # List the web container's docroot contents
 ddev exec ls /var/www/html
 
+# List the web container's docroot contents for a specific project
+ddev exec --project my-other-project ls /var/www/html
+
 # List the web container's vendor directory contents
 ddev exec --dir /var/www/html/vendor ls
 
 # Output a long, recursive list of the files in the web container
 ddev exec --raw -- ls -lR
 
-# Suppress detailed error message: 
+# Suppress detailed error message:
 # "Failed to execute command `exit 1`: exit status 1"
 ddev exec -q "exit 1"
 
@@ -624,13 +769,15 @@ ddev exec -s db -u root ls -la /root
 
 Dump a database to a file or to stdout.
 
+With `--file` and no `--compression`, the compression type comes from the file extension: `.gz`, `.zst`, `.xz`, `.bz2`, or `.sql`/`.mysql` for none. Any other extension, and output to stdout, uses gzip.
+
 Flags:
 
-* `--bzip2`: Use bzip2 compression.
+* `--compression`: Compression type: `gzip`, `zstd`, `xz`, `bzip2`, or `none`. `zstd` is not available with MariaDB 5.5.
 * `--database`, `-d`: Target database to export from (default `"db"`)
 * `--file`, `-f`: Path to a SQL dump file to export to
-* `--gzip`: Use gzip compression (default `true`)
-* `--xz`: Use xz compression.
+
+The older `--gzip`, `--gzip=false`, `--xz`, and `--bzip2` flags still work.
 
 Example:
 
@@ -638,8 +785,11 @@ Example:
 # Dump and compress the current project’s database to `/tmp/db.sql.gz`
 ddev export-db --file=/tmp/db.sql.gz
 
+# Dump the current project’s database with zstd compression
+ddev export-db --file=/tmp/db.sql.zst
+
 # Dump the current project’s database, without compressing it, to `/tmp/db.sql`
-ddev export-db --gzip=false --file /tmp/db.sql
+ddev export-db --file /tmp/db.sql
 
 # Dump and compress the current project’s `foo` database instead of `db`
 ddev export-db --database=foo --file=/tmp/db.sql.gz
@@ -647,8 +797,11 @@ ddev export-db --database=foo --file=/tmp/db.sql.gz
 # Output the current project’s database and use `>` to write to `/tmp/db.sql.gz`
 ddev export-db > /tmp/db.sql.gz
 
+# Output the current project’s database with zstd compression
+ddev export-db --compression=zstd > /tmp/db.sql.zst
+
 # Dump my-project’s database, without compressing it, to `/tmp/my-project.sql`
-ddev export-db my-project --gzip=false --file=/tmp/my-project.sql
+ddev export-db my-project --file=/tmp/my-project.sql
 ```
 
 ## `heidisql`
@@ -657,7 +810,7 @@ Open [HeidiSQL](https://www.heidisql.com/) with the current project's database (
 
 Requirements by platform:
 
-* **Windows**: HeidiSQL installed at `C:\Program Files\HeidiSQL\Heidisql.exe`  
+* **Windows**: HeidiSQL installed at `C:\Program Files\HeidiSQL\Heidisql.exe`
 * **WSL2**: HeidiSQL accessible via `/mnt/c/Program Files/HeidiSQL/heidisql.exe`
 * **Linux**: HeidiSQL available at `/usr/bin/heidisql` or at `/usr/local/bin/heidisql`
 
@@ -704,7 +857,7 @@ Flags:
 
 * `--database`, `-d`: Target database to import into (default `"db"`)
 * `--extract-path`: Path to extract within the archive
-* `--file`, `-f`: Path to a SQL dump in `.sql`, `.tar`, `.tar.gz`, `.tar.bz2`, `.tar.xz`, `.tgz`, or `.zip` format
+* `--file`, `-f`: Path to a SQL dump in `.sql`, `.tar`, `.tar.gz`, `.tar.bz2`, `.tar.xz`, `.tar.zst`, `.tgz`, or `.zip` format
 * `--no-drop`: Do not drop the database before importing
 * `--no-progress`: Do not output progress
 
@@ -740,7 +893,7 @@ Pull the uploaded files directory of an existing project to the default public u
 Flags:
 
 * `--extract-path`: Path to extract within the archive.
-* `--source`, `-s`: Path to the source directory or source archive in `.tar`, `.tar.gz`, `.tar.bz2`, `.tar.xz`, `.tgz`, or `.zip` format.
+* `--source`, `-s`: Path to the source directory or source archive in `.tar`, `.tar.gz`, `.tar.bz2`, `.tar.xz`, `.tar.zst`, `.tgz`, or `.zip` format.
 * `--target`, `-t`: Target upload dir, defaults to the first upload dir.
 
 Example:
@@ -761,11 +914,16 @@ ddev import-files -s=.tarballs/files.tar.gz -t=sites/default/files
 
 ## `launch`
 
-Launch a browser with the current site (global shell host container command).
+Launch a browser with the current site (global shell host container command). If the current project is not running,
+it will be started first.
 
 Flags:
 
 * `--mailpit`, `-m`: Open Mailpit.
+* `--print-url`: Print the URL instead of opening a browser. The output is the resolved URL itself, with no prefix, so it can be used directly in scripts. Useful where no browser is available (SSH sessions, containers, CI).
+* `--qr`: Print the URL and its QR code instead of opening a browser. Only useful for a URL a phone can reach, which `*.ddev.site` is not.
+
+The environment variable `DDEV_LAUNCH_PRINT_URL=true` behaves like the `--print-url` flag. Unlike the flag it is inherited by nested `ddev launch` invocations (for example from custom commands or add-ons that call `ddev launch` internally), so wrappers and external tools can capture the URL. Unlike `DDEV_DEBUG=true` or `DDEV_VERBOSE=true`, which print the URL with a `FULLURL` prefix and enable global debug logging, it prints only the URL.
 
 !!!tip "How to disable HTTP redirect to HTTPS?"
     Recommendations for:
@@ -782,6 +940,12 @@ ddev launch
 
 # Open Mailpit in the default browser
 ddev launch --mailpit
+
+# Print your project’s base URL instead of opening a browser
+ddev launch --print-url
+
+# Print a QR code for a URL, to scan with a phone
+ddev launch --qr https://your.example.com
 
 # Open your project’s base URL appended with `temp/phpinfo.php`
 ddev launch temp/phpinfo.php
@@ -854,6 +1018,18 @@ Run the `magento` command; available only in projects of type `magento2`, and on
 ```shell
 # Show all magento subcommands
 ddev magento list
+```
+
+## `maho`
+
+Run the `maho` command; available only in projects of type `maho`, and only works if the `maho` script is in the project root (it is copied there by Composer on install).
+
+```shell
+# Show all maho subcommands
+ddev maho list
+
+# Flush the cache
+ddev maho cache:flush
 ```
 
 ## `mailpit`
@@ -1075,44 +1251,54 @@ Flags:
 * `--skip-confirmation`, `-y`: Skip confirmation step.
 * `--skip-db`: Skip pulling database archive.
 * `--skip-files`: Skip pulling file archive.
-* `--skip-import`: Download archive(s) without importing than.
+* `--skip-import`: Download archive(s) without importing them.
 
 Example:
 
 ```shell
-# Pull a backup from the configured Pantheon project to use locally
-ddev pull pantheon
-
 # Pull a backup from the configured Upsun project to use locally
 ddev pull upsun
 
-# Pull a backup from the configured Pantheon project without confirming
+# Pull from Pantheon without confirming
 ddev pull pantheon -y
 
-# Pull the Upsun database *only* without confirming
+# Pull the Upsun database only without confirming
 ddev pull upsun --skip-files -y
 
-# Pull the localfile integration’s files *only* without confirming
-ddev pull localfile --skip-db -y
+# Pull the Acquia files only without confirming
+ddev pull acquia --skip-db -y
 
-# Pull from Upsun specifying the environment variables UPSUN_ENVIRONMENT and UPSUN_CLI_TOKEN on the command line
-ddev pull upsun --environment=UPSUN_ENVIRONMENT=main,UPSUN_CLI_TOKEN=abcdef
+# Download archives from Upsun without importing them
+ddev pull upsun --skip-import
+
+# Pull from Upsun overriding environment and token on the command line
+ddev pull upsun --environment="PLATFORM_ENVIRONMENT=main,UPSUN_CLI_TOKEN=abcdeyourtoken"
+
+# Pull from Pantheon overriding environment and token on the command line
+ddev pull pantheon --environment="DDEV_PANTHEON_ENVIRONMENT=dev,TERMINUS_MACHINE_TOKEN=abcdeyourtoken"
+
+# Pull from Lagoon overriding project and environment on the command line
+ddev pull lagoon --environment="LAGOON_PROJECT=your-project,LAGOON_ENVIRONMENT=main"
 ```
 
 ## `push`
 
 Push files and database using a configured [provider plugin](./../providers/index.md).
 
+Flags:
+
+* `--environment=ENV1=val1,ENV2=val2`
+* `--skip-confirmation`, `-y`: Skip confirmation step.
+* `--skip-db`: Skip pushing database archive.
+* `--skip-files`: Skip pushing file archive.
+
 Example:
 
 ```shell
-# Push local files and database to the configured Pantheon project
-ddev push pantheon
-
 # Push local files and database to the configured Upsun project
 ddev push upsun
 
-# Push files and database to Pantheon without confirming
+# Push to Pantheon without confirming
 ddev push pantheon -y
 
 # Push database only to Upsun without confirming
@@ -1120,6 +1306,15 @@ ddev push upsun --skip-files -y
 
 # Push files only to Acquia without confirming
 ddev push acquia --skip-db -y
+
+# Push to Upsun overriding environment and token on the command line
+ddev push upsun --environment="PLATFORM_ENVIRONMENT=main,UPSUN_CLI_TOKEN=abcdeyourtoken"
+
+# Push to Pantheon overriding environment and token on the command line
+ddev push pantheon --environment="DDEV_PANTHEON_ENVIRONMENT=dev,TERMINUS_MACHINE_TOKEN=abcdeyourtoken"
+
+# Push to Lagoon overriding project and environment on the command line
+ddev push lagoon --environment="LAGOON_PROJECT=your-project,LAGOON_ENVIRONMENT=main"
 ```
 
 ## `querious`
@@ -1137,9 +1332,18 @@ ddev querious
 
 Restart one or several projects.
 
+With `--service`, only the named services get new containers, with their images built as `ddev start` builds them, and the rest of the project keeps running. This also brings back a service that is unhealthy or has crashed. A service in an [optional profile](../extend/custom-compose-files.md#optional-services) has to be started first, with `ddev start --profiles` or `ddev restart --profiles`. Restarting `web` restarts the whole project, with the optional services that were started.
+
 Flags:
 
 * `--all`, `-a`: Restart all projects.
+* `--no-cache`: Rebuild custom Docker image layers without cache.
+* `--omit-snapshot`, `-O`: With `--reset-database`, skip the snapshot of the database being removed.
+* `--profiles`: Start optional comma-separated Docker Compose profiles.
+* `--reset-database`: Remove the project's existing database and start over with a new one.
+* `--seed-snapshot`: Seed a brand-new database volume from this snapshot name or file, instead of the stock starter database.
+* `--service`, `-s`: Restart only these comma-separated services.
+* `--skip-confirmation`, `-y`: Skip any confirmation steps.
 
 Example:
 
@@ -1147,11 +1351,29 @@ Example:
 # Restart the current project
 ddev restart
 
+# Restart the current project without using Docker cache
+ddev restart --no-cache
+
 # Restart my-project and my-other-project
 ddev restart my-project my-other-project
 
 # Restart all projects
 ddev restart --all
+
+# Restart the current project with the busybox profile, without Docker cache
+ddev restart --profiles=busybox --no-cache
+
+# Restart only the db service
+ddev restart --service=db
+
+# Restart only the solr and redis services, without Docker cache
+ddev restart -s solr,redis --no-cache
+
+# Throw away the current database and restart with a new, empty one
+ddev restart --reset-database
+
+# Reset and initialize with external snapshot without confirmation
+ddev restart --reset-database --seed-snapshot=/tmp/newsnapshot-mariadb_11.8.zst -y
 ```
 
 ## `sake`
@@ -1179,7 +1401,7 @@ curl -fsSL https://ddev.com/install.sh | bash
 
 ## `sequelace`
 
-Open [SequelAce](https://sequel-ace.com/) with the current project’s database (global shell host container command). This command is only available if `Sequel Ace.app` is installed as `/Applications/Sequel ace.app`, and only for projects with `mysql` or `mariadb` databases.
+Open [SequelAce](https://sequel-ace.com/) with the current project’s database (global shell host container command). This command is only available if `Sequel Ace.app` is installed as `/Applications/Sequel Ace.app`, and only for projects with `mysql` or `mariadb` databases.
 
 Example:
 
@@ -1188,42 +1410,45 @@ Example:
 ddev sequelace
 ```
 
-## `sequelpro`
-
-!!!warning "Sequel Pro is abandoned!"
-    The project is abandoned and doesn’t work with MySQL 8. We recommend Sequel Ace, Querious, TablePlus, and DBeaver.
-
-Open Sequel Pro with the current project’s database (global shell host container command). This command is only available if `Sequel Pro.app` is installed as `/Applications/Sequel pro.app`, and only for projects with `mysql` or `mariadb` databases.
-
-Example:
-
-```shell
-# Open the current project’s database in Sequel Pro
-ddev sequelpro
-```
-
 ## `share`
 
-[Share the current project](../topics/sharing.md) on the internet via [ngrok](https://ngrok.com).
+[Share the current project](../topics/sharing.md) on the internet via a tunnel provider like ngrok or cloudflared.
 
-!!!tip
-    Any ngrok flag can also be specified in the [`ngrok_args` config setting](../configuration/config.md#ngrok_args).
+The tunnel URL is also printed as a QR code, which you can scan to open it on a phone or tablet.
+
+DDEV supports multiple share providers:
+
+* **ngrok** (default) - Requires an [ngrok.com](https://ngrok.com) account
+* **cloudflared** - Free, no account required. Requires [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/install-and-setup/installation) to be installed
+* **Custom providers** - Add your own providers in `.ddev/share-providers/`
 
 Flags:
 
-* `--ngrok-args`: Accepts any flag from `ngrok http --help`.
+* `--provider`: Share provider to use (ngrok, cloudflared, or custom).
+* `--provider-args`: Arguments to pass to the share provider (overrides config file settings).
+* `--ngrok-args`: (Deprecated) Use `--provider-args` instead.
 
-Example:
+The default provider can be configured globally with `ddev config global --share-default-provider=<provider>` or per-project with `ddev config --share-default-provider=<provider>`. See [`share_default_provider`](../configuration/config.md#share_default_provider) for more details.
+
+Provider-specific arguments can be configured in `.ddev/config.yaml` with [`share_provider_args`](../configuration/config.md#share_provider_args).
+
+Examples:
 
 ```shell
-# Share the current project with ngrok
+# Share the current project with the default provider (ngrok)
 ddev share
 
-# Share the current project with ngrok, using domain `foo.ngrok-free.app`
-ddev share --ngrok-args "--domain foo.ngrok-free.app"
+# Share with cloudflared
+ddev share --provider=cloudflared
 
-# Share the current project using ngrok’s basic-auth argument
-ddev share --ngrok-args "--basic-auth username:pass1234"
+# Share with cloudflared using a custom domain (named tunnel)
+ddev share --provider=cloudflared --provider-args="--tunnel my-tunnel --hostname mysite.example.com"
+
+# Share with ngrok, using domain `foo.ngrok-free.app`
+ddev share --provider-args="--domain foo.ngrok-free.app"
+
+# Share the current project using ngrok's basic-auth argument
+ddev share --provider-args="--basic-auth username:pass1234"
 
 # Share my-project with ngrok
 ddev share my-project
@@ -1233,7 +1458,7 @@ ddev share my-project
 
 Create a database snapshot for one or more projects.
 
-This uses `xtrabackup` or `mariabackup` to create a database snapshot in the `.ddev/db_snapshots` directory. These are compatible with server backups using the same tools and can be restored with the [`snapshot restore`](#snapshot-restore) command.
+This uses `xtrabackup` or `mariadb-backup` to create a database snapshot in the `.ddev/db_snapshots` directory. These are compatible with server backups using the same tools and can be restored with the [`snapshot restore`](#snapshot-restore) command.
 
 See [Snapshotting and Restoring a Database](../usage/cli.md#snapshotting-and-restoring-a-database) for more detail, or [Database Management](../usage/database-management.md) for more on working with databases in general.
 
@@ -1243,7 +1468,10 @@ Flags:
 * `--cleanup`, `-C`: Cleanup snapshots.
 * `--list`, `-l`: List snapshots.
 * `--name`, `-n`: Provide a name for the snapshot.
+* `--uncompressed`: Write the snapshot as an uncompressed mariadb-backup/xtrabackup stream instead of compressing it. This skips decompression on restore, but the file can be roughly as large as the database's datadir, many times bigger than a compressed snapshot. Not available for PostgreSQL projects. See [Snapshots](../usage/database-management.md#snapshots) for when this unusual trade-off makes sense.
 * `--yes`, `-y`: Skip confirmation prompt.
+
+`ddev snapshot --list` also shows each snapshot's compression: `zstd`, `gzip`, or `none` for an uncompressed snapshot. If the project is a Git worktree and a sibling worktree of the same project has snapshots of its own, those are listed too, with a `Worktree` column naming which one each came from.
 
 Example:
 
@@ -1257,6 +1485,9 @@ ddev snapshot --name my_snapshot_name
 # Take a snapshot for the current project, cleaning up existing snapshots
 ddev snapshot --cleanup
 
+# Delete a single snapshot by name without deleting all snapshots
+ddev snapshot --cleanup --name my_snapshot_name
+
 # Take a snapshot for the current project, cleaning existing snapshots and skipping prompt
 ddev snapshot --cleanup -y
 
@@ -1265,14 +1496,21 @@ ddev snapshot --list
 
 # Take a snapshot for each project
 ddev snapshot --all
+
+# Take an uncompressed snapshot, trading disk space for a faster restore
+ddev snapshot --uncompressed
 ```
 
 ### `snapshot restore`
 
-Restores a database snapshot from the `.ddev/db_snapshots` directory.
+Restores a database snapshot, either by name from the `.ddev/db_snapshots` directory or
+by the path to a snapshot file elsewhere on disk. If the project is a Git worktree,
+snapshots from the same project checked out in other worktrees of the same repository
+are available too, whether picked interactively, restored by name, or via `--latest`.
 
 Flags:
 
+* `--force`, `-f`: Restore a snapshot made by a different version of the same database server, which may not succeed.
 * `--latest`: Use the latest snapshot.
 
 Example:
@@ -1283,6 +1521,23 @@ ddev snapshot restore --latest
 
 # Restore the previously-taken `my_snapshot_name` snapshot
 ddev snapshot restore my_snapshot_name
+
+# Restore a snapshot taken on an older version of the same database server
+ddev snapshot restore --force my_snapshot_name
+
+# Restore a snapshot file from outside the project
+ddev snapshot restore ~/tmp/mysnapshot-mariadb_11.8.zst
+```
+
+A snapshot normally has to match the project's configured database type and version exactly. `--force` lifts that for a different version of the same server, which the underlying restore doesn't itself check for; the database may fail to come up, in which case [`ddev start --reset-database`](../usage/database-management.md#starting-over-with-a-new-database) starts over. Restoring across database types (a MySQL snapshot into MariaDB, say) is still refused.
+
+## `spark`
+
+Run the `spark` command; available only in projects of type `codeigniter`, and only available if `spark` is in the project root.
+
+```shell
+# Show all spark subcommands
+ddev spark list
 ```
 
 ## `ssh`
@@ -1320,10 +1575,16 @@ ddev ssh -d /var/www/html
 
 Start a DDEV project.
 
+If you run `ddev start` in a directory that has no DDEV project but looks like a web project, DDEV shows the configuration `ddev config --auto` would create (name, URL, project type, docroot, PHP version, database, and web server) and asks whether to use it, customize it with the `ddev config` questions, or cancel. DDEV recognizes a directory as a web project when it detects a supported project type, or finds a `composer.json`, a `package.json`, or an `index.php` or `index.html` at the root or in a common docroot such as `web` or `public`. Without a terminal to ask in, as in CI or a script, or with `--skip-confirmation` (`-y`), `ddev start` doesn't configure anything; use `ddev config --auto && ddev start` there instead.
+
 Flags:
 
 * `--all`, `-a`: Start all projects.
-* `--profiles=<optional-compose-profile-list>`: Start services labeled with the Docker Compose profiles in comma-separated list of profiles.
+* `--no-cache`: Rebuild custom Docker image layers without cache.
+* `--omit-snapshot`, `-O`: With `--reset-database`, skip the snapshot of the database being removed.
+* `--profiles`: Start optional comma-separated Docker Compose profiles.
+* `--reset-database`: Remove the project's existing database and start over with a new one.
+* `--seed-snapshot`: Seed a brand-new database volume from this snapshot name or file, instead of the stock starter database.
 * `--skip-confirmation`, `-y`: Skip any confirmation steps.
 
 Example:
@@ -1332,12 +1593,23 @@ Example:
 # Start the current project
 ddev start
 
+# Start the current project without using Docker cache
+ddev start --no-cache
+
 # Start my-project and my-other-project
 ddev start my-project my-other-project
 
 # Start all projects
 ddev start --all
+
+# Throw away the current database and start over with a new, empty one
+ddev start --reset-database
+
+# Start over with a database seeded from a snapshot instead
+ddev start --reset-database --seed-snapshot=my_snapshot_name
 ```
+
+See [Seeding a Fresh Database from a Snapshot](../usage/database-management.md#seeding-a-fresh-database-from-a-snapshot) and [Starting Over with a New Database](../usage/database-management.md#starting-over-with-a-new-database).
 
 ## `stop`
 
@@ -1384,6 +1656,28 @@ Example:
 ddev tableplus
 ```
 
+## `tablepro`
+
+Open [TablePro](https://tablepro.app) with the current project’s database (global shell host container command). This command is only available if `TablePro.app` is installed as `/Applications/TablePro.app`.
+
+Example:
+
+```shell
+# Open the current project’s database in TablePro
+ddev tablepro
+```
+
+## `tui`
+
+Launch the [interactive TUI dashboard](../usage/cli.md#interactive-dashboard).
+
+Example:
+
+```shell
+# Launch DDEV TUI
+ddev tui
+```
+
 ## `typo3`
 
 Run the `typo3` command; available only in projects of type `typo3`, and only works if `typo3` is in the `$PATH` inside the container; normally it's in `vendor/bin/typo3` so will be found.
@@ -1399,6 +1693,29 @@ ddev typo3 site:show
 
 A collection of utility and debugging commands, often useful for [troubleshooting](troubleshooting.md).
 
+### `utility addon-update-checker`
+
+Fetch and run the DDEV add-on update checker script from [https://ddev.com/s/addon-update-checker.sh](https://ddev.com/s/addon-update-checker.sh). This is a tool for add-on developers to verify their add-on's scripts and tooling are up to date with the [`ddev-addon-template`](https://github.com/ddev/ddev-addon-template).
+
+If the target directory contains `install.yaml`, the checker runs there. Otherwise, it scans immediate subdirectories for `install.yaml` and runs the checker in each one, which is useful when working in a workspace with multiple add-ons checked out alongside each other.
+
+Flags:
+
+* `--dir`, `-d`: Directory of the add-on to check, or a workspace containing multiple add-on directories (defaults to current directory).
+
+Example:
+
+```shell
+# Run in the current add-on directory
+ddev utility addon-update-checker
+
+# Run in a specific add-on directory
+ddev utility addon-update-checker -d /path/to/my-addon
+
+# Run across all add-ons in a workspace
+ddev utility addon-update-checker -d /path/to/my-addons-workspace
+```
+
 ### `utility cd`
 
 Uses shell built-in `cd` to change to a project directory. For example, `ddevcd some-project` will change directories to the project root of the project named `some-project`.
@@ -1410,6 +1727,27 @@ Note that this command can't work until you make a small addition to your `.bash
 ddev utility cd
 # Where some-project is a project from the `ddev list`
 ddevcd some-project
+```
+
+### `utility check-custom-config`
+
+Display custom configuration files in the current project's `.ddev` directory.
+
+By default, shows only files that would warn on startup: user-created files and files with an unexpected `#ddev-generated` marker. Recognized add-on files and files with a `#ddev-silent-no-warn` marker are excluded.
+
+Flags:
+
+* `--all`: Show all custom configuration, annotating files with:
+    * `(add-on <name>)` for files installed by a named add-on
+    * `(#ddev-generated)` for add-on files that also carry a `#ddev-generated` marker
+    * `(unexpected #ddev-generated)` for files with a `#ddev-generated` marker not recognized as a DDEV or add-on file
+    * `(#ddev-silent-no-warn)` for files silenced with a `#ddev-silent-no-warn` marker
+
+```shell
+# Show only files that would warn on startup
+ddev utility check-custom-config
+# Show all files including add-on, unexpected #ddev-generated, and silenced files
+ddev utility check-custom-config --all
 ```
 
 ### `utility check-db-match`
@@ -1467,6 +1805,27 @@ ddev utility configyaml --omit-keys=web_environment
 ddev utility configyaml --full-yaml --omit-keys=web_environment
 ```
 
+### `utility delete-volume`
+
+Delete a Docker volume belonging to the current project, identified by either its short docker-compose name (e.g. `solr`) or its full Docker volume name (e.g. `ddev-myproject_solr`). If no name is given, pick one from an interactive list of the project's volumes. If the project is running, you'll be asked to stop it first, since a container-mounted volume can't be removed. Shared volumes used by every project, like `ddev-global-cache`, can't be deleted with this command.
+
+Flags:
+
+* `--yes`, `-y`: Skip confirmation prompts.
+
+Example:
+
+```shell
+# Choose a volume to delete from an interactive list
+ddev utility delete-volume
+
+# Delete the "solr" volume for the current project, prompting for confirmation
+ddev utility delete-volume solr
+
+# Delete by full Docker volume name, skipping confirmation
+ddev utility delete-volume ddev-myproject_solr --yes
+```
+
 ### `utility diagnose`
 
 Run quick diagnostics on your DDEV installation and current project. This command provides concise, actionable output for common troubleshooting scenarios.
@@ -1508,6 +1867,47 @@ Example:
 ddev utility dockercheck
 ```
 
+### `utility download-ddev`
+
+Download the `ddev` and `ddev-hostname` binaries built by CI or a release, for testing a specific build without replacing your installed DDEV. It only downloads the binaries into a directory (`~/tmp/ddev-download-ddev/<version>` by default, so a download can't accidentally end up on `$PATH` or as a stray file in a Git checkout, and each build stays separate from the ones downloaded before it) and prints how to use them in the current shell; it does not modify your installed DDEV.
+
+Flags:
+
+* `--pr <number>`: Download the build from a pull request number
+* `--branch <name>`: Download the build from a branch name
+* `--commit <sha>`: Download the build from a commit SHA, full or abbreviated
+* `--tag <tag>`: Download a release tag, for example `v1.25.3`
+* `--stable`: Download the latest stable release (default `false`)
+* `--head`: Download the latest main build (default `false`)
+* `--output <dir>`, `-o <dir>`: Output directory, used as given (default: `~/tmp/ddev-download-ddev/<version>`, where `<version>` is the build, for example `pr-8611`, `v1.25.3`, or `main`)
+* `--os <os>`: OS override: `macos`, `linux`, or `windows` (default: current OS)
+* `--arch <arch>`: Architecture override: `amd64` or `arm64` (default: current architecture)
+* `--owner <owner>`: GitHub owner/org (default `ddev`; for PR builds this is the base repository, not a fork)
+* `--repo <repo>`: GitHub repository (default `ddev`)
+
+Note: Exactly one source flag (`--pr`, `--branch`, `--commit`, `--tag`, `--stable`, or `--head`) is required, and they are mutually exclusive.
+
+Releases and `main` builds are signed; PR and other branch builds are not. No source needs a GitHub token, but a [GitHub token](#add-on) avoids the low anonymous rate limit and downloads CI builds from GitHub directly rather than through nightly.link. If the GitHub API lookup fails, `--pr` falls back to the build links posted on the pull request, and `--head` to nightly.link's latest `main` build, which is sometimes out of date.
+
+Examples:
+
+```shell
+# Download this PR's build for your current OS and architecture into ~/tmp/ddev-download-ddev/pr-8611
+ddev utility download-ddev --pr 8611
+
+# Download the latest main build into ~/tmp/head
+ddev utility download-ddev --head --output ~/tmp/head
+
+# Download a specific released version
+ddev utility download-ddev --tag v1.25.3
+
+# Download the latest stable release
+ddev utility download-ddev --stable
+
+# Cross-download a macOS arm64 build of a branch
+ddev utility download-ddev --branch 20250101_feature --os macos --arch arm64 --output ~/tmp/ddev-macos-arm64
+```
+
 ### `utility download-images`
 
 Download the basic Docker images required by DDEV. This can be useful on a new machine to prevent `ddev start` or other commands having to download the various images.
@@ -1547,7 +1947,7 @@ ddev utility get-volume-db-version
 
 ### `utility gob-decode`
 
-Decode and display the contents of Go gob-encoded binary files used by DDEV, such as `.remote-config` files (remote configuration cache), `.amplitude.cache` files (analytics event cache), and sponsorship data files.
+Decode and display the contents of Go gob-encoded binary files used by DDEV, such as `.remote-config` files (remote configuration cache), `.amplitude.cache` files (analytics event cache), `.sponsorship-data` files (contributor sponsorship information), and `.addon-data` files (add-on registry cache).
 
 The decoder automatically detects the file type and uses the appropriate structure. The output is displayed as formatted JSON for readability.
 
@@ -1559,11 +1959,33 @@ Example:
 # Decode a remote config file
 ddev utility gob-decode $HOME/.ddev/.remote-config
 
+# Decode a sponsorship data file
+ddev utility gob-decode $HOME/.ddev/.sponsorship-data
+
+# Decode an add-on registry cache file
+ddev utility gob-decode $HOME/.ddev/.addon-data
+
 # Decode an amplitude cache file
 ddev utility gob-decode $HOME/.ddev/.amplitude.cache
 
 # Decode any gob file with path expansion
 ddev utility gob-decode ~/path/to/file.gob
+```
+
+### `utility hyperlink`
+
+Print a URL, or the URLs in piped text, as terminal hyperlinks when supported. Useful in [custom host commands](../extend/custom-commands.md).
+
+*(Hidden - show hidden utility commands with `ddev utility --show-hidden`)*
+
+Example:
+
+```shell
+# Print a URL as a link
+ddev utility hyperlink https://docs.ddev.com
+
+# Link the URLs in piped text
+echo "See https://docs.ddev.com" | ddev utility hyperlink
 ```
 
 ### `utility match-constraint`
@@ -1620,17 +2042,68 @@ Example:
 ddev utility mutagen sync list
 ```
 
+### `utility mutagen-diagnose`
+
+Diagnose Mutagen sync configuration and performance issues. This command analyzes your Mutagen setup and provides actionable recommendations for improving sync performance.
+
+The command checks:
+
+* Volume sizes and disk usage (warns if >5GB, critical if >10GB)
+* Upload directories configuration
+* Sync session status and problems
+* Large files being synced that could impact performance (>50MB)
+* Ignore pattern configuration
+
+**Flags:**
+
+* `--all`, `-a`: Show all Mutagen volumes system-wide instead of just the current project
+
+**Examples:**
+
+```shell
+# Diagnose the current project's Mutagen configuration
+ddev utility mutagen-diagnose
+
+# Show all Mutagen volumes across all projects
+ddev utility mutagen-diagnose --all
+```
+
+See the [Mutagen troubleshooting documentation](../install/performance.md#mutagen-troubleshooting) for more details.
+
+### `utility port-diagnose`
+
+Identify processes occupying ports needed by DDEV. When run inside a project directory, checks that project's configured ports (HTTP, HTTPS, Mailpit, XHGui). When run outside a project, checks the default ports 80 and 443. On WSL2, both the Linux and Windows sides are checked.
+
+Some port conflicts are only visible with elevated privileges (e.g. `docker-proxy` under rootful Docker CE). The tool will ask for permission before running any `sudo` command, showing the exact command it intends to run. Use `--allow-sudo` to pre-approve this without an interactive prompt.
+
+Flags:
+
+* `--allow-sudo`: Permit `sudo` use for elevated port detection without an interactive prompt.
+
+Example:
+
+```shell
+# Check ports for the current project (or defaults 80/443 outside a project)
+ddev utility port-diagnose
+# Allow sudo for elevated detection without interactive prompt
+ddev utility port-diagnose --allow-sudo
+```
+
+See also: [Troubleshooting port conflicts](troubleshooting.md#web-server-ports-already-occupied).
+
 ### `utility rebuild`
 
 *Alias: `utility refresh`.*
 
-Rebuilds the project's Docker cache with verbose output and restarts the project or the specified service.
+Rebuilds the project's Docker cache with verbose output and restarts the project or the specified services.
+
+Services that have a container get a new one with the rebuilt image. Rebuilding `web` restarts the whole project, with the optional services that were started.
 
 Flags:
 
 * `--all`, `-a`: Rebuild all services and restart the project.
 * `--cache`: Keep Docker cache.
-* `--service`, `-s`: Rebuild the specified service and restart it. (default `web`)
+* `--service`, `-s`: Rebuild these comma-separated services and restart them. (default `web`)
 
 Example:
 
@@ -1643,6 +2116,9 @@ ddev utility rebuild --cache
 
 # Rebuild the current project's db service without cache
 ddev utility rebuild --service db
+
+# Rebuild the current project's solr and redis services without cache
+ddev utility rebuild -s solr,redis
 
 # Rebuild the current project's all services without cache
 ddev utility rebuild --all
@@ -1658,7 +2134,7 @@ The downloaded content is displayed as formatted JSON to stdout. Optionally upda
 
 Flags:
 
-* `--type`, `-t`: Type of data to download: `remote-config` (default) or `sponsorship-data`.
+* `--type`, `-t`: Type of data to download: `remote-config` (default), `sponsorship-data`, or `addon-data`.
 * `--update-storage`: Update local cached storage file (default `true`).
 
 Examples:
@@ -1669,6 +2145,9 @@ ddev utility remote-data
 
 # Download sponsorship data without updating local storage
 ddev utility remote-data --type=sponsorship-data --update-storage=false
+
+# Download add-on registry data
+ddev utility remote-data --type=addon-data
 ```
 
 ### `utility test`
@@ -1693,6 +2172,38 @@ Example:
 ddev utility testcleanup
 ```
 
+### `utility tls-diagnose`
+
+Diagnose TLS/HTTPS certificate trust issues. Checks mkcert installation and `CAROOT` configuration, OS trust store installation, certificate file validity, and live HTTPS connectivity when a project is running.
+
+On WSL2, also checks WSL2-specific CA sharing requirements: whether `$CAROOT` points to the Windows filesystem, whether `CAROOT` is in `$WSLENV`, whether the Windows certificate store contains the mkcert CA, and whether Windows-side and WSL2-side CA fingerprints match.
+
+Example:
+
+```shell
+# Run from any directory for mkcert, trust store, and cert file checks
+ddev utility tls-diagnose
+
+# Run from a running project directory to also check live HTTPS connectivity
+cd my-project && ddev utility tls-diagnose
+```
+
+See also: [Browser Shows Certificate Error for DDEV Sites](troubleshooting.md#browser-certificate-error).
+
+### `utility xdebug-diagnose`
+
+Diagnose Xdebug configuration (experimental)
+
+Example:
+
+```shell
+# Run quick check
+ddev utility xdebug-diagnose
+
+# Run more complete interactive check
+ddev utility xdebug-diagnose --interactive
+```
+
 ## `version`
 
 Print DDEV and component versions.
@@ -1709,7 +2220,7 @@ ddev version
 
 ## `wp`
 
-Run the [WP-CLI `wp` command](https://wp-cli.org/); available only in projects of type `wordpress`.
+Run the [WP-CLI `wp` command](https://wp-cli.org/); available only in projects of type `wordpress` and `wp-bedrock`.
 
 ```shell
 # Install WordPress site using `wp core install`

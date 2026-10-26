@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,6 +29,7 @@ import (
 	"github.com/ddev/ddev/pkg/nodeps"
 	"github.com/ddev/ddev/pkg/output"
 	"github.com/ddev/ddev/pkg/testcommon"
+	"github.com/ddev/ddev/pkg/testsetup"
 	"github.com/ddev/ddev/pkg/util"
 	"github.com/ddev/ddev/pkg/versionconstants"
 	"github.com/google/uuid"
@@ -153,13 +156,13 @@ var (
 		// Full docs and management/upgrade at https://github.com/ddev/test-magento2
 		{
 			Name: "testpkgmagento2",
-			// echo "This is a junk" >pub/junk.txt && tar -czf .tarballs/testpkgmagento2_code_no_media.magento2.4.6-p4.tgz --exclude=.ddev --exclude=var --exclude=pub/media --exclude=.tarballs --exclude=app/etc/env.php .
-			SourceURL:                     "https://github.com/ddev/test-magento2/releases/download/2.4.6-p4/testpkgmagento2_code_no_media.magento2.4.6-p4.tgz",
+			// echo "This is a junk" >pub/junk.txt && tar -czf .tarballs/testpkgmagento2_code_no_media.magento2.4.9.tgz --exclude=.ddev --exclude=var --exclude=pub/media --exclude=.tarballs --exclude=app/etc/env.php .
+			SourceURL:                     "https://github.com/ddev/test-magento2/releases/download/2.4.9/testpkgmagento2_code_no_media.magento2.4.9.tgz",
 			ArchiveInternalExtractionPath: "",
-			// ddev export-db --gzip=false --file=.tarballs/db.sql && tar -czf .tarballs/testpkgmagento2.magento2.4.6-p4.db.tgz -C .tarballs db.sql
-			DBTarURL: "https://github.com/ddev/test-magento2/releases/download/2.4.6-p4/testpkgmagento2.magento2.4.6-p4.db.tgz",
-			// tar -czf .tarballs/testpkgmagento2_files.magento2.4.6-p4.tgz -C pub/media .
-			FilesTarballURL:           "https://github.com/ddev/test-magento2/releases/download/2.4.6-p4/testpkgmagento2_files.magento2.4.6-p4.tgz",
+			// ddev export-db --gzip=false --file=.tarballs/db.sql && tar -czf .tarballs/testpkgmagento2.magento2.4.9.db.tgz -C .tarballs db.sql
+			DBTarURL: "https://github.com/ddev/test-magento2/releases/download/2.4.9/testpkgmagento2.magento2.4.9.db.tgz",
+			// tar -czf .tarballs/testpkgmagento2_files.magento2.4.9.tgz -C pub/media .
+			FilesTarballURL:           "https://github.com/ddev/test-magento2/releases/download/2.4.9/testpkgmagento2_files.magento2.4.9.tgz",
 			FullSiteTarballURL:        "",
 			Docroot:                   "pub",
 			Type:                      nodeps.AppTypeMagento2,
@@ -272,14 +275,15 @@ var (
 		// 14: Silverstripe
 		{
 			Name:                          "TestPkgSilverstripe",
-			SourceURL:                     "https://github.com/ddev/test-silverstripe/releases/download/1.0.0/silverstripe-base.tar.gz",
-			DBTarURL:                      "https://github.com/ddev/test-silverstripe/releases/download/1.0.0/db.tar.gz",
+			SourceURL:                     "https://github.com/ddev/test-silverstripe/releases/download/6.2.2/silverstripe-base.tar.gz",
+			DBTarURL:                      "https://github.com/ddev/test-silverstripe/releases/download/6.2.2/db.tar.gz",
 			ArchiveInternalExtractionPath: "",
 			FullSiteTarballURL:            "",
 			FilesTarballURL:               "",
 			Docroot:                       "public",
 			Type:                          nodeps.AppTypeSilverstripe,
-			DynamicURI:                    testcommon.URIWithExpect{URI: "/", Expect: "<meta name=\"generator\" content=\"Silverstripe CMS 5.0\">"},
+			Safe200URIWithExpectation:     testcommon.URIWithExpect{URI: "/_resources/themes/startup-theme/css/breadcrumbs.css", Expect: "Breadcrumb styles"},
+			DynamicURI:                    testcommon.URIWithExpect{URI: "/", Expect: "<meta name=\"generator\" content=\"Silverstripe CMS 6.2\">"},
 		},
 		// 15: CakePHP
 		{
@@ -300,10 +304,10 @@ var (
 		// 16: drupal11
 		{
 			Name:                          "TestPkgDrupal11",
-			SourceURL:                     "https://github.com/ddev/test-drupal11/archive/refs/tags/11.2.8.tar.gz",
-			ArchiveInternalExtractionPath: "test-drupal11-11.2.8/",
-			FilesTarballURL:               "https://github.com/ddev/test-drupal11/releases/download/11.2.8/files.tgz",
-			DBTarURL:                      "https://github.com/ddev/test-drupal11/releases/download/11.2.8/db.sql.tar.gz",
+			SourceURL:                     "https://github.com/ddev/test-drupal11/archive/refs/tags/11.3.2.tar.gz",
+			ArchiveInternalExtractionPath: "test-drupal11-11.3.2/",
+			FilesTarballURL:               "https://github.com/ddev/test-drupal11/releases/download/11.3.2/files.tgz",
+			DBTarURL:                      "https://github.com/ddev/test-drupal11/releases/download/11.3.2/db.sql.tar.gz",
 			FullSiteTarballURL:            "",
 			Type:                          nodeps.AppTypeDrupal11,
 			Docroot:                       "web",
@@ -352,6 +356,7 @@ var (
 		// 20: frankenphp
 		{
 			Name:                          "TestPkgFrankenPHP",
+			Disable:                       true,
 			SourceURL:                     "https://github.com/ddev/test-frankenphp/archive/refs/tags/11.1.2.tar.gz",
 			ArchiveInternalExtractionPath: "test-frankenphp-11.1.2/",
 			FilesTarballURL:               "https://github.com/ddev/test-frankenphp/releases/download/11.1.2/files.tgz",
@@ -364,17 +369,58 @@ var (
 			DynamicURI:                    testcommon.URIWithExpect{URI: "/node/3", Expect: "Super easy vegetarian pasta bake TEST PROJECT"},
 			FilesImageURI:                 "/sites/default/files/Logo.png",
 		},
+		// 21: CodeIgniter
+		{
+			Name:                          "TestPkgCodeigniter4",
+			SourceURL:                     "https://github.com/ddev/test-codeigniter/archive/refs/tags/0.0.2.tar.gz",
+			ArchiveInternalExtractionPath: "test-codeigniter-0.0.2/",
+			DBTarURL:                      "https://github.com/ddev/test-codeigniter/releases/download/0.0.2/db.sql.tar.gz",
+			Docroot:                       "public",
+			Type:                          nodeps.AppTypeCodeIgniter,
+			Safe200URIWithExpectation:     testcommon.URIWithExpect{URI: "/robots.txt", Expect: "User-agent: *"},
+			DynamicURI:                    testcommon.URIWithExpect{URI: "/", Expect: "Welcome to CodeIgniter"},
+		},
+		// 22: drupal12
+		{
+			Name:                          "TestPkgDrupal12",
+			SourceURL:                     "https://github.com/ddev/test-drupal12/archive/refs/tags/12.x-dev.tar.gz",
+			ArchiveInternalExtractionPath: "test-drupal12-12.x-dev/",
+			FilesTarballURL:               "https://github.com/ddev/test-drupal12/releases/download/12.x-dev/files.tgz",
+			DBTarURL:                      "https://github.com/ddev/test-drupal12/releases/download/12.x-dev/db.sql.tar.gz",
+			FullSiteTarballURL:            "",
+			Type:                          nodeps.AppTypeDrupal12,
+			Docroot:                       "web",
+			Safe200URIWithExpectation:     testcommon.URIWithExpect{URI: "/README.md", Expect: "Drupal is an open source content management platform"},
+			DynamicURI:                    testcommon.URIWithExpect{URI: "/recipes/super-easy-vegetarian-pasta-bake", Expect: "Super easy vegetarian pasta bake TEST PROJECT"},
+			FilesImageURI:                 "/sites/default/files/Logo.png",
+		},
+		// 23: modx (MODX Revolution 3.2.1)
+		// Fixture: MODX Revolution 3.2.1-pl (code with core/vendor/ committed, plus
+		// db.sql.tar.gz and files.tgz built by its build-fixtures.sh), hosted at
+		// https://github.com/ddev/test-modx (ddev-automated-test branch,
+		// release v3.2.1). Validated end-to-end with TestDdevFullSiteSetup.
+		// A MODX Revolution 2.x fixture can be added the same way.
+		{
+			Name:                          "TestPkgModx",
+			SourceURL:                     "https://github.com/ddev/test-modx/archive/refs/tags/v3.2.1.tar.gz",
+			ArchiveInternalExtractionPath: "test-modx-3.2.1/",
+			DBTarURL:                      "https://github.com/ddev/test-modx/releases/download/v3.2.1/db.sql.tar.gz",
+			FilesTarballURL:               "https://github.com/ddev/test-modx/releases/download/v3.2.1/files.tgz",
+			FullSiteTarballURL:            "",
+			Docroot:                       "",
+			Type:                          nodeps.AppTypeMODX,
+			Safe200URIWithExpectation:     testcommon.URIWithExpect{URI: "/README.md", Expect: "MODX"},
+			DynamicURI:                    testcommon.URIWithExpect{URI: "/", Expect: "MODX Revolution"},
+			FilesImageURI:                 "/assets/uploads/ddev.png",
+		},
 	}
 
 	FullTestSites = TestSites
 )
 
 func init() {
-	// Make sets DDEV_BINARY_FULLPATH when building the executable
-	if os.Getenv("DDEV_BINARY_FULLPATH") != "" {
-		DdevBin = os.Getenv("DDEV_BINARY_FULLPATH")
-	}
-	if os.Getenv("DDEV_TEST_NO_BIND_MOUNTS") == "true" {
+	DdevBin = testsetup.MustResolveDdevBinary()
+	if nodeps.IsEnvTrue("DDEV_TEST_NO_BIND_MOUNTS") {
 		globalconfig.DdevGlobalConfig.NoBindMounts = true
 	}
 
@@ -536,9 +582,12 @@ func TestDdevStart(t *testing.T) {
 	})
 
 	// Make sure the -built Docker image exists before stop
-	webBuilt := ddevImages.GetWebImage() + "-" + site.Name + "-built"
-	dbBuilt := ddevImages.GetWebImage() + "-" + site.Name + "-built"
+	webBuilt := app.WebImage + "-" + site.Name + "-built"
 	exists, err := dockerutil.ImageExistsLocally(webBuilt)
+	assert.NoError(err)
+	assert.True(exists)
+	dbBuilt := ddevImages.GetDBImage(app.Database.Type, app.Database.Version) + "-" + site.Name + "-built"
+	exists, err = dockerutil.ImageExistsLocally(dbBuilt)
 	assert.NoError(err)
 	assert.True(exists)
 
@@ -706,6 +755,10 @@ func TestDdevStartCustomEntrypoint(t *testing.T) {
 
 // TestDdevStartMultipleHostnames tests start with multiple hostnames
 func TestDdevStartMultipleHostnames(t *testing.T) {
+	testcommon.UsesAllTestSites(t)
+	if nodeps.IsAppleSilicon() && dockerutil.IsDockerDesktop() && nodeps.IsEnvFalse("DDEV_RUN_TEST_ANYWAY") {
+		t.Skip("Skipping on Docker Desktop/Apple Silicon to ignore problems with 'connection reset by peer'")
+	}
 	assert := asrt.New(t)
 	app := &ddevapp.DdevApp{}
 
@@ -757,13 +810,24 @@ func TestDdevStartMultipleHostnames(t *testing.T) {
 			assert.True(check, "Container check on %s failed", containerType)
 		}
 
+		// Some sites, such as TYPO3, keep their static test content in the files tarball.
+		// TestPkgPHP has a tarball but, as type php, no upload_dirs to import it into.
+		if site.FilesTarballURL != "" && len(app.GetUploadDirs()) > 0 {
+			_, tarballPath, err := testcommon.GetCachedArchive(site.Name, "local-tarballs-files", "", site.FilesTarballURL)
+			require.NoError(t, err)
+			err = app.ImportFiles("", tarballPath, "")
+			require.NoError(t, err)
+		}
+
 		httpURLs, _, urls := app.GetAllURLs()
 		if globalconfig.GetCAROOT() == "" {
 			urls = httpURLs
 		}
 		t.Logf("Testing these URLs: %v", urls)
 		for _, testURL := range urls {
-			_, _ = testcommon.EnsureLocalHTTPContent(t, testURL+site.Safe200URIWithExpectation.URI, site.Safe200URIWithExpectation.Expect)
+			testcommon.AssertLocalHTTPContent(t, testURL+site.Safe200URIWithExpectation.URI, site.Safe200URIWithExpectation.Expect,
+				testcommon.WithMessagef("each configured hostname should serve the static test content"),
+			)
 		}
 
 		// Multiple projects can't run at the same time with the fqdns, so we need to clean
@@ -982,12 +1046,17 @@ func TestDdevXdebugEnabled(t *testing.T) {
 	sort.Strings(phpKeys)
 
 	// Test only the default version if GOTEST_SHORT is set
-	if os.Getenv("GOTEST_SHORT") != "" {
+	if testcommon.IsGotestShort(t) {
 		phpKeys = []string{nodeps.PHPDefault}
 	}
 
 	for _, v := range phpKeys {
 		app.PHPVersion = v
+		//TODO: php8.6: Remove exclusion when xdebug lands in PHP8.6
+		if v == nodeps.PHP86 {
+			t.Log("Skipping xdebug tests for PHP8.6 until xdebug lands in PHP8.6")
+			continue
+		}
 		t.Logf("Beginning Xdebug checks with Xdebug php%s\n", v)
 
 		err = app.Restart()
@@ -1044,7 +1113,9 @@ func TestDdevXdebugEnabled(t *testing.T) {
 			time.Sleep(time.Second)
 			t.Logf("Connecting to HTTP URL %s with Xdebug enabled, PHP version=%s time=%v", app.GetWebContainerDirectHTTPURL(), v, time.Now())
 			// Curl to the project's index.php or anything else
-			out, resp, err := testcommon.GetLocalHTTPResponse(t, app.GetWebContainerDirectHTTPURL(), 12)
+			out, resp, err := testcommon.GetLocalHTTPResponse(t, app.GetWebContainerDirectHTTPURL(),
+				testcommon.WithTimeout(12*time.Second),
+			)
 			if err != nil {
 				t.Logf("time=%v got resp %v output %s: %v", time.Now(), resp, out, err)
 				if resp != nil {
@@ -1195,6 +1266,7 @@ func TestStartWithoutDdevConfig(t *testing.T) {
 
 // TestGetApps tests the GetActiveProjects function to ensure it accurately returns a list of running applications.
 func TestGetApps(t *testing.T) {
+	testcommon.UsesAllTestSites(t)
 	assert := asrt.New(t)
 
 	// Start the apps.
@@ -1263,6 +1335,7 @@ func TestGetApps(t *testing.T) {
 
 // TestDdevImportDB tests the functionality that is called when "ddev import-db" is executed
 func TestDdevImportDB(t *testing.T) {
+	testcommon.SkipIfGotestShort(t)
 	assert := asrt.New(t)
 	app := &ddevapp.DdevApp{}
 	origDir, _ := os.Getwd()
@@ -1322,7 +1395,7 @@ func TestDdevImportDB(t *testing.T) {
 		app.Hooks = map[string][]ddevapp.YAMLTask{"post-import-db": {{"exec-host": "touch hello-post-import-db-" + app.Name}}, "pre-import-db": {{"exec-host": "touch hello-pre-import-db-" + app.Name}}}
 
 		// Test simple db loads.
-		for _, file := range []string{"users.sql", "users.mysql", "users.sql.gz", "users.sql.bz2", "users.sql.xz", "users.mysql.gz", "users.mysql.bz2", "users.mysql.xz", "users.sql.tar", "users.mysql.tar", "users.sql.tar.gz", "users.sql.tar.bz2", "users.sql.tar.xz", "users.mysql.tar.gz", "users.mysql.tar.xz", "users.sql.tgz", "users.mysql.tgz", "users.sql.zip", "users.mysql.zip", "users_with_USE_statement.sql"} {
+		for _, file := range []string{"users.sql", "users.mysql", "users.sql.gz", "users.sql.bz2", "users.sql.xz", "users.mysql.gz", "users.mysql.bz2", "users.mysql.xz", "users.sql.tar", "users.mysql.tar", "users.sql.tar.gz", "users.sql.tar.bz2", "users.sql.tar.xz", "users.mysql.tar.gz", "users.mysql.tar.xz", "users.sql.tgz", "users.mysql.tgz", "users.sql.zip", "users.mysql.zip", "users.sql.zst", "users.mysql.zst", "users.sql.tar.zst", "users.mysql.tar.zst", "users_with_USE_statement.sql"} {
 			p := filepath.Join(origDir, "testdata", t.Name(), dbType, file)
 			if !fileutil.FileExists(p) {
 				t.Logf("skipping %s because it does not exist", p)
@@ -1488,7 +1561,7 @@ func TestDdevImportDB(t *testing.T) {
 	})
 	assert.NoError(err, "Failed to check modern_mariadb collation, stderr=%s", stderr)
 	assert.NotContains(out, "utf8mb4_uca1400_ai_ci", "Modern MariaDB collation should have been replaced")
-	assert.Contains(out, "utf8mb4_unicode_ci", "Modern MariaDB collation should be replaced with utf8mb4_unicode_ci")
+	assert.Contains(out, "utf8mb4_unicode_520_ci", "Modern MariaDB collation should be replaced with utf8mb4_unicode_520_ci")
 
 	// Verify modern MySQL 8.0+ collation was replaced
 	out, stderr, err = app.Exec(&ddevapp.ExecOpts{
@@ -1497,7 +1570,7 @@ func TestDdevImportDB(t *testing.T) {
 	})
 	assert.NoError(err, "Failed to check modern_mysql collation, stderr=%s", stderr)
 	assert.NotContains(out, "utf8mb4_0900_ai_ci", "Modern MySQL collation should have been replaced")
-	assert.Contains(out, "utf8mb4_unicode_ci", "Modern MySQL collation should be replaced with utf8mb4_unicode_ci")
+	assert.Contains(out, "utf8mb4_unicode_520_ci", "Modern MySQL collation should be replaced with utf8mb4_unicode_520_ci")
 
 	// Test legacy collations (should be preserved as-is)
 	legacyCollationsFile := filepath.Join(origDir, "testdata", t.Name(), dbType, "legacy_collations.sql")
@@ -1657,18 +1730,10 @@ func checkImportDBImports(t *testing.T, app *ddevapp.DdevApp) {
 
 // TestDdevAllDatabases tests db import/export/snapshot/restore/start with supported database versions
 func TestDdevAllDatabases(t *testing.T) {
-	if dockerutil.IsColima() || dockerutil.IsLima() || dockerutil.IsRancherDesktop() {
-		t.Skip("Skipping on Lima/Colima/Rancher")
-	}
+	testcommon.SkipIfGotestShort(t)
 	assert := asrt.New(t)
 
 	dbVersions := nodeps.GetValidDatabaseVersions()
-
-	//Use a smaller list if GOTEST_SHORT
-	if os.Getenv("GOTEST_SHORT") != "" {
-		dbVersions = []string{"postgres:18", "postgres:17", "mariadb:11.4", "mariadb:10.11", "mariadb:10.6", "mysql:8.0", "mysql:8.4", "mysql:5.7"}
-		t.Logf("Using limited set of database servers because GOTEST_SHORT is set (%v)", dbVersions)
-	}
 
 	if dockerutil.IsPodman() || dockerutil.IsDockerRootless() {
 		// Works locally but fails in CI.
@@ -1816,7 +1881,7 @@ func TestDdevAllDatabases(t *testing.T) {
 		}
 
 		snapshotName := dbType + "_" + dbVersion + "_" + fileutil.RandomFilenameBase()
-		fullSnapshotName, err := app.Snapshot(snapshotName)
+		fullSnapshotName, err := app.Snapshot(snapshotName, false)
 		if err != nil {
 			dumpDir := fmt.Sprintf("~/%s-broken-%s", t.Name(), util.RandString(5))
 			_, _ = exec.RunHostCommand(`bash`, `-c`, fmt.Sprintf("cp -r %s %s", app.AppRoot, dumpDir))
@@ -1843,7 +1908,7 @@ func TestDdevAllDatabases(t *testing.T) {
 		})
 		assert.NoError(err)
 
-		err = app.RestoreSnapshot(fullSnapshotName)
+		err = app.RestoreSnapshot(fullSnapshotName, false)
 		assert.NoError(err, "could not restore snapshot %s for %s: %v", fullSnapshotName, dbTypeVersion, err)
 		if err != nil {
 			_ = app.Stop(true, false)
@@ -1899,14 +1964,82 @@ func TestDdevAllDatabases(t *testing.T) {
 		out = strings.Trim(out, "\n\r ")
 		assert.Equal("2", out)
 
+		// Seeding a fresh database volume from a snapshot, both from the reserved
+		// `seed` name and from an explicitly named one. MariaDB/MySQL 5.5 can't
+		// make the zstd snapshots this relies on.
+		if dbVersion != "5.5" {
+			// db currently has the 2-row "users" table from the snapshot restore
+			// above. Snapshotting it and then wiping the db volume and restarting
+			// should bring the same data back, ahead of the empty starter database.
+			for _, seedName := range []string{ddevapp.SeedSnapshotName, "explicit-seed"} {
+				_, err = app.Snapshot(seedName, false)
+				require.NoError(t, err, "could not create '%s' snapshot for %s", seedName, dbTypeVersion)
+			}
+
+			for _, seedFlag := range []string{"", "explicit-seed"} {
+				err = app.Stop(true, false)
+				require.NoError(t, err)
+				app.SeedSnapshot = seedFlag
+				err = app.Start()
+				require.NoError(t, err, "failed to start %s with --seed-snapshot=%s", dbTypeVersion, seedFlag)
+
+				out, _, err = app.Exec(&ddevapp.ExecOpts{
+					Service: "db",
+					Cmd:     c[dbType],
+				})
+				assert.NoError(err)
+				out = strings.Trim(out, "\n\r ")
+				assert.Equal("2", out, "--seed-snapshot=%s did not seed a fresh db volume for %s", seedFlag, dbTypeVersion)
+			}
+			app.SeedSnapshot = ""
+
+			// `seed` is a reserved name; clear it so the next dbTypeVersion
+			// iteration can create its own.
+			err = os.RemoveAll(app.GetConfigPath("db_snapshots"))
+			assert.NoError(err)
+		}
+
 		err = app.Stop(true, false)
 		assert.NoError(err)
 	}
 	runTime()
 }
 
-// TestDdevExportDB tests the functionality that is called when "ddev export-db" is executed
+// TestGetDBDumpCommand checks the mysqldump/mariadb-dump flags chosen for each
+// database type/version, in particular the MySQL 9.5+ gating for
+// --set-gtid-purged and --no-tablespaces.
+func TestGetDBDumpCommand(t *testing.T) {
+	app := &ddevapp.DdevApp{}
+
+	for _, tt := range []struct {
+		dbType   string
+		dbVer    string
+		expected string
+	}{
+		{nodeps.MySQL, nodeps.MySQL80, "mysqldump --single-transaction"},
+		{nodeps.MySQL, nodeps.MySQL84, "mysqldump --single-transaction"},
+		{nodeps.MySQL, "9.4", "mysqldump --single-transaction"},
+		{nodeps.MySQL, "9.5", "mysqldump --single-transaction --set-gtid-purged=OFF --no-tablespaces"},
+		{nodeps.MySQL, nodeps.MySQL97, "mysqldump --single-transaction --set-gtid-purged=OFF --no-tablespaces"},
+		{nodeps.MariaDB, nodeps.MariaDB104, "mysqldump --single-transaction"},
+		{nodeps.MariaDB, nodeps.MariaDB105, "mariadb-dump --single-transaction"},
+		{nodeps.MariaDB, nodeps.MariaDB1011, "mariadb-dump --single-transaction"},
+	} {
+		app.Database = ddevapp.DatabaseDesc{Type: tt.dbType, Version: tt.dbVer}
+		require.Equal(t, tt.expected, app.GetDBDumpCommand(), "dbType=%s dbVer=%s", tt.dbType, tt.dbVer)
+	}
+}
+
+// TestDdevExportDB tests the functionality that is called when "ddev export-db" is executed.
+//
+// Each database type gets one plain-text export, which exercises that type's
+// actual dump command (mariadb-dump w/ its tail workaround, mysqldump, or
+// pg_dump) and validates the resulting content. Compression formats,
+// overwrite-of-existing-file behavior, stdout export, and the multi-database
+// export/import chain are engine-agnostic, so they're only exercised once
+// (on MariaDB) rather than once per database type.
 func TestDdevExportDB(t *testing.T) {
+	testcommon.SkipIfGotestShort(t)
 	assert := asrt.New(t)
 	app := &ddevapp.DdevApp{}
 	testDir, _ := os.Getwd()
@@ -1929,15 +2062,18 @@ func TestDdevExportDB(t *testing.T) {
 		assert.NoError(err)
 	})
 
-	for _, dbType := range []string{nodeps.MariaDB, nodeps.Postgres} {
+	dbVersions := map[string]string{
+		nodeps.MariaDB:  nodeps.MariaDBDefaultVersion,
+		nodeps.MySQL:    nodeps.MySQL84,
+		nodeps.Postgres: nodeps.PostgresDefaultVersion,
+	}
+
+	for _, dbType := range []string{nodeps.MariaDB, nodeps.MySQL, nodeps.Postgres} {
 		err = app.Stop(true, false)
 		require.NoError(t, err)
 		app.Database = ddevapp.DatabaseDesc{
 			Type:    dbType,
-			Version: nodeps.MariaDBDefaultVersion,
-		}
-		if dbType == nodeps.Postgres {
-			app.Database.Version = nodeps.PostgresDefaultVersion
+			Version: dbVersions[dbType],
 		}
 		err = app.WriteConfig()
 		require.NoError(t, err)
@@ -1953,8 +2089,8 @@ func TestDdevExportDB(t *testing.T) {
 		err = fileutil.PurgeDirectory("tmp")
 		assert.NoError(err)
 
-		// Test that we can export-db to a plain file. This should be larger than
-		// the gzipped file we'll do next.
+		// Test that we can export-db to a plain file. This exercises this
+		// dbType's actual dump command.
 		err = app.ExportDB("tmp/users1.sql", "", "db")
 		assert.NoError(err)
 
@@ -1967,116 +2103,104 @@ func TestDdevExportDB(t *testing.T) {
 		assert.NoError(err)
 		assert.Contains(l, "ump complete")
 
-		// Now copy our (larger) users1.sql to users1.sql.gz
-		// so we can overwrite it and come out with a totally valid new file.
-		// Copy is used here instead of mv/rename because of Windows issues.
-		err = fileutil.CopyFile("tmp/users1.sql", "tmp/users1.sql.gz")
-		assert.NoError(err)
-
-		// Test that we can export-db to an existing gzipped file
-		err = app.ExportDB("tmp/users1.sql.gz", "gzip", "db")
-		assert.NoError(err)
-
-		// The new gzipped file should be less than 1K
-		f, err = os.Stat("tmp/users1.sql.gz")
-		assert.NoError(err)
-		assert.Less(f.Size(), int64(1500))
-
-		// Validate contents
-		err = archive.Ungzip("tmp/users1.sql.gz", "tmp")
-		assert.NoError(err)
 		stringFound, err := fileutil.FgrepStringInFile("tmp/users1.sql", "Table structure for table `users`")
 		assert.NoError(err)
 		if !stringFound {
 			stringFound, err = fileutil.FgrepStringInFile("tmp/users1.sql", "Name: users; Type: TABLE")
 			assert.NoError(err)
 		}
-		assert.True(stringFound)
+		assert.True(stringFound, "expected dump content not found for dbType=%s", dbType)
 
-		// Simple export-and-validate to various types of compression
-		cTypes := map[string]string{
-			"gzip":  "gz",
-			"bzip2": "bz2",
-			"xz":    "xz",
-		}
-		for cType, ext := range cTypes {
-			err = app.ExportDB("tmp/users1.sql."+ext, cType, "db")
+		// The remaining checks below (compression formats, overwrite behavior,
+		// stdout export, multi-database chain) don't depend on the database
+		// engine, so only run them once.
+		if dbType == nodeps.MariaDB {
+			// Copy the (larger) users1.sql to users1.sql.gz so we can overwrite it
+			// and come out with a totally valid new file. Copy is used here instead
+			// of mv/rename because of Windows issues.
+			err = fileutil.CopyFile("tmp/users1.sql", "tmp/users1.sql.gz")
 			assert.NoError(err)
-			switch cType {
-			case "gzip":
-				err = archive.Ungzip("tmp/users1.sql."+ext, "tmp")
-				assert.NoError(err)
-			case "bzip2":
-				err = archive.UnBzip2("tmp/users1.sql."+ext, "tmp")
-				assert.NoError(err)
-			case "xz":
-				err = archive.UnXz("tmp/users1.sql."+ext, "tmp")
-				assert.NoError(err)
-			}
 
+			// Test that we can export-db to an existing gzipped file
+			err = app.ExportDB("tmp/users1.sql.gz", "gzip", "db")
+			assert.NoError(err)
+
+			// The new gzipped file should be less than 1K
+			f, err = os.Stat("tmp/users1.sql.gz")
+			assert.NoError(err)
+			assert.Less(f.Size(), int64(1500))
+
+			// Validate contents
+			err = archive.Ungzip("tmp/users1.sql.gz", "tmp")
+			assert.NoError(err)
 			stringFound, err = fileutil.FgrepStringInFile("tmp/users1.sql", "Table structure for table `users`")
 			assert.NoError(err)
-			if !stringFound {
-				stringFound, err = fileutil.FgrepStringInFile("tmp/users1.sql", "Name: users; Type: TABLE")
-				assert.NoError(err)
+			assert.True(stringFound)
+
+			// Simple export-and-validate to various types of compression
+			cTypes := map[string]string{
+				"gzip":  "gz",
+				"bzip2": "bz2",
+				"xz":    "xz",
+				"zstd":  "zst",
 			}
-			assert.True(stringFound, "expected info not found %s (%s)", cType, "tmp/users1.sql")
-		}
+			for cType, ext := range cTypes {
+				err = app.ExportDB("tmp/users1.sql."+ext, cType, "db")
+				assert.NoError(err)
+				switch cType {
+				case "gzip":
+					err = archive.Ungzip("tmp/users1.sql."+ext, "tmp")
+					assert.NoError(err)
+				case "bzip2":
+					err = archive.UnBzip2("tmp/users1.sql."+ext, "tmp")
+					assert.NoError(err)
+				case "xz":
+					err = archive.UnXz("tmp/users1.sql."+ext, "tmp")
+					assert.NoError(err)
+				case "zstd":
+					err = archive.UnZstd("tmp/users1.sql."+ext, "tmp")
+					assert.NoError(err)
+				}
 
-		// Flush needs to be complete before purge or may conflict with Mutagen on windows
-		err = app.MutagenSyncFlush()
-		assert.NoError(err)
-		err = fileutil.PurgeDirectory("tmp")
-		assert.NoError(err)
+				stringFound, err = fileutil.FgrepStringInFile("tmp/users1.sql", "Table structure for table `users`")
+				assert.NoError(err)
+				assert.True(stringFound, "expected info not found %s (%s)", cType, "tmp/users1.sql")
+			}
 
-		// Export to an ungzipped file and validate
-		err = app.ExportDB("tmp/users2.sql", "", "db")
-		assert.NoError(err)
-
-		// Validate contents
-		stringFound, err = fileutil.FgrepStringInFile("tmp/users2.sql", "Table structure for table `users`")
-		assert.NoError(err)
-		if !stringFound {
-			stringFound, err = fileutil.FgrepStringInFile("tmp/users2.sql", "Name: users; Type: TABLE")
+			// Flush needs to be complete before purge or may conflict with Mutagen on windows
+			err = app.MutagenSyncFlush()
 			assert.NoError(err)
+			err = fileutil.PurgeDirectory("tmp")
+			assert.NoError(err)
+
+			// Capture to stdout without gzip compression
+			stdout := util.CaptureStdOut()
+			err = app.ExportDB("", "", "db")
+			assert.NoError(err)
+			o := stdout()
+			assert.Regexp(regexp.MustCompile("CREATE TABLE.*users"), o)
+
+			// Export an alternate database
+			err = app.ImportDB(importPath, "", false, false, "anotherdb")
+			require.NoError(t, err, `unable to ImportDB(%s, "", false, false anotherdb) with dbType=%s`, importPath, dbType)
+			err = app.ExportDB("tmp/anotherdb.sql.gz", "gzip", "anotherdb")
+			require.NoError(t, err, `dbType=%v: unable to ExportDB("/tmp/anotherdb.sql.gz", "gzip"", "anotherdb")`, dbType)
+			anotherdbPath := "tmp/anotherdb.sql.gz"
+			err = app.ImportDB(anotherdbPath, "", false, false, "thirddb")
+			require.NoError(t, err, `dbType=%v: unable to importDB importPath=%s targetDB=thirddb`, dbType, anotherdbPath)
+
+			out, stderr, err := app.Exec(&ddevapp.ExecOpts{
+				Service: "db",
+				Cmd:     fmt.Sprintf(`echo "SELECT COUNT(*) FROM users;" | %s -N thirddb`, app.GetDBClientCommand()),
+			})
+			assert.NoError(err, "stdout=%s stderr=%s", out, stderr)
+			out = strings.Trim(out, "\n")
+			out = strings.Trim(out, " ")
+			assert.Equal("2", out)
 		}
-		assert.True(stringFound)
 
-		err = app.MutagenSyncFlush()
+		err = app.Stop(true, false)
 		assert.NoError(err)
-
-		err = fileutil.PurgeDirectory("tmp")
-		assert.NoError(err)
-
-		// Capture to stdout without gzip compression
-		stdout := util.CaptureStdOut()
-		err = app.ExportDB("", "", "db")
-		assert.NoError(err)
-		o := stdout()
-		assert.Regexp(regexp.MustCompile("CREATE TABLE.*users"), o)
-
-		// Export an alternate database
-		importPath = filepath.Join(testDir, "testdata", t.Name(), dbType, "users.sql")
-		err = app.ImportDB(importPath, "", false, false, "anotherdb")
-		require.NoError(t, err, `unable to ImportDB(%s, "", false, false anotherdb) with dbType=%s`, dbType)
-		err = app.ExportDB("tmp/anotherdb.sql.gz", "gzip", "anotherdb")
-		require.NoError(t, err, `dbType=%v: unable to ExportDB("/tmp/anotherdb.sql.gz", "gzip"", "anotherdb")`, dbType)
-		importPath = "tmp/anotherdb.sql.gz"
-		err = app.ImportDB(importPath, "", false, false, "thirddb")
-		require.NoError(t, err, `dbType=%v: unable to importDB importPath=%s targetDB=thirddb`, dbType, importPath)
-
-		c := map[string]string{
-			nodeps.MariaDB:  fmt.Sprintf(`echo "SELECT COUNT(*) FROM users;" | %s -N thirddb`, app.GetDBClientCommand()),
-			nodeps.Postgres: `echo "SELECT COUNT(*) FROM users;" | psql -t -q thirddb`,
-		}
-		out, stderr, err := app.Exec(&ddevapp.ExecOpts{
-			Service: "db",
-			Cmd:     c[dbType],
-		})
-		assert.NoError(err, "stdout=%s stderr=%s", out, stderr)
-		out = strings.Trim(out, "\n")
-		out = strings.Trim(out, " ")
-		assert.Equal("2", out)
 	}
 
 	runTime()
@@ -2085,9 +2209,11 @@ func TestDdevExportDB(t *testing.T) {
 // TestWebserverMariaMySQLDBClient tests functionality of mysql/mariadb
 // database clients in the ddev-webserver
 func TestWebserverMariaMySQLDBClient(t *testing.T) {
+	testcommon.SkipIfGotestShort(t)
+
 	assert := asrt.New(t)
 
-	serverVersions := []string{"mysql:5.7", "mysql:8.0", "mysql:8.4", "mariadb:10.11", "mariadb:10.6", "mariadb:11.4", "mariadb:11.8"}
+	serverVersions := []string{"mysql:5.7", "mysql:8.0", "mysql:8.4", "mysql:9.7", "mariadb:10.11", "mariadb:10.6", "mariadb:11.4", "mariadb:11.8", "mariadb:12.3"}
 
 	if dockerutil.IsPodman() || dockerutil.IsDockerRootless() {
 		// Works locally but fails in CI.
@@ -2174,13 +2300,16 @@ func TestWebserverMariaMySQLDBClient(t *testing.T) {
 			// Search for CHANGE_MARIADB_CLIENT to update related code.
 			if dbType == nodeps.MariaDB {
 				// For MariaDB, we have installed the 11.8 client by default.
-				expectedClientVersion = "11.8"
+				// But for anything below 10.11 we install the 10.11 client.
+				expectedClientVersion = "10.11"
 				// Add MariaDB versions that can have their own client here:
 				switch dbVersion {
-				case nodeps.MariaDB1011:
-					expectedClientVersion = "10.11"
 				case nodeps.MariaDB114:
 					expectedClientVersion = "11.4"
+				case nodeps.MariaDB118:
+					expectedClientVersion = "11.8"
+				case nodeps.MariaDB123:
+					expectedClientVersion = "12.3"
 				}
 			}
 			// Output might be "mysql  Ver 8.0.36 for Linux on aarch64 (Source distribution)"
@@ -2249,6 +2378,7 @@ func TestWebserverMariaMySQLDBClient(t *testing.T) {
 // TestWebserverPostgresDBClient tests functionality of Postgres
 // database clients in the ddev-webserver
 func TestWebserverPostgresDBClient(t *testing.T) {
+	testcommon.SkipUnlessDefaultEnvironment(t)
 	assert := asrt.New(t)
 
 	serverVersions := []string{"postgres:18", "postgres:17", "postgres:16"}
@@ -2364,10 +2494,7 @@ func readFileTail(fileName string, maxBytes int64) (string, error) {
 	}
 
 	// Read the last maxBytes or the entire file if it's smaller
-	bytesToRead := maxBytes
-	if stat.Size() < maxBytes {
-		bytesToRead = stat.Size()
-	}
+	bytesToRead := min(stat.Size(), maxBytes)
 
 	buf := make([]byte, bytesToRead)
 	start := stat.Size() - bytesToRead
@@ -2381,8 +2508,12 @@ func readFileTail(fileName string, maxBytes int64) (string, error) {
 // TestDdevFullSiteSetup tests a full import-db and import-files and then looks to see if
 // we have a spot-test success hit on a URL
 func TestDdevFullSiteSetup(t *testing.T) {
-	if os.Getenv("DDEV_RUN_TEST_ANYWAY") != "true" && (nodeps.IsWindows() || dockerutil.IsColima() || dockerutil.IsLima() || dockerutil.IsRancherDesktop()) {
+	testcommon.UsesAllTestSites(t)
+	if nodeps.IsEnvFalse("DDEV_RUN_TEST_ANYWAY") && (nodeps.IsWindows() || dockerutil.IsColima() || dockerutil.IsLima() || dockerutil.IsRancherDesktop()) {
 		t.Skip("Skipping on Windows/Lima/Colima/Rancher as this is tested adequately elsewhere")
+	}
+	if nodeps.IsAppleSilicon() && dockerutil.IsDockerDesktop() && nodeps.IsEnvFalse("DDEV_RUN_TEST_ANYWAY") {
+		t.Skip("Skipping on Docker Desktop/Apple Silicon to ignore problems with 'connection reset by peer'")
 	}
 	assert := asrt.New(t)
 	app := &ddevapp.DdevApp{}
@@ -2433,13 +2564,15 @@ func TestDdevFullSiteSetup(t *testing.T) {
 
 		// Validate Mailpit is working and "connected"
 		mailpitAPIURL := "http://" + app.GetHostname() + ":" + app.GetMailpitHTTPPort() + "/api/v1/messages"
-		_, _ = testcommon.EnsureLocalHTTPContent(t, mailpitAPIURL, `"total":0`)
+		testcommon.AssertLocalHTTPContent(t, mailpitAPIURL, `"total":0`,
+			testcommon.WithMessagef("Mailpit API should be connected and report zero messages initially"),
+		)
 
 		settingsLocation, err := app.DetermineSettingsPathLocation()
 		assert.NoError(err)
 
 		switch app.Type {
-		case nodeps.AppTypeCraftCms, nodeps.AppTypeShopware6, nodeps.AppTypeSymfony:
+		case nodeps.AppTypeCraftCms, nodeps.AppTypeCodeIgniter, nodeps.AppTypeShopware6, nodeps.AppTypeSymfony:
 			// Skip the check for the above types because they use app.SiteSettingsPath differently
 		default:
 			assert.Equal(filepath.Dir(settingsLocation), filepath.Dir(app.SiteSettingsPath))
@@ -2463,14 +2596,13 @@ func TestDdevFullSiteSetup(t *testing.T) {
 
 		// Test static content.
 		if site.Safe200URIWithExpectation.URI != "" {
-			_, err = testcommon.EnsureLocalHTTPContent(t, app.GetPrimaryURL()+site.Safe200URIWithExpectation.URI, site.Safe200URIWithExpectation.Expect)
-			if err != nil {
-				util.Warning("err: %v", err)
-			}
+			testcommon.AssertLocalHTTPContent(t, app.GetPrimaryURL()+site.Safe200URIWithExpectation.URI, site.Safe200URIWithExpectation.Expect,
+				testcommon.WithMessagef("project should serve the static test content"),
+			)
 		}
 		// Test dynamic URL + database content.
 		rawurl := app.GetPrimaryURL() + site.DynamicURI.URI
-		body, resp, err := testcommon.GetLocalHTTPResponse(t, rawurl, 120)
+		body, resp, err := testcommon.GetLocalHTTPResponse(t, rawurl, testcommon.WithTimeout(120*time.Second))
 		assert.NoError(err, "GetLocalHTTPResponse returned err on project=%s rawurl %s, resp=%v: %v", site.Name, rawurl, resp, err)
 		if err != nil && strings.Contains(err.Error(), "container ") {
 			logs, health, err := ddevapp.GetErrLogsFromApp(app, err)
@@ -2489,7 +2621,9 @@ func TestDdevFullSiteSetup(t *testing.T) {
 		}
 
 		// Make sure we can do a simple hit against the host-mount of web container.
-		_, _ = testcommon.EnsureLocalHTTPContent(t, app.GetWebContainerDirectHTTPURL()+site.Safe200URIWithExpectation.URI, site.Safe200URIWithExpectation.Expect)
+		testcommon.AssertLocalHTTPContent(t, app.GetWebContainerDirectHTTPURL()+site.Safe200URIWithExpectation.URI, site.Safe200URIWithExpectation.Expect,
+			testcommon.WithMessagef("web container host-mount should serve the static test content directly"),
+		)
 
 		// Project type 'php' should fail ImportFiles if no upload_dirs is provided
 		if app.Type == nodeps.AppTypePHP {
@@ -2601,12 +2735,8 @@ func TestWriteableFilesDirectory(t *testing.T) {
 	require.NoError(t, err)
 
 	// 2024-11-27: It seems that Lima the bind mount isn't exactly synchronous.
-	if dockerutil.IsLima() {
+	if dockerutil.IsLima() || dockerutil.IsColima() || dockerutil.IsRancherDesktop() || dockerutil.IsPodmanRootlessmacOS() {
 		time.Sleep(time.Second * 1)
-	}
-	// Rancher Desktop uses sshfs, which is the slowest possible
-	if dockerutil.IsRancherDesktop() {
-		time.Sleep(time.Second * 20)
 	}
 
 	out, _, err := app.Exec(&ddevapp.ExecOpts{
@@ -2650,6 +2780,7 @@ func TestWriteableFilesDirectory(t *testing.T) {
 
 // TestDdevImportFilesDir tests that "ddev import-files" can successfully import non-archive directories
 func TestDdevImportFilesDir(t *testing.T) {
+	testcommon.UsesAllTestSites(t)
 	assert := asrt.New(t)
 	origDir, _ := os.Getwd()
 	app := &ddevapp.DdevApp{}
@@ -2658,7 +2789,7 @@ func TestDdevImportFilesDir(t *testing.T) {
 	// Create a dummy directory to test non-archive imports
 	importDir := testcommon.CreateTmpDir(t.Name())
 	fileNames := make([]string, 0)
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		fileName := uuid.New().String()
 		fileNames = append(fileNames, fileName)
 
@@ -2726,6 +2857,7 @@ func TestDdevImportFilesDir(t *testing.T) {
 
 // TestDdevImportFiles tests the functionality that is called when "ddev import-files" is executed
 func TestDdevImportFiles(t *testing.T) {
+	testcommon.UsesAllTestSites(t)
 	origDir, _ := os.Getwd()
 	assert := asrt.New(t)
 	app := &ddevapp.DdevApp{}
@@ -2796,7 +2928,7 @@ func TestDdevImportFiles(t *testing.T) {
 
 		if app.GetUploadDir() != "" {
 			// Import trivial archive with various types of archive/compression and verify that files arrive
-			extensions := []string{"tgz", "zip", "tar.xz", "tar.bz2", "tar.gz"}
+			extensions := []string{"tgz", "zip", "tar.xz", "tar.bz2", "tar.gz", "tar.zst"}
 			for _, ext := range extensions {
 				tarballPath := filepath.Join(origDir, "testdata", t.Name(), "files."+ext)
 				_ = os.RemoveAll(filepath.Join(app.GetHostUploadDirFullPath(), "files."+ext+".txt"))
@@ -2827,6 +2959,7 @@ func TestDdevImportFiles(t *testing.T) {
 
 // TestDdevUploadDirNoPackage tests if the getUploadDir(s) returns what's expected for each app type.
 func TestDdevUploadDirNoPackage(t *testing.T) {
+	testcommon.UsesAllTestSites(t)
 	assert := asrt.New(t)
 	app := &ddevapp.DdevApp{}
 
@@ -2837,6 +2970,8 @@ func TestDdevUploadDirNoPackage(t *testing.T) {
 		nodeps.AppTypeDrupal6:      {"sites/default/files"},
 		nodeps.AppTypeDrupal7:      {"sites/default/files"},
 		nodeps.AppTypeDrupal11:     {"sites/default/files"},
+		nodeps.AppTypeDrupal12:     {"sites/default/files"},
+		nodeps.AppTypeJoomla:       {"images"},
 		nodeps.AppTypeShopware6:    {"media"},
 		nodeps.AppTypeBackdrop:     {"files"},
 		nodeps.AppTypeTYPO3:        {"fileadmin"},
@@ -2874,6 +3009,7 @@ func TestDdevUploadDirNoPackage(t *testing.T) {
 
 // TestDdevImportFilesCustomUploadDir ensures that files are imported to a custom upload directory when requested
 func TestDdevImportFilesCustomUploadDir(t *testing.T) {
+	testcommon.UsesAllTestSites(t)
 	assert := asrt.New(t)
 	app := &ddevapp.DdevApp{}
 
@@ -3005,6 +3141,32 @@ func TestDdevImportFilesCustomUploadDir(t *testing.T) {
 	}
 }
 
+// TestValidateUploadDirs verifies that an upload_dir escaping AppRoot is rejected,
+// while one that climbs out of the docroot but stays within AppRoot remains valid.
+func TestValidateUploadDirs(t *testing.T) {
+	assert := asrt.New(t)
+
+	testDir := testcommon.CreateTmpDir(t.Name())
+	t.Cleanup(func() {
+		_ = os.RemoveAll(testDir)
+	})
+
+	err := os.MkdirAll(filepath.Join(testDir, "web"), 0755)
+	require.NoError(t, err)
+
+	app, err := ddevapp.NewApp(testDir, false)
+	require.NoError(t, err)
+	app.Docroot = "web"
+
+	// A sibling of the docroot, still inside AppRoot, must remain valid.
+	app.UploadDirs = []string{"../private"}
+	assert.Equal([]string{"../private"}, app.GetUploadDirs())
+
+	// Anything that resolves outside AppRoot must be rejected.
+	app.UploadDirs = []string{"../../outside"}
+	assert.Empty(app.GetUploadDirs())
+}
+
 // TestUploadDirs tests the functionality of multiple upload directories
 // Requires a project where the docroot is in a subdirectory, as Drupal's 'web' directory.
 // It checks the DDEV_FILES_DIRS and DDEV_FILES_DIR environment variables
@@ -3106,16 +3268,29 @@ func TestDdevExec(t *testing.T) {
 	err = app.Init(site.Dir)
 	assert.NoError(err)
 
+	origWebEnvironment := app.WebEnvironment
+	origGlobalWebEnvironment := globalconfig.DdevGlobalConfig.WebEnvironment
 	t.Cleanup(func() {
 		app.Hooks = nil
+		app.WebEnvironment = origWebEnvironment
+		globalconfig.DdevGlobalConfig.WebEnvironment = origGlobalWebEnvironment
 		err = app.Stop(true, false)
 		assert.NoError(err)
 		err = app.WriteConfig()
 		assert.NoError(err)
 		_ = os.RemoveAll(filepath.Join(site.Dir, ".ddev", "docker-compose.busybox.yaml"))
+		_ = os.RemoveAll(filepath.Join(site.Dir, ".ddev", ".env.web.ddevexectest"))
 	})
 
 	app.Hooks = map[string][]ddevapp.YAMLTask{"post-exec": {{"exec-host": "touch hello-post-exec-" + app.Name}}, "pre-exec": {{"exec-host": "touch hello-pre-exec-" + app.Name}}}
+	app.WebEnvironment = append(app.WebEnvironment, "DDEV_TEST_EXEC_BARE", "DDEV_TEST_EXEC_OVERRIDE=project", "DDEV_TEST_EXEC_IN_ENV_FILE")
+	globalconfig.DdevGlobalConfig.WebEnvironment = append(slices.Clone(origGlobalWebEnvironment), "DDEV_TEST_EXEC_GLOBAL_BARE", "DDEV_TEST_EXEC_OVERRIDE=global")
+	err = os.WriteFile(filepath.Join(site.Dir, ".ddev", ".env.web.ddevexectest"), []byte("DDEV_TEST_EXEC_IN_ENV_FILE=file\n"), 0644)
+	require.NoError(t, err)
+	for _, name := range []string{"DDEV_TEST_EXEC_BARE", "DDEV_TEST_EXEC_GLOBAL_BARE", "DDEV_TEST_EXEC_IN_ENV_FILE", "AI_AGENT"} {
+		t.Setenv(name, "")
+		require.NoError(t, os.Unsetenv(name))
+	}
 
 	startErr := app.Start()
 	if startErr != nil {
@@ -3148,6 +3323,25 @@ func TestDdevExec(t *testing.T) {
 	})
 	assert.NoError(err)
 	assert.Contains(out, "/usr/local")
+
+	// Variables set on the host after start, as an agent does, reach the
+	// container on exec; a bare web_environment name reaches only web, and
+	// loses to an env file there, as it did at start.
+	t.Setenv("AI_AGENT", "ddev-test-agent")
+	t.Setenv("DDEV_TEST_EXEC_BARE", "project-value")
+	t.Setenv("DDEV_TEST_EXEC_GLOBAL_BARE", "global-value")
+	t.Setenv("DDEV_TEST_EXEC_IN_ENV_FILE", "host-value")
+	out, _, err = app.Exec(&ddevapp.ExecOpts{
+		Cmd: `echo "${AI_AGENT}:${DDEV_TEST_EXEC_BARE}:${DDEV_TEST_EXEC_GLOBAL_BARE}:${DDEV_TEST_EXEC_OVERRIDE}:${DDEV_TEST_EXEC_IN_ENV_FILE}"`,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "ddev-test-agent:project-value:global-value:project:file\n", out)
+	out, _, err = app.Exec(&ddevapp.ExecOpts{
+		Service: "busybox",
+		Cmd:     `echo "${AI_AGENT}:${DDEV_TEST_EXEC_BARE:-}:${DDEV_TEST_EXEC_GLOBAL_BARE:-}"`,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "ddev-test-agent::\n", out)
 
 	// Try out a execRaw example
 	out, _, err = app.Exec(&ddevapp.ExecOpts{
@@ -3189,9 +3383,14 @@ func TestDdevExec(t *testing.T) {
 	_, stderr, err = app.Exec(errorOpts)
 	assert.Error(err)
 	assert.Contains(stderr, "this: not found")
-	err = app.ExecWithTty(errorOpts)
+	// The Tty/NoCapture interactive path (used by `ddev ssh`) should also surface errors.
+	_, _, err = app.Exec(&ddevapp.ExecOpts{
+		Service:   "busybox",
+		Cmd:       "this is an error;",
+		Tty:       true,
+		NoCapture: true,
+	})
 	assert.Error(err)
-	assert.Contains(stderr, "this: not found")
 
 	// Now kill the busybox service and make sure that responses to app.Exec are correct
 	ctx, apiClient, err := dockerutil.GetDockerClient()
@@ -3367,7 +3566,7 @@ func TestDdevDescribe(t *testing.T) {
 			assert.EqualValues(app.GetPhpVersion(), desc["php_version"])
 
 			// Verify x-ddev.describe functionality
-			services, ok := desc["services"].(map[string]map[string]interface{})
+			services, ok := desc["services"].(map[string]map[string]any)
 			require.True(t, ok, "services should be a map[string]map[string]interface{}")
 			testservice, ok := services["testservice"]
 			require.True(t, ok, "testservice should exist in services")
@@ -3456,6 +3655,7 @@ func TestCleanupWithoutCompose(t *testing.T) {
 
 // TestGetAppsEmpty ensures that GetActiveProjects returns an empty list when no applications are running.
 func TestGetAppsEmpty(t *testing.T) {
+	testcommon.UsesAllTestSites(t)
 	assert := asrt.New(t)
 
 	// Ensure test sites are removed
@@ -3484,22 +3684,11 @@ func TestGetAppsEmpty(t *testing.T) {
 	assert.Equal(0, len(apps), "Expected to find no apps but found %d apps=%v", len(apps), apps)
 }
 
-// TestRouterNotRunning ensures the router is shut down after all sites are stopped.
-// This depends on TestGetAppsEmpty() having shut everything down.
-func TestRouterNotRunning(t *testing.T) {
-	assert := asrt.New(t)
-	containers, err := dockerutil.GetDockerContainers(false)
-	assert.NoError(err)
-
-	for _, c := range containers {
-		assert.NotEqual("ddev-router", dockerutil.ContainerName(&c), "ddev-router was not supposed to be running but it was")
-	}
-}
-
 type URLRedirectExpectations struct {
 	url                 string
 	uri                 string
 	expectedRedirectURI string
+	expectStatus        int
 }
 
 // TestAppdirAlreadyInUse tests trying to start a project in an already-used
@@ -3562,12 +3751,13 @@ func TestAppdirAlreadyInUse(t *testing.T) {
 // TestHttpsRedirection tests to make sure that webserver and php redirect to correct
 // scheme (http or https).
 func TestHttpsRedirection(t *testing.T) {
-	if nodeps.IsAppleSilicon() && os.Getenv("DDEV_RUN_TEST_ANYWAY") != "true" {
+	if nodeps.IsAppleSilicon() && nodeps.IsEnvFalse("DDEV_RUN_TEST_ANYWAY") {
 		t.Skip("Skipping on Apple Silicon to ignore problems with 'connection reset by peer'")
 	}
 	if globalconfig.GetCAROOT() == "" {
 		t.Skip("Skipping because MkcertCARoot is not set, no https")
 	}
+	testcommon.SkipUnlessDefaultEnvironment(t)
 
 	assert := asrt.New(t)
 	testcommon.ClearDockerEnv()
@@ -3593,24 +3783,24 @@ func TestHttpsRedirection(t *testing.T) {
 		_ = os.RemoveAll(testDir)
 	})
 
+	// redir_*.php use a 302; the /subdir trailing-slash redirect is a 301.
 	expectations := []URLRedirectExpectations{
-		{app.GetHTTPSURL(), "/redir_relative.php", "/landed.php"},
-		{app.GetHTTPURL(), "/redir_relative.php", "/landed.php"},
+		{app.GetHTTPSURL(), "/redir_relative.php", "/landed.php", http.StatusFound},
+		{app.GetHTTPURL(), "/redir_relative.php", "/landed.php", http.StatusFound},
 	}
 
 	// The simple redirect logic in `landed.php` and /subdir can only handle default ports 80 and 443
 	if app.GetPrimaryRouterHTTPSPort() == "443" && app.GetPrimaryRouterHTTPPort() == "80" {
-		expectations = append(expectations, URLRedirectExpectations{app.GetHTTPSURL(), "/redir_abs.php", "/landed.php"})
-		expectations = append(expectations, URLRedirectExpectations{app.GetHTTPURL(), "/redir_abs.php", "/landed.php"})
-		expectations = append(expectations, URLRedirectExpectations{app.GetHTTPSURL(), "/subdir", "/subdir/"})
-		expectations = append(expectations, URLRedirectExpectations{app.GetHTTPURL(), "/subdir", "/subdir/"})
+		expectations = append(expectations, URLRedirectExpectations{app.GetHTTPSURL(), "/redir_abs.php", "/landed.php", http.StatusFound})
+		expectations = append(expectations, URLRedirectExpectations{app.GetHTTPURL(), "/redir_abs.php", "/landed.php", http.StatusFound})
+		expectations = append(expectations, URLRedirectExpectations{app.GetHTTPSURL(), "/subdir", "/subdir/", http.StatusMovedPermanently})
+		expectations = append(expectations, URLRedirectExpectations{app.GetHTTPURL(), "/subdir", "/subdir/", http.StatusMovedPermanently})
 	}
 
 	projectTypes := ddevapp.GetValidAppTypes()
 	webserverTypes := []string{nodeps.WebserverNginxFPM, nodeps.WebserverApacheFPM}
-	if os.Getenv("GOTEST_SHORT") != "" {
+	if testcommon.IsGotestShort(t) {
 		projectTypes = []string{nodeps.AppTypePHP, nodeps.AppTypeDrupal11}
-		webserverTypes = []string{nodeps.WebserverNginxFPM, nodeps.WebserverApacheFPM}
 	}
 	for _, projectType := range projectTypes {
 		// TODO: Fix the Laravel config so it can do the redir_abs.php successfully on nginx-fpm
@@ -3639,8 +3829,10 @@ func TestHttpsRedirection(t *testing.T) {
 				reqURL := parts.url + parts.uri
 				// t.Logf("TestHttpsRedirection trying URL %s with webserver_type=%s", reqURL, webserverType)
 				// Add extra hit to avoid occasional nil result
-				_, _, _ = testcommon.GetLocalHTTPResponse(t, reqURL, 60)
-				out, resp, err := testcommon.GetLocalHTTPResponse(t, reqURL, 60)
+				out, resp, err := testcommon.GetLocalHTTPResponse(t, reqURL,
+					testcommon.WithExpectStatus(parts.expectStatus),
+					testcommon.WithMaxAttempts(2),
+				)
 
 				require.NotNil(t, resp, "resp was nil for projectType=%s webserver_type=%s url=%s, err=%v, out='%s'", projectType, webserverType, reqURL, err, out)
 				if resp != nil {
@@ -3809,76 +4001,85 @@ func TestGetWebContainerDirectURLsErrorHandling(t *testing.T) {
 	assert.Empty(httpsURL, "GetWebContainerDirectHTTPSURL should return an empty string when container doesn't exist")
 }
 
-// TestGetWebContainerDirectURLsWithGenericWebserver tests the behavior of GetWebContainerDirectHTTPURL and GetWebContainerDirectHTTPSURL
-// with a generic webserver type and web_extra_exposed_ports
+// TestGetWebContainerDirectURLsWithGenericWebserver checks that every URL DDEV reports for a
+// generic webserver project with web_extra_exposed_ports serves the project
 func TestGetWebContainerDirectURLsWithGenericWebserver(t *testing.T) {
+	if dockerutil.IsPodmanRootlessmacOS() {
+		t.Skip("Skipping: podman rootless on macOS cannot bind privileged ports 80/443")
+	}
 	assert := asrt.New(t)
 
-	// Create a temporary directory for a new app
 	testDir := testcommon.CreateTmpDir(t.Name())
 	defer testcommon.CleanupDir(testDir)
 	defer testcommon.Chdir(testDir)()
 
-	// Create a new app with generic webserver type
 	app, err := ddevapp.NewApp(testDir, true)
 	require.NoError(t, err)
+	// The name from t.Name() would make ddev-<name>-web too long a DNS label for the router
+	app.Name = "generic-direct-urls"
 	app.WebserverType = nodeps.WebserverGeneric
-	// Configure a web_extra_exposed_port that maps container port 3000 to HTTP port 80 and HTTPS port 443
 	app.WebExtraExposedPorts = []ddevapp.WebExposedPort{
 		{Name: "svelte", WebContainerPort: 3000, HTTPPort: 80, HTTPSPort: 443},
 	}
+	app.WebExtraDaemons = []ddevapp.WebExtraDaemon{
+		{Name: "php-server", Command: "php -S 0.0.0.0:3000", Directory: "/var/www/html"},
+	}
+	err = os.WriteFile(filepath.Join(testDir, "testfile.html"), []byte("generic webserver test content"), 0644)
+	require.NoError(t, err)
 	err = app.WriteConfig()
-	require.NoError(t, err)
-
-	// Start the app
-	err = app.Start()
-	require.NoError(t, err)
-
-	// Add a simple web server on port 3000 in the container
-	_, _, err = app.Exec(&ddevapp.ExecOpts{
-		Service: "web",
-		Cmd:     "cd /var/www/html && php -S 0.0.0.0:3000 &",
-	})
 	require.NoError(t, err)
 
 	t.Cleanup(func() {
 		err = app.Stop(true, false)
 		assert.NoError(err)
 	})
+	err = app.Start()
+	require.NoError(t, err)
 
-	// Verify that GetWebContainerDirectHTTPURL returns a valid URL using the WebContainerPort
 	httpURL := app.GetWebContainerDirectHTTPURL()
-	assert.NotEmpty(httpURL, "GetWebContainerDirectHTTPURL should return a non-empty URL")
-	assert.Contains(httpURL, "http://", "HTTP URL should start with http://")
-
-	// Verify that GetWebContainerDirectHTTPSURL returns a valid URL using the WebContainerPort
-	httpsURL := app.GetWebContainerDirectHTTPSURL()
-	assert.NotEmpty(httpsURL, "GetWebContainerDirectHTTPSURL should return a non-empty URL")
-	assert.Contains(httpsURL, "https://", "HTTPS URL should start with https://")
-
-	// Verify that the URLs contain the Docker IP
+	require.NotEmpty(t, httpURL, "a generic webserver should have a direct HTTP URL through its web_extra_exposed_ports")
 	dockerIP, err := dockerutil.GetDockerIP()
-	assert.NoError(err, "GetDockerIP should not return an error")
-	assert.Contains(httpURL, dockerIP, "HTTP URL should contain the Docker IP")
-	assert.Contains(httpsURL, dockerIP, "HTTPS URL should contain the Docker IP")
+	require.NoError(t, err)
+	require.Contains(t, httpURL, dockerIP)
 
-	// Debug information
-	t.Logf("HTTP URL: %s", httpURL)
-	t.Logf("HTTPS URL: %s", httpsURL)
+	httpURLs, _, urls := app.GetAllURLs()
+	if globalconfig.GetCAROOT() == "" {
+		urls = httpURLs
+	}
+	require.Contains(t, urls, httpURL)
+	t.Logf("Testing these URLs: %v", urls)
+	for _, u := range urls {
+		if !testcommon.AssertLocalHTTPContent(t, u+"/testfile.html", "generic webserver test content",
+			testcommon.WithMessagef("every reported URL should serve the project"),
+		) {
+			logRouterDiagnostics(t, app.Name, u+"/testfile.html")
+		}
+	}
+}
 
-	// Check if port 3000 is published
-	port3000, err := app.GetPublishedPortForPrivatePort("web", 3000)
-	t.Logf("Port 3000 published as: %d, err: %v", port3000, err)
+// logRouterDiagnostics records what the router had loaded when a URL check
+// failed, and whether a later request succeeds, to tell a route Traefik has not
+// loaded yet from a connection dropped by the Docker provider's port proxy.
+func logRouterDiagnostics(t *testing.T, projectName string, rawURL string) {
+	t.Helper()
+	router, err := ddevapp.FindDdevRouter()
+	if err != nil || router == nil {
+		t.Logf("router diagnostics: no router found: %v", err)
+		return
+	}
+	routes, stderr, err := dockerutil.Exec(router.ID, fmt.Sprintf(`curl -s "http://127.0.0.1:${TRAEFIK_MONITOR_PORT}/api/http/routers?search=%s"`, projectName), "0")
+	t.Logf("router diagnostics: Traefik routers matching %s (err=%v, stderr=%s):\n%s", projectName, err, stderr, routes)
+	t.Logf("router diagnostics: router config errors:\n%s", ddevapp.GetRouterConfigErrors())
+	logs, err := exec.RunHostCommand("docker", "logs", "--tail", "40", router.ID)
+	t.Logf("router diagnostics: last router log lines (err=%v):\n%s", err, logs)
 
-	// For generic webserver with web_extra_exposed_ports, we just need to verify that we get valid URLs
-	// The exact port mapping can vary, so we just check that the URLs are not empty and have the correct format
-	assert.NotEmpty(httpURL, "HTTP URL should not be empty")
-	assert.Contains(httpURL, "http://", "HTTP URL should start with http://")
-	assert.NotContains(httpURL, ":0", "HTTP URL should not contain port 0")
-
-	assert.NotEmpty(httpsURL, "HTTPS URL should not be empty")
-	assert.Contains(httpsURL, "https://", "HTTPS URL should start with https://")
-	assert.NotContains(httpsURL, ":0", "HTTPS URL should not contain port 0")
+	time.Sleep(5 * time.Second)
+	body, resp, err := testcommon.GetLocalHTTPResponse(t, rawURL)
+	status := 0
+	if resp != nil {
+		status = resp.StatusCode
+	}
+	t.Logf("router diagnostics: %s 5s later: status=%d err=%v body=%.200s", rawURL, status, err, body)
 }
 
 // TestGetWebContainerDirectURLsWithDockerIPError tests behavior when GetDockerIP returns an error
@@ -3943,6 +4144,10 @@ func TestGetWebContainerDirectURLsWithDockerIPError(t *testing.T) {
 // - nginx_full/nginx-site.conf version installed
 // - Actual headers from site when nginx/apache installed per TestSite
 func TestPHPWebserverType(t *testing.T) {
+	testcommon.UsesAllTestSites(t)
+	if nodeps.IsAppleSilicon() && dockerutil.IsDockerDesktop() && nodeps.IsEnvFalse("DDEV_RUN_TEST_ANYWAY") {
+		t.Skip("Skipping on Docker Desktop/Apple Silicon to ignore problems with 'connection reset by peer'")
+	}
 	assert := asrt.New(t)
 
 	for i, site := range TestSites {
@@ -4032,11 +4237,418 @@ func TestPHPWebserverType(t *testing.T) {
 	}
 }
 
+// TestWebserverMissingIndexExplanation checks that a docroot with no
+// index.php/index.html gets ddev-webserver's own explanations on both
+// nginx-fpm and apache-fpm (see 403.conf and 404.conf under
+// containers/ddev-webserver): an explanatory 404 with the X-Ddev-404-Source
+// header for a nonexistent file or .php file, an explanatory 403 with the
+// X-Ddev-403-Source header for the docroot itself, and a directory listing
+// wherever the project asked for one. An empty docroot is used rather than a
+// TestSite, whose front controller would answer with the app's own 404.
+// A nonexistent .php file is checked too: both webservers test the resolved
+// script with `-f` and reject it before php-fpm, so ddev-webserver's
+// explanation is shown instead of php-fpm's "No input file specified".
+func TestWebserverMissingIndexExplanation(t *testing.T) {
+	if nodeps.IsAppleSilicon() && dockerutil.IsDockerDesktop() && nodeps.IsEnvFalse("DDEV_RUN_TEST_ANYWAY") {
+		t.Skip("Skipping on Docker Desktop/Apple Silicon to ignore problems with 'connection reset by peer'")
+	}
+	assert := asrt.New(t)
+	packageDir, _ := os.Getwd()
+
+	testDir := testcommon.CreateTmpDir(t.Name())
+	appDir := filepath.Join(testDir, t.Name())
+	err := os.MkdirAll(appDir, 0755)
+	require.NoError(t, err)
+	err = os.Chdir(appDir)
+	require.NoError(t, err)
+
+	app, err := ddevapp.NewApp(appDir, true)
+	require.NoError(t, err)
+	app.Type = nodeps.AppTypePHP
+
+	t.Cleanup(func() {
+		err = app.Stop(true, false)
+		assert.NoError(err)
+		err = os.Chdir(packageDir)
+		assert.NoError(err)
+		_ = os.RemoveAll(testDir)
+	})
+
+	// A second directory with no index file, which the project turns listing on
+	// for in the way each webserver expects.
+	listingDir := filepath.Join(appDir, "listing")
+	err = os.MkdirAll(listingDir, 0755)
+	require.NoError(t, err)
+	err = os.WriteFile(filepath.Join(listingDir, "listed-file.txt"), []byte("listed"), 0644)
+	require.NoError(t, err)
+	err = os.WriteFile(filepath.Join(listingDir, ".htaccess"), []byte("Options +Indexes\n"), 0644)
+	require.NoError(t, err)
+	nginxConfigDir := filepath.Join(appDir, ".ddev", "nginx")
+	err = os.MkdirAll(nginxConfigDir, 0755)
+	require.NoError(t, err)
+	err = os.WriteFile(filepath.Join(nginxConfigDir, "listing.conf"), []byte("location /listing/ {\n    autoindex on;\n}\n"), 0644)
+	require.NoError(t, err)
+
+	for _, webserverType := range []string{nodeps.WebserverNginxFPM, nodeps.WebserverApacheFPM} {
+		app.WebserverType = webserverType
+		err = app.WriteConfig()
+		require.NoError(t, err)
+
+		testcommon.ClearDockerEnv()
+		startErr := app.Start()
+		if startErr != nil {
+			appLogs, health, getLogsErr := ddevapp.GetErrLogsFromApp(app, startErr)
+			assert.NoError(getLogsErr)
+			t.Fatalf("app.Start() failure for WebserverType=%s: err=%v, health:\n%s\n\nlogs:\n=====\n%s\n=====\n", webserverType, startErr, health, appLogs)
+		}
+
+		out, resp, err := testcommon.GetLocalHTTPResponse(t, app.GetWebContainerDirectHTTPURL()+"/this-does-not-exist.html", testcommon.WithExpectStatus(http.StatusNotFound))
+		require.NoError(t, err)
+		require.Contains(t, out, "ddev-webserver", "for WebserverType=%s expected ddev-webserver's own 404 explanation with no docroot index file present", webserverType)
+		require.NotEmpty(t, resp.Header.Get("X-Ddev-404-Source"), "for WebserverType=%s expected X-Ddev-404-Source header on a webserver-generated 404", webserverType)
+
+		phpOut, phpResp, err := testcommon.GetLocalHTTPResponse(t, app.GetWebContainerDirectHTTPURL()+"/this-does-not-exist.php", testcommon.WithExpectStatus(http.StatusNotFound))
+		require.NoError(t, err)
+		require.Contains(t, phpOut, "ddev-webserver", "for WebserverType=%s expected ddev-webserver's own 404 explanation for a nonexistent .php file", webserverType)
+		require.NotEmpty(t, phpResp.Header.Get("X-Ddev-404-Source"), "for WebserverType=%s expected X-Ddev-404-Source header on a webserver-generated 404", webserverType)
+
+		// The docroot exists but has no index file, so it must produce the 403.
+		out403, resp403, err := testcommon.GetLocalHTTPResponse(t, app.GetWebContainerDirectHTTPURL()+"/", testcommon.WithExpectStatus(http.StatusForbidden))
+		require.NoError(t, err)
+		require.Contains(t, out403, "ddev-webserver", "for WebserverType=%s expected ddev-webserver's own 403 explanation for a docroot with no index file", webserverType)
+		require.NotEmpty(t, resp403.Header.Get("X-Ddev-403-Source"), "for WebserverType=%s expected X-Ddev-403-Source header on a webserver-generated 403", webserverType)
+
+		// The explanation must not stand in for the missing index file, or the
+		// listing the project asked for could never happen.
+		testcommon.RequireLocalHTTPContent(t, app.GetWebContainerDirectHTTPURL()+"/listing/", "listed-file.txt")
+
+		err = app.Stop(true, false)
+		require.NoError(t, err)
+	}
+}
+
+// TestWebserverAppLevel404PassesThrough checks that a 404 the application
+// itself returns, with a body, reaches the client unchanged on nginx-fpm.
+//
+// nginx only intercepts a FastCGI error when an error_page exists for that
+// status, so the `error_page 404` in common.d/404.conf (see
+// TestWebserverMissingIndexExplanation) turned the `fastcgi_intercept_errors
+// on` that the magento, magento2 and maho templates carried from a no-op into
+// a rule that replaced every app-level 404 by ddev-webserver's own
+// explanation. Those three types are checked, with php as the control whose
+// template has always said off. The directive is nginx-only, so apache-fpm is
+// not exercised here.
+func TestWebserverAppLevel404PassesThrough(t *testing.T) {
+	if nodeps.IsAppleSilicon() && dockerutil.IsDockerDesktop() && nodeps.IsEnvFalse("DDEV_RUN_TEST_ANYWAY") {
+		t.Skip("Skipping on Docker Desktop/Apple Silicon to ignore problems with 'connection reset by peer'")
+	}
+	assert := asrt.New(t)
+	packageDir, _ := os.Getwd()
+
+	testDir := testcommon.CreateTmpDir(t.Name())
+	appDir := filepath.Join(testDir, t.Name())
+	err := os.MkdirAll(appDir, 0755)
+	require.NoError(t, err)
+	err = os.Chdir(appDir)
+	require.NoError(t, err)
+
+	app, err := ddevapp.NewApp(appDir, true)
+	require.NoError(t, err)
+	app.WebserverType = nodeps.WebserverNginxFPM
+	app.DisableSettingsManagement = true
+
+	t.Cleanup(func() {
+		err = app.Stop(true, false)
+		assert.NoError(err)
+		err = os.Chdir(packageDir)
+		assert.NoError(err)
+		_ = os.RemoveAll(testDir)
+	})
+
+	const marker = "app-level 404 with a body"
+	for _, tc := range []struct {
+		appType string
+		docroot string
+	}{
+		{nodeps.AppTypePHP, ""},
+		{nodeps.AppTypeMagento, ""},
+		{nodeps.AppTypeMagento2, "pub"},
+		{nodeps.AppTypeMaho, ""},
+	} {
+		docrootDir := filepath.Join(appDir, tc.docroot)
+		err = os.MkdirAll(docrootDir, 0755)
+		require.NoError(t, err)
+		err = os.WriteFile(filepath.Join(docrootDir, "index.php"), []byte("<?php\nhttp_response_code(404);\necho '"+marker+"';\n"), 0644)
+		require.NoError(t, err)
+
+		app.Type = tc.appType
+		app.Docroot = tc.docroot
+		err = app.WriteConfig()
+		require.NoError(t, err)
+
+		testcommon.ClearDockerEnv()
+		startErr := app.Start()
+		if startErr != nil {
+			appLogs, health, getLogsErr := ddevapp.GetErrLogsFromApp(app, startErr)
+			assert.NoError(getLogsErr)
+			t.Fatalf("app.Start() failure for Type=%s: err=%v, health:\n%s\n\nlogs:\n=====\n%s\n=====\n", tc.appType, startErr, health, appLogs)
+		}
+
+		// The route does not exist on disk, so the front controller answers it.
+		out, resp, err := testcommon.GetLocalHTTPResponse(t, app.GetWebContainerDirectHTTPURL()+"/route-handled-by-the-app", testcommon.WithExpectStatus(http.StatusNotFound))
+		require.NoError(t, err)
+		require.Contains(t, out, marker, "for Type=%s expected the app's own 404 body to pass through, got: %s", tc.appType, out)
+		require.Empty(t, resp.Header.Get("X-Ddev-404-Source"), "for Type=%s expected no X-Ddev-404-Source header on an app-generated 404", tc.appType)
+
+		err = app.Stop(true, false)
+		require.NoError(t, err)
+	}
+}
+
+// TestModxFriendlyURLs checks that the modx nginx template passes the request
+// path to index.php as ?q=, as MODX's .htaccess does on Apache
+// (RewriteRule ^(.*)$ index.php?q=$1 [L,QSA]). MODX resolves the resource from
+// q, so without it every friendly URL renders the site start page. The test
+// site's DynamicURI only requests /, which cannot catch that.
+func TestModxFriendlyURLs(t *testing.T) {
+	if nodeps.IsAppleSilicon() && dockerutil.IsDockerDesktop() && nodeps.IsEnvFalse("DDEV_RUN_TEST_ANYWAY") {
+		t.Skip("Skipping on Docker Desktop/Apple Silicon to ignore problems with 'connection reset by peer'")
+	}
+	assert := asrt.New(t)
+	packageDir, _ := os.Getwd()
+
+	testDir := testcommon.CreateTmpDir(t.Name())
+	appDir := filepath.Join(testDir, t.Name())
+	err := os.MkdirAll(appDir, 0755)
+	require.NoError(t, err)
+	err = os.Chdir(appDir)
+	require.NoError(t, err)
+
+	app, err := ddevapp.NewApp(appDir, true)
+	require.NoError(t, err)
+	app.Type = nodeps.AppTypeMODX
+	app.WebserverType = nodeps.WebserverNginxFPM
+	app.DisableSettingsManagement = true
+
+	t.Cleanup(func() {
+		err = app.Stop(true, false)
+		assert.NoError(err)
+		err = os.Chdir(packageDir)
+		assert.NoError(err)
+		_ = os.RemoveAll(testDir)
+	})
+
+	err = os.WriteFile(filepath.Join(appDir, "index.php"), []byte("<?php\necho 'q=' . ($_GET['q'] ?? '') . ' page=' . ($_GET['page'] ?? '');\n"), 0644)
+	require.NoError(t, err)
+	err = os.WriteFile(filepath.Join(appDir, "existing.txt"), []byte("served from disk"), 0644)
+	require.NoError(t, err)
+	err = app.WriteConfig()
+	require.NoError(t, err)
+
+	testcommon.ClearDockerEnv()
+	startErr := app.Start()
+	if startErr != nil {
+		appLogs, health, getLogsErr := ddevapp.GetErrLogsFromApp(app, startErr)
+		assert.NoError(getLogsErr)
+		t.Fatalf("app.Start() failure: err=%v, health:\n%s\n\nlogs:\n=====\n%s\n=====\n", startErr, health, appLogs)
+	}
+
+	baseURL := app.GetWebContainerDirectHTTPURL()
+	// The path goes to MODX as q, and the original query string is kept (QSA).
+	testcommon.RequireLocalHTTPContent(t, baseURL+"/news/first-article.html", "q=news/first-article.html page=")
+	testcommon.RequireLocalHTTPContent(t, baseURL+"/news/?page=2", "q=news/ page=2")
+	// Real files are still served directly.
+	testcommon.RequireLocalHTTPContent(t, baseURL+"/existing.txt", "served from disk")
+}
+
+// TestWebserverPathInfo checks that PATH_INFO reaches PHP for a URL carrying a
+// path after the script name, such as /pathinfo.php/one/two. nginx only sends it
+// when the PHP location regex admits the URL and fastcgi_param PATH_INFO is set;
+// apache derives it on its own. SimpleSAMLphp and WordPress PATHINFO permalinks
+// are the usual consumers. See ddev/ddev#3854 and ddev/ddev#4001.
+func TestWebserverPathInfo(t *testing.T) {
+	testcommon.SkipUnlessDefaultEnvironment(t)
+	assert := asrt.New(t)
+	packageDir, _ := os.Getwd()
+
+	testDir := testcommon.CreateTmpDir(t.Name())
+	appDir := filepath.Join(testDir, t.Name())
+	err := os.MkdirAll(appDir, 0755)
+	require.NoError(t, err)
+	err = os.Chdir(appDir)
+	require.NoError(t, err)
+
+	app, err := ddevapp.NewApp(appDir, true)
+	require.NoError(t, err)
+	app.Type = nodeps.AppTypePHP
+
+	t.Cleanup(func() {
+		err = app.Stop(true, false)
+		assert.NoError(err)
+		err = os.Chdir(packageDir)
+		assert.NoError(err)
+		_ = os.RemoveAll(testDir)
+	})
+
+	err = os.WriteFile(filepath.Join(appDir, "pathinfo.php"),
+		[]byte(`<?php echo "PATH_INFO=[" . ($_SERVER["PATH_INFO"] ?? "") . "]";`), 0644)
+	require.NoError(t, err)
+
+	for _, webserverType := range []string{nodeps.WebserverNginxFPM, nodeps.WebserverApacheFPM} {
+		app.WebserverType = webserverType
+		err = app.WriteConfig()
+		require.NoError(t, err)
+
+		testcommon.ClearDockerEnv()
+		startErr := app.Start()
+		if startErr != nil {
+			appLogs, health, getLogsErr := ddevapp.GetErrLogsFromApp(app, startErr)
+			assert.NoError(getLogsErr)
+			t.Fatalf("app.Start() failure for WebserverType=%s: err=%v, health:\n%s\n\nlogs:\n=====\n%s\n=====\n", webserverType, startErr, health, appLogs)
+		}
+
+		out, _, err := testcommon.GetLocalHTTPResponse(t, app.GetWebContainerDirectHTTPURL()+"/pathinfo.php/one/two")
+		require.NoError(t, err)
+		require.Contains(t, out, "PATH_INFO=[/one/two]", "for WebserverType=%s PATH_INFO must carry the path following the script name", webserverType)
+
+		plain, _, err := testcommon.GetLocalHTTPResponse(t, app.GetWebContainerDirectHTTPURL()+"/pathinfo.php")
+		require.NoError(t, err)
+		require.Contains(t, plain, "PATH_INFO=[]", "for WebserverType=%s a request with no path info must not invent one", webserverType)
+
+		err = app.Stop(true, false)
+		require.NoError(t, err)
+	}
+}
+
+// TestWebserverNoPharWalkback checks that a file sitting on the path of a .php
+// request is not executed. cgi.fix_pathinfo=1 makes PHP walk back up the path when
+// SCRIPT_FILENAME does not exist, so /uploads/x.phar/y.php would run x.phar, and
+// php-fpm's security.limit_extensions does not stop it because its default
+// allowlist is ".php .phar". The `-f` guard in the nginx PHP block rejects the
+// request before php-fpm sees it.
+//
+// Only nginx is checked: Debian's php-fpm Apache conf hands any .phar to php-fpm
+// by filename, so Apache runs one directly whatever the path info does. A Drupal
+// type is used because its PHP block also serves /update.php path-info URLs, so a
+// `try_files $uri` check is not available there and the guard is the only defense.
+func TestWebserverNoPharWalkback(t *testing.T) {
+	testcommon.SkipUnlessDefaultEnvironment(t)
+	assert := asrt.New(t)
+	packageDir, _ := os.Getwd()
+
+	testDir := testcommon.CreateTmpDir(t.Name())
+	appDir := filepath.Join(testDir, t.Name())
+	err := os.MkdirAll(filepath.Join(appDir, "uploads"), 0755)
+	require.NoError(t, err)
+	err = os.Chdir(appDir)
+	require.NoError(t, err)
+
+	app, err := ddevapp.NewApp(appDir, true)
+	require.NoError(t, err)
+	app.Type = nodeps.AppTypeDrupal11
+	app.WebserverType = nodeps.WebserverNginxFPM
+
+	t.Cleanup(func() {
+		err = app.Stop(true, false)
+		assert.NoError(err)
+		err = os.Chdir(packageDir)
+		assert.NoError(err)
+		_ = os.RemoveAll(testDir)
+	})
+
+	err = os.WriteFile(filepath.Join(appDir, "uploads", "uploaded.phar"),
+		[]byte(`<?php echo "phar-was-executed";`), 0644)
+	require.NoError(t, err)
+
+	err = app.WriteConfig()
+	require.NoError(t, err)
+	testcommon.ClearDockerEnv()
+	startErr := app.Start()
+	if startErr != nil {
+		appLogs, health, getLogsErr := ddevapp.GetErrLogsFromApp(app, startErr)
+		assert.NoError(getLogsErr)
+		t.Fatalf("app.Start() failure: err=%v, health:\n%s\n\nlogs:\n=====\n%s\n=====\n", startErr, health, appLogs)
+	}
+
+	walkback, _, err := testcommon.GetLocalHTTPResponse(t, app.GetWebContainerDirectHTTPURL()+"/uploads/uploaded.phar/nonexistent.php", testcommon.WithExpectStatus(http.StatusNotFound))
+	require.NoError(t, err)
+	require.NotContains(t, walkback, "phar-was-executed", "a file on the path of a .php request must not be executed")
+}
+
+// TestWebserverPhpstatusUnderMutagen checks /phpstatus (aliased to
+// /var/www/phpstatus.php, outside the docroot) on both webservers under Mutagen,
+// whose nocopy volume at /var/www shadows that file. On apache the
+// `-f %{REQUEST_FILENAME}` guard would then block the proxy to php-fpm, which is
+// why apache-site.conf gives /phpstatus its own unconditional proxy handler.
+func TestWebserverPhpstatusUnderMutagen(t *testing.T) {
+	if nodeps.IsWindows() {
+		t.Skip("Skipping TestWebserverPhpstatusUnderMutagen on Windows, Mutagen setup takes too long")
+	}
+	if nodeps.IsAppleSilicon() && dockerutil.IsDockerDesktop() && nodeps.IsEnvFalse("DDEV_RUN_TEST_ANYWAY") {
+		t.Skip("Skipping on Docker Desktop/Apple Silicon to ignore problems with 'connection reset by peer'")
+	}
+	assert := asrt.New(t)
+	packageDir, _ := os.Getwd()
+
+	testDir := testcommon.CreateTmpDir(t.Name())
+	appDir := filepath.Join(testDir, t.Name())
+	err := os.MkdirAll(appDir, 0755)
+	require.NoError(t, err)
+	err = os.Chdir(appDir)
+	require.NoError(t, err)
+
+	app, err := ddevapp.NewApp(appDir, true)
+	require.NoError(t, err)
+	app.Type = nodeps.AppTypePHP
+	app.PerformanceMode = types.PerformanceModeMutagen
+
+	t.Cleanup(func() {
+		err = app.Stop(true, false)
+		assert.NoError(err)
+		err = os.Chdir(packageDir)
+		assert.NoError(err)
+		_ = os.RemoveAll(testDir)
+	})
+
+	for _, webserverType := range []string{nodeps.WebserverNginxFPM, nodeps.WebserverApacheFPM} {
+		app.WebserverType = webserverType
+		err = app.WriteConfig()
+		require.NoError(t, err)
+
+		testcommon.ClearDockerEnv()
+		startErr := app.Start()
+		if startErr != nil {
+			appLogs, health, getLogsErr := ddevapp.GetErrLogsFromApp(app, startErr)
+			assert.NoError(getLogsErr)
+			t.Fatalf("app.Start() failure for WebserverType=%s: err=%v, health:\n%s\n\nlogs:\n=====\n%s\n=====\n", webserverType, startErr, health, appLogs)
+		}
+
+		out, stderr, err := app.Exec(&ddevapp.ExecOpts{
+			Cmd: "curl -sS --fail 127.0.0.1/phpstatus",
+		})
+		require.NoError(t, err, "for WebserverType=%s expected /phpstatus to succeed under Mutagen, stdout=%s, stderr=%s", webserverType, out, stderr)
+		require.Regexp(t, "idle processes|php is working", out, "for WebserverType=%s expected /phpstatus content", webserverType)
+
+		// Only the in-container healthcheck may reach php-fpm through /phpstatus.
+		out, _, err = testcommon.GetLocalHTTPResponse(t, app.GetWebContainerDirectHTTPURL()+"/phpstatus", testcommon.WithExpectStatus(403))
+		require.NoError(t, err, "for WebserverType=%s expected /phpstatus to be forbidden from outside the container, got body:\n%s", webserverType, out)
+
+		out, stderr, err = app.Exec(&ddevapp.ExecOpts{
+			Cmd: `curl -s -o /dev/null -w '%{http_code}' "http://$(hostname -i | cut -d' ' -f1)/phpstatus"`,
+		})
+		require.NoError(t, err, "stdout=%s, stderr=%s", out, stderr)
+		require.Equal(t, "403", out, "for WebserverType=%s expected /phpstatus to be forbidden from the container's own IP", webserverType)
+
+		err = app.Stop(true, false)
+		require.NoError(t, err)
+	}
+}
+
 // TestInternalAndExternalAccessToURL checks we can access content
 // from host and from inside container by URL (with port)
 // Related test: TestNetworkAliases
 func TestInternalAndExternalAccessToURL(t *testing.T) {
-	if os.Getenv("DDEV_RUN_TEST_ANYWAY") != "true" && nodeps.IsAppleSilicon() {
+	if nodeps.IsEnvFalse("DDEV_RUN_TEST_ANYWAY") && nodeps.IsAppleSilicon() {
 		t.Skip("Skipping on mac Apple Silicon/Lima/Colima/Rancher to ignore problems with 'connection reset by peer'")
 	}
 
@@ -4074,6 +4686,17 @@ func TestInternalAndExternalAccessToURL(t *testing.T) {
 	// Add some additional hostnames
 	app.AdditionalHostnames = []string{"sub1", "sub2", "sub3"}
 	app.AdditionalFQDNs = []string{"junker99.example.com"}
+
+	// Probe used to verify that the HTTP_HOST seen by PHP retains the
+	// nonstandard router port; the port has been lost in the past when
+	// Debian's nginx-common overrode HTTP_HOST with the port-stripped
+	// $host in /etc/nginx/fastcgi_params (Debian bug #1126960).
+	hostProbe := filepath.Join(app.AppRoot, app.Docroot, "hosttest-probe.php")
+	err = os.WriteFile(hostProbe, []byte(`<?php echo "HTTP_HOST=" . ($_SERVER['HTTP_HOST'] ?? '(unset)');`), 0644)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = os.Remove(hostProbe)
+	})
 
 	for _, pair := range []testcommon.PortPair{{HTTPPort: "8000", HTTPSPort: "8143"}, {HTTPPort: "8080", HTTPSPort: "8443"}} {
 		testcommon.ClearDockerEnv()
@@ -4122,10 +4745,17 @@ func TestInternalAndExternalAccessToURL(t *testing.T) {
 			// Make sure access from host is successful
 			// But "localhost" is only for inside container.
 			if parts.Host != "localhost" {
-				// Dummy attempt to get webserver "warmed up" before real try.
-				// Forced by M1 constant EOFs
-				_, _, _ = testcommon.GetLocalHTTPResponse(t, site.Safe200URIWithExpectation.URI, 60)
-				_, _ = testcommon.EnsureLocalHTTPContent(t, item+site.Safe200URIWithExpectation.URI, site.Safe200URIWithExpectation.Expect, 60)
+				// Retry to ride out the occasional M1 EOF on the first hit.
+				testcommon.AssertLocalHTTPContent(t, item+site.Safe200URIWithExpectation.URI, site.Safe200URIWithExpectation.Expect,
+					testcommon.WithMessagef("each external URL should be reachable from the host with expected content"),
+					testcommon.WithMaxAttempts(2),
+				)
+				// PHP must see the full Host header including the nonstandard
+				// router port, or apps will build absolute URLs without it.
+				testcommon.AssertLocalHTTPContent(t, item+"/hosttest-probe.php", "HTTP_HOST="+parts.Host,
+					testcommon.WithMessagef("HTTP_HOST seen by PHP should retain the nonstandard port for %s", item),
+					testcommon.WithMaxAttempts(2),
+				)
 			}
 
 			if _, err := strconv.ParseInt(hostParts[0], 10, 64); err != nil {
@@ -4234,7 +4864,7 @@ func TestHostDBPort(t *testing.T) {
 
 			dockerIP, err := dockerutil.GetDockerIP()
 			assert.NoError(err)
-			dbinfo := desc["dbinfo"].(map[string]interface{})
+			dbinfo := desc["dbinfo"].(map[string]any)
 			dbPort := dbinfo["published_port"].(int)
 			dbPortStr := strconv.Itoa(dbPort)
 
@@ -4257,7 +4887,11 @@ func TestHostDBPort(t *testing.T) {
 				out = strings.ReplaceAll(out, "\r", "")
 				out = strings.ReplaceAll(out, " ", "")
 				lines := strings.Split(out, "\n")
-				assert.Equal("1", lines[0])
+				// Newer mariadb clients may emit an unrelated stderr warning
+				// (e.g. about --ssl-verify-server-cert with a passwordless
+				// login) that gets mixed into CombinedOutput, so check for the
+				// SELECT result on any line rather than locking to lines[0].
+				assert.Contains(lines, "1", "expected '1' in output, got: %v", lines)
 			}
 
 			// Running the test host custom command "showport" ensures that the DDEV_HOST_DB_PORT
@@ -4297,7 +4931,7 @@ func TestPortSpecifications(t *testing.T) {
 	err = nospecApp.Start()
 	assert.NoError(err)
 
-	// Now that we have a working nospecApp with unspecified ephemeral ports, test that we
+	// Now that we have a working nospecApp with engine-assigned host ports, test that we
 	// can't use those ports while nospecApp is running
 
 	_ = os.Chdir(testDir)
@@ -4435,28 +5069,38 @@ func TestCustomCerts(t *testing.T) {
 		_ = os.Chdir(origDir)
 	})
 
+	// Start with PowerOff to have clean router, otherwise router is already live with unknown content
+	ddevapp.PowerOff()
+
 	// Start without cert and make sure normal DNS names are there
 	err = app.Start()
 	require.NoError(t, err)
+	c := fmt.Sprintf("openssl s_client -connect %s:%s -servername %s </dev/null 2>/dev/null | openssl x509 -noout -text | perl -l -0777 -ne '@names=/\\bDNS:([^\\s,]+)/g; print join(\"\\n\", sort @names);'", app.GetHostname(), app.GetPrimaryRouterHTTPSPort(), app.GetHostname())
 	stdout, stderr, err := app.Exec(&ddevapp.ExecOpts{
-		Cmd: fmt.Sprintf("openssl s_client -connect %s:%s -servername %s </dev/null 2>/dev/null | openssl x509 -noout -text | perl -l -0777 -ne '@names=/\\bDNS:([^\\s,]+)/g; print join(\"\\n\", sort @names);'", app.GetHostname(), app.GetPrimaryRouterHTTPSPort(), app.GetHostname()),
+		Cmd: c,
 	})
-	require.NoError(t, err, "failed to run openssl command, stdout='%s', stderr='%s'", stdout, stderr)
+	require.NoError(t, err, "failed to run openssl command '%s' against router, stdout='%s', stderr='%s'", c, stdout, stderr)
 	stdout = strings.Trim(stdout, "\r\n")
-	// This should be our regular wildcard cert
-	require.Contains(t, stdout, "*.ddev.site")
+	// The per-project cert now carries only this project's own hostnames; the
+	// shared *.ddev.site wildcard moved to the default cert.
+	// See https://github.com/ddev/ddev/issues/8562
+	require.Contains(t, stdout, app.GetHostname(), "per-project cert should contain the project hostname, stdout='%s'", stdout)
+	require.NotContains(t, stdout, "*.ddev.site", "per-project cert should no longer carry the shared *.ddev.site wildcard, stdout='%s'", stdout)
 
 	// Now stop it so we can install new custom cert.
 	err = app.Stop(true, false)
 	require.NoError(t, err)
 
-	// Generate a certfile/key in .ddev/custom_certs with one DNS name in it
+	// Generate a cert/key in .ddev/custom_certs carrying the project hostname
+	// plus a marker SAN a ddev-generated cert would never have, so we can prove
+	// the custom cert (not the generated one) is served.
 	// mkcert --cert-file d9composer.ddev.site.crt --key-file d9composer.ddev.site.key d9composer.ddev.site
 	// For Traefik generation, it's app.Name,
 	// mkcert --cert-file d9.crt --key-file d9.key d9.ddev.site
 	baseCertName := app.Name
+	customCertMarker := "custom-cert-marker.example.com"
 
-	stdout, err = exec.RunHostCommand("mkcert", "--cert-file", filepath.Join(certDir, baseCertName+".crt"), "--key-file", filepath.Join(certDir, baseCertName+".key"), app.GetHostname())
+	stdout, err = exec.RunHostCommand("mkcert", "--cert-file", filepath.Join(certDir, baseCertName+".crt"), "--key-file", filepath.Join(certDir, baseCertName+".key"), app.GetHostname(), customCertMarker)
 	require.NoError(t, err, "mkcert command failed, stdout=%s", stdout)
 
 	err = app.Start()
@@ -4468,9 +5112,11 @@ func TestCustomCerts(t *testing.T) {
 	})
 	require.NoError(t, err, "openssl command failed, stdout='%s', stderr='%s'", stdout, stderr)
 	stdout = strings.Trim(stdout, "\r\n")
-	// If we had the regular cert, there would be several things here including *.ddev.site
-	// But we should only see the hostname listed.
-	require.Equal(t, app.GetHostname(), stdout, "stdout does not contain hostname, stdout='%s', stderr='%s'", stdout, stderr)
+	// The served cert must be the custom one: it has the marker SAN and lacks
+	// the shared *.ddev.site wildcard.
+	require.Contains(t, stdout, customCertMarker, "served cert should be the custom cert containing the marker SAN, stdout='%s', stderr='%s'", stdout, stderr)
+	require.Contains(t, stdout, app.GetHostname(), "served custom cert should contain the project hostname, stdout='%s', stderr='%s'", stdout, stderr)
+	require.NotContains(t, stdout, "*.ddev.site", "custom cert should not contain the shared *.ddev.site wildcard, stdout='%s', stderr='%s'", stdout, stderr)
 }
 
 // TestEnvironmentVariables tests to make sure that documented environment variables appear
@@ -4479,8 +5125,7 @@ func TestEnvironmentVariables(t *testing.T) {
 	assert := asrt.New(t)
 
 	origDir, _ := os.Getwd()
-	origDDEVDebug := os.Getenv("DDEV_DEBUG")
-	_ = os.Setenv("DDEV_DEBUG", "")
+	t.Setenv("DDEV_DEBUG", "")
 	customCmd := filepath.Join(origDir, "testdata", t.Name(), "showhostenvvar")
 	site := TestSites[0]
 
@@ -4508,7 +5153,6 @@ func TestEnvironmentVariables(t *testing.T) {
 		assert.NoError(err)
 		err = os.Chdir(origDir)
 		assert.NoError(err)
-		_ = os.Setenv("DDEV_DEBUG", origDDEVDebug)
 	})
 
 	err = app.Restart()
@@ -4660,37 +5304,71 @@ func TestEnvFile(t *testing.T) {
 	origDir, _ := os.Getwd()
 	site := TestSites[0]
 
+	// So the global .env files written below can't clobber the ones you have
+	tmpXdgConfigHomeDir := testcommon.CopyGlobalDdevDir(t)
+	t.Cleanup(func() {
+		testcommon.ResetGlobalDdevDir(t, tmpXdgConfigHomeDir)
+	})
+
 	app, err := ddevapp.NewApp(site.Dir, false)
 	assert.NoError(err)
 	err = os.Chdir(site.Dir)
 	assert.NoError(err)
 
-	err = fileutil.TemplateStringToFile("JUNK1=junk1\nJUNK2=junk2\n", nil, app.GetConfigPath(".env"))
+	globalDir := globalconfig.GetGlobalDdevDir()
+
+	err = fileutil.TemplateStringToFile("JUNK1=junk1\nJUNK2=junk2\nSHARED=project\n", nil, app.GetConfigPath(".env"))
+	require.NoError(t, err)
+	err = fileutil.TemplateStringToFile("DBONLY=dbonly\n", nil, app.GetConfigPath(".env.db"))
+	require.NoError(t, err)
+	err = fileutil.TemplateStringToFile("SHARED=global\nGLOBALALL=globalall\n", nil, filepath.Join(globalDir, ".env"))
+	require.NoError(t, err)
+	err = fileutil.TemplateStringToFile("GLOBALWEB=globalweb\n", nil, filepath.Join(globalDir, ".env.web"))
 	require.NoError(t, err)
 
-	err = app.Start()
-	require.NoError(t, err)
 	t.Cleanup(func() {
 		err = app.Stop(true, false)
 		assert.NoError(err)
-		err = os.RemoveAll(app.GetConfigPath(".env"))
-		assert.NoError(err)
+		for _, f := range []string{app.GetConfigPath(".env"), app.GetConfigPath(".env.db")} {
+			err = os.RemoveAll(f)
+			assert.NoError(err)
+		}
 		err = os.Chdir(origDir)
 		assert.NoError(err)
 	})
 
+	err = app.Start()
+	require.NoError(t, err)
+
 	// This set of webContainerExpectations should be maintained to match the list in the docs
-	expectedCustomEnv := map[string]string{
-		"JUNK1": "junk1",
-		"JUNK2": "junk2",
+	expectedCustomEnv := map[string]map[string]string{
+		"web": {
+			"JUNK1":     "junk1",
+			"JUNK2":     "junk2",
+			"GLOBALALL": "globalall",
+			"GLOBALWEB": "globalweb",
+			// The project .env wins over the global .env
+			"SHARED": "project",
+			// .env.db belongs to another service
+			"DBONLY": "unset",
+		},
+		"db": {
+			"GLOBALALL": "globalall",
+			"GLOBALWEB": "unset",
+			"DBONLY":    "dbonly",
+			"SHARED":    "project",
+		},
 	}
-	for k, v := range expectedCustomEnv {
-		envVal, _, err := app.Exec(&ddevapp.ExecOpts{
-			Cmd: fmt.Sprintf("echo ${%s}", k),
-		})
-		assert.NoError(err)
-		envVal = strings.Trim(envVal, "\r\n")
-		assert.Equal(v, envVal)
+	for service, expectations := range expectedCustomEnv {
+		for k, v := range expectations {
+			envVal, stderr, err := app.Exec(&ddevapp.ExecOpts{
+				Service: service,
+				Cmd:     fmt.Sprintf("echo ${%s:-unset}", k),
+			})
+			assert.NoError(err, "unable to exec in %s container: %s", service, stderr)
+			envVal = strings.Trim(envVal, "\r\n")
+			assert.Equal(v, envVal, "unexpected value for %s in %s container", k, service)
+		}
 	}
 }
 

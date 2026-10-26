@@ -12,34 +12,25 @@ teardown() {
 }
 
 @test "Kirby new project quickstart with $(ddev --version)" {
+  run -0 mkdir -p ${PROJNAME}
+  cd ${PROJNAME}
 
-  # mkdir ${PROJNAME} && cd ${PROJNAME}
-  run mkdir ${PROJNAME} && cd ${PROJNAME}
-  assert_success
+  run -0 ddev config --omit-containers=db --webserver-type=apache-fpm
 
-  # ddev config --omit-containers=db --webserver-type=apache-fpm
-  run ddev config --omit-containers=db --webserver-type=apache-fpm
-  assert_success
+  run -0 ddev start -y
 
-  # ddev start -y
-  run ddev start -y
-  assert_success
+  _extra_info
 
-  # ddev composer create-project getkirby/starterkit
-  run ddev composer create-project getkirby/starterkit
-  assert_success
+  run -0 _retry ddev composer create-project getkirby/starterkit
 
   # validate ddev launch
-  run bash -c "DDEV_DEBUG=true ddev launch"
-  assert_output "FULLURL https://${PROJNAME}.ddev.site"
-  assert_success
+  DDEV_DEBUG=true run -0 ddev launch
+  assert_output "FULLURL ${PRIMARY_URL}"
 
-  run curl -sfI https://${PROJNAME}.ddev.site
-  assert_success
+  run -0 curl -sSfI ${PRIMARY_URL}
   assert_output --partial "server: Apache"
   assert_output --partial "HTTP/2 200"
-  run curl -sf https://${PROJNAME}.ddev.site
-  assert_success
-  assert_output --partial "<h2><a href=\"https://getkirby.com\">Made with Kirby</a></h2>"
-  assert_output --partial "the file-based CMS that adapts to any project"
+  _assert_page_contains ${PRIMARY_URL} \
+    "<h2><a href=\"https://getkirby.com\">Made with Kirby</a></h2>" \
+    "the file-based CMS that adapts to any project"
 }

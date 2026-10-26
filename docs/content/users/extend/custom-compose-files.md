@@ -1,5 +1,12 @@
 # Defining Additional Services with Docker Compose
 
+This page covers how DDEV merges custom `docker-compose.*.yaml` files and the
+conventions your service definitions should follow (labels, container naming,
+the `build:`/`-built` tag pattern, port exposure, and more). For guidance on
+*when* to write a custom service instead of using an add-on, the `x-ddev`
+extension field, and a gallery of worked examples, see
+[Custom Docker Compose Services](custom-docker-services.md).
+
 ## Prerequisite
 
 Much of DDEV’s customization ability and extensibility comes from leveraging features and functionality provided by [Docker](https://docs.docker.com/) and [Docker Compose](https://docs.docker.com/compose/overview/). Some working knowledge of these tools is required in order to customize or extend the environment DDEV provides.
@@ -24,6 +31,7 @@ For most HTTP-based services, use `expose` with `HTTP_EXPOSE` and `HTTPS_EXPOSE`
 services:
   dummy-service:
     container_name: "ddev-${DDEV_SITENAME}-dummy-service"
+    # These two labels are added automatically since DDEV v1.25.2+
     labels:
       com.ddev.site-name: ${DDEV_SITENAME}
       com.ddev.approot: ${DDEV_APPROOT}
@@ -82,24 +90,26 @@ To better understand how DDEV parses your custom docker-compose files, run `ddev
 
 When defining additional services for your project, we recommend following these conventions to ensure DDEV handles your service the same way DDEV handles default services.
 
-* The container name should be `ddev-${DDEV_SITENAME}-<servicename>`. This ensures the auto-generated [Traefik routing configuration](./traefik-router.md#project-traefik-configuration) matches your custom service.
+* The container name should be `ddev-${DDEV_SITENAME}-<servicename>`. This ensures the auto-generated [Traefik routing configuration](./traefik-router.md#project-traefik-configuration) matches your custom service, and that commands like `ddev exec -s <servicename>` find it. Since DDEV v1.25.5, DDEV sets this name automatically and replaces any other `container_name`, except on services with more than one replica. Keep `container_name` in your files if they must also work with older DDEV versions.
+* Since DDEV v1.25.5, DDEV sets the service's hostname to `${DDEV_SITENAME}-<servicename>` when you don't set `hostname` yourself, so the prompt in `ddev ssh -s <servicename>` shows a readable name instead of a container ID.
 * Provide containers with required labels:
 
     ```yaml
     services:
       dummy-service:
         image: ${YOUR_DOCKER_IMAGE:-example/example:latest}
+        # These two labels are added automatically since DDEV v1.25.2+
         labels:
           com.ddev.site-name: ${DDEV_SITENAME}
           com.ddev.approot: ${DDEV_APPROOT}
     ```
 
-* When using a custom `build` configuration with `dockerfile_inline` or `Dockerfile`, define the `image` with the `-${DDEV_SITENAME}-built` suffix:
+* When using a custom `build` configuration with `dockerfile_inline` or `Dockerfile`, define the `image` with the `-${DDEV_SITENAME}-<servicename>-built` suffix:
 
     ```yaml
     services:
       dummy-service:
-        image: ${YOUR_DOCKER_IMAGE:-example/example:latest}-${DDEV_SITENAME}-built
+        image: ${YOUR_DOCKER_IMAGE:-example/example:latest}-${DDEV_SITENAME}-dummy-service-built
         build:
           dockerfile_inline: |
             ARG YOUR_DOCKER_IMAGE="scratch"
@@ -109,7 +119,7 @@ When defining additional services for your project, we recommend following these
             YOUR_DOCKER_IMAGE: ${YOUR_DOCKER_IMAGE:-example/example:latest}
     ```
 
-    This enables DDEV to operate in [offline mode](../usage/offline.md) once the base image has been pulled.
+    DDEV pulls the base image, `example/example:latest`, before the build, so the project can start in [offline mode](../usage/offline.md). The base needs a tag, such as `debian:stable` rather than `debian`. The service name keeps two services built from the same base image from overwriting each other's image. To pull other images, such as a `FROM` written in the Dockerfile, use [`x-ddev.pull-images`](custom-docker-services.md#service-with-a-custom-build).
 
 * Exposing ports for service: you can expose the port for a service to be accessible as `projectname.ddev.site:portNum` while your project is running. This is achieved by the following configurations for the container(s) being added:
 
@@ -170,7 +180,7 @@ services:
       - command: mkcert -install
     # Add an image and a build stage so we can add `mkcert`, etc.
     # The Dockerfile for the build stage goes in the `.ddev/example/` directory
-    image: ${YOUR_DOCKER_IMAGE:-example/example:latest}-${DDEV_SITENAME}-built
+    image: ${YOUR_DOCKER_IMAGE:-example/example:latest}-${DDEV_SITENAME}-example-built
     build:
       context: example
       args:
@@ -184,6 +194,7 @@ services:
     # Tip: external_links are not needed anymore in DDEV v1.24.10+
     external_links:
       - ddev-router:${DDEV_SITENAME}.${DDEV_TLD}
+    # These two labels are added automatically since DDEV v1.25.2+
     labels:
       com.ddev.approot: ${DDEV_APPROOT}
       com.ddev.site-name: ${DDEV_SITENAME}
@@ -236,6 +247,7 @@ services:
   example:
     container_name: ddev-${DDEV_SITENAME}-example
     image: ${YOUR_DOCKER_IMAGE:-example/example:latest}
+    # These two labels are added automatically since DDEV v1.25.2+
     labels:
       com.ddev.approot: ${DDEV_APPROOT}
       com.ddev.site-name: ${DDEV_SITENAME}
@@ -258,7 +270,7 @@ If you need a more sophisticated user setup, similar to what `ddev-webserver` us
 services:
   example:
     container_name: ddev-${DDEV_SITENAME}-example
-    image: ${YOUR_DOCKER_IMAGE:-example/example:latest}-${DDEV_SITENAME}-built
+    image: ${YOUR_DOCKER_IMAGE:-example/example:latest}-${DDEV_SITENAME}-example-built
     build:
       context: example
       args:
@@ -266,6 +278,7 @@ services:
         username: ${DDEV_USER}
         uid: ${DDEV_UID}
         gid: ${DDEV_GID}
+    # These two labels are added automatically since DDEV v1.25.2+
     labels:
       com.ddev.approot: ${DDEV_APPROOT}
       com.ddev.site-name: ${DDEV_SITENAME}
@@ -317,7 +330,16 @@ services:
     profiles:
       - busybox
     container_name: ddev-${DDEV_SITENAME}-busybox
+    # These two labels are added automatically since DDEV v1.25.2+
     labels:
       com.ddev.site-name: ${DDEV_SITENAME}
       com.ddev.approot: ${DDEV_APPROOT}
 ```
+
+`ddev restart --profiles=busybox` restarts the project with the profile started. Once it's running, `ddev restart --service=busybox` restarts only that service.
+
+An optional service's image is pulled or built only when its profile starts, so profiles you don't use don't slow down `ddev start`. On a running project, a profile whose services only use `image:` starts without touching the other services. A profile with a `build:` service starts with a full `ddev start`, which builds its image using the build cache, so Dockerfile and `.ddev/docker-compose.*.yaml` changes are picked up.
+
+`ddev start --no-cache` and `ddev restart --no-cache` rebuild without the cache the images of the services they start and of any profile whose image was built before, so a profile started later doesn't run a stale image.
+
+`--profiles` replaces any `COMPOSE_PROFILES` setting. Without `--profiles`, `COMPOSE_PROFILES` in the environment or in `.ddev/.env` selects the profiles started along with the project. A service whose `depends_on` names a service in another profile needs both profiles, for example `ddev start --profiles=first,second`.

@@ -18,6 +18,7 @@ import (
 	"github.com/ddev/ddev/pkg/nodeps"
 	"github.com/ddev/ddev/pkg/output"
 	"github.com/ddev/ddev/pkg/testcommon"
+	"github.com/ddev/ddev/pkg/testsetup"
 	"github.com/ddev/ddev/pkg/util"
 	asrt "github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -25,6 +26,11 @@ import (
 
 func init() {
 	globalconfig.EnsureGlobalConfig()
+	// Tests in this package run in-process against command vars like
+	// DebugCmd directly (see TestTLSDiagnoseCommandRegistered), so the
+	// command tree needs to exist here too, not just in the real binary's
+	// cmd.Execute().
+	RegisterCommands()
 }
 
 var (
@@ -66,15 +72,7 @@ var (
 
 func TestMain(m *testing.M) {
 	testcommon.ClearDockerEnv()
-
-	if os.Getenv("DDEV_BINARY_FULLPATH") != "" {
-		DdevBin = os.Getenv("DDEV_BINARY_FULLPATH")
-	} else {
-		binPath, err := osexec.LookPath(DdevBin)
-		if err == nil {
-			DdevBin = binPath
-		}
-	}
+	DdevBin = testsetup.MustResolveDdevBinary()
 
 	bash := util.FindBashPath()
 	ver, _ := exec.RunCommand(bash, []string{"-c", fmt.Sprintf("%s --version -j | jq -r .raw.version", DdevBin)})
@@ -145,8 +143,23 @@ func TestMain(m *testing.M) {
 func TestGetActiveAppRoot(t *testing.T) {
 	assert := asrt.New(t)
 
+	origDir, _ := os.Getwd()
+
+	// Move to a directory that is not inside any project so that
+	// GetActiveAppRoot("") has no active project to discover. Earlier tests in
+	// this package may have left the working directory inside a project.
+	noProjectDir := testcommon.CreateTmpDir(t.Name())
+	err := os.Chdir(noProjectDir)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		err = os.Chdir(origDir)
+		assert.NoError(err)
+		_ = os.RemoveAll(noProjectDir)
+	})
+
 	// Looking for active approot here should fail, because there is none
-	_, err := ddevapp.GetActiveAppRoot("")
+	_, err = ddevapp.GetActiveAppRoot("")
+	require.Error(t, err)
 	assert.Contains(err.Error(), "Please specify a project name or change directories")
 
 	// There is also no project named "potato"
@@ -158,7 +171,6 @@ func TestGetActiveAppRoot(t *testing.T) {
 	assert.NoError(err)
 	assert.Equal(TestSites[0].Dir, appRoot)
 
-	origDir, _ := os.Getwd()
 	err = os.Chdir(TestSites[0].Dir)
 	require.NoError(t, err)
 
@@ -233,8 +245,8 @@ func TestCreateGlobalDdevDir(t *testing.T) {
 	t.Setenv("USERPROFILE", tmpHomeDir)
 	// Set DOCKER_HOST to the same value as before, otherwise wrong Docker context may be used
 	t.Setenv("DOCKER_HOST", dockerHost)
-	// Set $XDG_CONFIG_HOME to empty string, otherwise it will take precedence over $HOME
-	t.Setenv("XDG_CONFIG_HOME", "")
+	// Set $DDEV_XDG_CONFIG_HOME to empty string, otherwise it will take precedence over $HOME
+	t.Setenv("DDEV_XDG_CONFIG_HOME", "")
 
 	// Make sure that the tmpDir/.ddev and tmpDir/.ddev/.update don't exist before we run ddev.
 	_, err = os.Stat(filepath.Join(tmpHomeDir, ".ddev"))
@@ -267,7 +279,7 @@ func TestCreateGlobalDdevDir(t *testing.T) {
 }
 
 // TestCopyGlobalDdevDir checks to make sure that DDEV will use
-// ddev folder in user's custom dir $XDG_CONFIG_HOME/ddev instead of ~/.ddev
+// ddev folder in user's custom dir $DDEV_XDG_CONFIG_HOME/ddev instead of ~/.ddev
 func TestCopyGlobalDdevDir(t *testing.T) {
 	assert := asrt.New(t)
 	origDir, _ := os.Getwd()
@@ -293,7 +305,7 @@ func TestCopyGlobalDdevDir(t *testing.T) {
 	out, err := exec.RunHostCommand(DdevBin, "config", "--auto")
 	require.NoError(t, err, "failed to ddev config --auto, out=%v, err=%v", out, err)
 
-	// Make sure that $XDG_CONFIG_HOME/ddev/.update don't exist before we run ddev start
+	// Make sure that $DDEV_XDG_CONFIG_HOME/ddev/.update don't exist before we run ddev start
 	tmpUpdateFilePath := filepath.Join(globalconfig.GetGlobalDdevDir(), ".update")
 	_, err = os.Stat(tmpUpdateFilePath)
 	require.Error(t, err)
@@ -309,12 +321,12 @@ func TestCopyGlobalDdevDir(t *testing.T) {
 
 // TestGetGlobalDdevDirLocation checks to make sure that DDEV will use the
 // correct location for its global config. The correct location is:
-// ${XDG_CONFIG_HOME}/ddev if XDG_CONFIG_HOME is set or
+// ${DDEV_XDG_CONFIG_HOME}/ddev if DDEV_XDG_CONFIG_HOME is set (all platforms), or
 // ~/.ddev if it exists or
-// ~/.config/ddev if it exists
+// ~/.config/ddev if it exists on Linux/WSL2
 func TestGetGlobalDdevDirLocation(t *testing.T) {
-	// Test when $XDG_CONFIG_HOME is not set
-	t.Setenv("XDG_CONFIG_HOME", "")
+	// Test when DDEV_XDG_CONFIG_HOME is not set
+	t.Setenv("DDEV_XDG_CONFIG_HOME", "")
 	ddevDir := globalconfig.GetGlobalDdevDirLocation()
 	// Original ~/.ddev dir location
 	originalGlobalDdevDir := filepath.Join(util.GetHomeDir(), ".ddev")
@@ -327,12 +339,12 @@ func TestGetGlobalDdevDirLocation(t *testing.T) {
 		}
 	}
 	require.Equal(t, ddevDir, originalGlobalDdevDir)
-	// Test when $XDG_CONFIG_HOME is set
+	// Test when $DDEV_XDG_CONFIG_HOME is set (works on all platforms)
 	tmpDir := testcommon.CreateTmpDir(t.Name())
 	t.Cleanup(func() {
 		_ = os.RemoveAll(tmpDir)
 	})
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+	t.Setenv("DDEV_XDG_CONFIG_HOME", tmpDir)
 	// Make sure that the tmpDir/ddev doesn't exist.
 	_, err := os.Stat(filepath.Join(tmpDir, "ddev"))
 	require.Error(t, err)
@@ -340,9 +352,9 @@ func TestGetGlobalDdevDirLocation(t *testing.T) {
 	// Check that we can get the correct location
 	ddevDir = globalconfig.GetGlobalDdevDirLocation()
 	require.Equal(t, ddevDir, filepath.Join(tmpDir, "ddev"))
-	// When $XDG_CONFIG_HOME is not set,
+	// When $DDEV_XDG_CONFIG_HOME is not set,
 	// it should use the default location
-	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("DDEV_XDG_CONFIG_HOME", "")
 	ddevDir = globalconfig.GetGlobalDdevDirLocation()
 	require.Equal(t, ddevDir, originalGlobalDdevDir)
 }
@@ -373,6 +385,10 @@ func TestPoweroffOnNewVersion(t *testing.T) {
 	_, err = exec.RunHostCommand(DdevBin, "start", "-y")
 	assert.NoError(err)
 
+	// Captured below, before the poweroff, so cleanup can restart exactly the
+	// projects that were running rather than every entry in TestSites.
+	var apps []*ddevapp.DdevApp
+
 	t.Cleanup(func() {
 		err = os.Chdir(origDir)
 		assert.NoError(err)
@@ -385,9 +401,12 @@ func TestPoweroffOnNewVersion(t *testing.T) {
 		testcommon.ResetGlobalDdevDir(t, tmpXdgConfigHomeDir)
 
 		// Because the start has done a poweroff (new DDEV version),
-		// make sure sites are running again.
-		for _, site := range TestSites {
-			_, _ = exec.RunCommand(DdevBin, []string{"start", "-y", site.Name})
+		// make sure the projects that were running before are running again.
+		for _, app := range apps {
+			if app.Name == junkName {
+				continue
+			}
+			_, _ = exec.RunCommand(DdevBin, []string{"start", "-y", app.Name})
 		}
 
 		t.Logf("attempting to remove project files in %s", tmpJunkProjectDir)
@@ -397,7 +416,7 @@ func TestPoweroffOnNewVersion(t *testing.T) {
 		}
 	})
 
-	apps := ddevapp.GetActiveProjects()
+	apps = ddevapp.GetActiveProjects()
 	activeCount := len(apps)
 	assert.GreaterOrEqual(activeCount, 2)
 
@@ -440,6 +459,161 @@ func TestPoweroffOnNewVersion(t *testing.T) {
 	assert.GreaterOrEqual(sshCreateTime, oldTimeInt)
 }
 
+// TestNoPoweroffPromptWhenStopped checks that poweroff prompt is skipped when containers are already stopped
+func TestNoPoweroffPromptWhenStopped(t *testing.T) {
+	if !nodeps.IsLinux() {
+		t.Skip("No need to test except on Linux")
+	}
+	var err error
+
+	origDir, _ := os.Getwd()
+
+	tmpXdgConfigHomeDir := testcommon.CopyGlobalDdevDir(t)
+
+	// Create a test project
+	testName := t.Name() + "-testproject"
+	_, _ = exec.RunHostCommand(DdevBin, "delete", "-Oy", testName)
+
+	tmpTestProjectDir := testcommon.CreateTmpDir(testName)
+	err = os.Chdir(tmpTestProjectDir)
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		_ = os.Chdir(origDir)
+
+		t.Logf("attempting to remove project %s", testName)
+		_, _ = exec.RunHostCommand(DdevBin, "delete", "-Oy", testName)
+
+		testcommon.ResetGlobalDdevDir(t, tmpXdgConfigHomeDir)
+
+		// Restart test sites
+		for _, site := range TestSites {
+			_, _ = exec.RunCommand(DdevBin, []string{"start", "-y", site.Name})
+		}
+
+		_ = os.RemoveAll(tmpTestProjectDir)
+	})
+
+	// Configure and start a project
+	out, err := exec.RunHostCommand(DdevBin, "config", "--project-name", testName, "--project-type", "php")
+	require.NoError(t, err, "out=%s", out)
+	_, err = exec.RunHostCommand(DdevBin, "start", "-y")
+	require.NoError(t, err)
+
+	// Now poweroff all containers
+	out, err = exec.RunHostCommand(DdevBin, "poweroff")
+	require.NoError(t, err, "poweroff failed: %v, output=%s", err, out)
+
+	// Verify no containers are running
+	apps := ddevapp.GetActiveProjects()
+	require.Equal(t, 0, len(apps), "Expected no active projects after poweroff")
+
+	sshAgent, _ := dockerutil.FindContainerByName("ddev-ssh-agent")
+	require.Nil(t, sshAgent, "Expected ddev-ssh-agent to be stopped")
+
+	router, _ := dockerutil.FindContainerByName("ddev-router")
+	require.Nil(t, router, "Expected ddev-router to be stopped")
+
+	// Set a different version to trigger the version check
+	globalconfig.DdevGlobalConfig.LastStartedVersion = "v0.1"
+	err = globalconfig.WriteGlobalConfig(globalconfig.DdevGlobalConfig)
+	require.NoError(t, err)
+
+	// Start should NOT prompt for poweroff since everything is already stopped
+	out, err = exec.RunHostCommand(DdevBin, "start", "-y")
+	require.NoError(t, err, "start failed, out='%s', err=%v", out, err)
+
+	// The output should NOT contain the poweroff-related messages
+	require.NotContains(t, out, "May I do `ddev poweroff`", "Should not prompt for poweroff when containers already stopped")
+	require.NotContains(t, out, "ddev-ssh-agent container has been removed", "Should not show poweroff messages when containers already stopped")
+
+	// Verify project started successfully
+	apps = ddevapp.GetActiveProjects()
+	require.Equal(t, 1, len(apps), "Expected one active project after start")
+}
+
+// TestLastStartedVersionUpdatedByAnyStart checks that last_started_version is recorded
+// by every command that starts containers, not just `ddev start`, and that it is
+// recorded even when confirmation is skipped with `-y`.
+// See https://github.com/ddev/ddev/issues/8520
+func TestLastStartedVersionUpdatedByAnyStart(t *testing.T) {
+	if !nodeps.IsLinux() {
+		t.Skip("No need to test except on Linux")
+	}
+	origDir, _ := os.Getwd()
+
+	tmpXdgConfigHomeDir := testcommon.CopyGlobalDdevDir(t)
+
+	testName := t.Name() + "-testproject"
+	_, _ = exec.RunHostCommand(DdevBin, "delete", "-Oy", testName)
+
+	tmpTestProjectDir := testcommon.CreateTmpDir(testName)
+	err := os.Chdir(tmpTestProjectDir)
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		_ = os.Chdir(origDir)
+
+		t.Logf("attempting to remove project %s", testName)
+		_, _ = exec.RunHostCommand(DdevBin, "delete", "-Oy", testName)
+
+		testcommon.ResetGlobalDdevDir(t, tmpXdgConfigHomeDir)
+
+		// Restart test sites
+		for _, site := range TestSites {
+			_, _ = exec.RunCommand(DdevBin, []string{"start", "-y", site.Name})
+		}
+
+		_ = os.RemoveAll(tmpTestProjectDir)
+	})
+
+	out, err := exec.RunHostCommand(DdevBin, "config", "--project-name", testName, "--project-type", "php")
+	require.NoError(t, err, "out=%s", out)
+
+	// Power off first so that the version checks below never find containers to
+	// offer a poweroff for; this test is about recording, not about the prompt.
+	out, err = exec.RunHostCommand(DdevBin, "poweroff")
+	require.NoError(t, err, "poweroff failed, out='%s'", out)
+
+	// `ddev start -y` has to record the version, otherwise every later command
+	// asks about the same upgrade again.
+	setLastStartedVersion(t, "v0.1")
+	out, err = exec.RunHostCommand(DdevBin, "start", "-y")
+	require.NoError(t, err, "start failed, out='%s'", out)
+	require.NotEqual(t, "v0.1", readLastStartedVersion(t), "`ddev start -y` should have recorded last_started_version")
+
+	// `ddev exec` starts a stopped project, so it has to record the version too.
+	out, err = exec.RunHostCommand(DdevBin, "poweroff")
+	require.NoError(t, err, "poweroff failed, out='%s'", out)
+
+	setLastStartedVersion(t, "v0.1")
+	out, err = exec.RunHostCommand(DdevBin, "exec", "ls")
+	require.NoError(t, err, "exec failed, out='%s'", out)
+	require.NotEqual(t, "v0.1", readLastStartedVersion(t), "`ddev exec` should have recorded last_started_version")
+
+	// The project is running now, so a stale last_started_version would make this
+	// start prompt for (and, non-interactively, do) a poweroff.
+	out, err = exec.RunHostCommand(DdevBin, "start")
+	require.NoError(t, err, "start failed, out='%s'", out)
+	require.NotContains(t, out, "You seem to have a new DDEV version", "Should not report an upgrade already recorded by `ddev exec`")
+	require.NotContains(t, out, "May I do `ddev poweroff`", "Should not prompt for poweroff after `ddev exec` recorded the version")
+}
+
+// setLastStartedVersion writes last_started_version into the global config
+func setLastStartedVersion(t *testing.T, version string) {
+	t.Helper()
+	require.NoError(t, globalconfig.ReadGlobalConfig())
+	globalconfig.DdevGlobalConfig.LastStartedVersion = version
+	require.NoError(t, globalconfig.WriteGlobalConfig(globalconfig.DdevGlobalConfig))
+}
+
+// readLastStartedVersion re-reads last_started_version from the global config
+func readLastStartedVersion(t *testing.T) string {
+	t.Helper()
+	require.NoError(t, globalconfig.ReadGlobalConfig())
+	return globalconfig.DdevGlobalConfig.LastStartedVersion
+}
+
 // addSites runs `ddev start` on the test apps
 func addSites() error {
 	output.UserOut.Debugln("Removing any existing TestSites")
@@ -475,5 +649,63 @@ func removeSites() {
 		if err != nil {
 			output.UserErr.Errorf("Failed to run ddev remove -RO command, err: %v, output: %s\n", err, out)
 		}
+	}
+}
+
+// TestCanRunWithoutDocker tests which command lines skip the Docker check
+func TestCanRunWithoutDocker(t *testing.T) {
+	tests := map[string]bool{
+		"":                                      true,
+		"-j":                                    true,
+		"help":                                  true,
+		"help start":                            true,
+		"version":                               true,
+		"config --project-type=php":             true,
+		"config global --simple-formatting":     true,
+		"hostname --check example.ddev.site":    true,
+		"utility download-ddev --stable":        true,
+		"ut download-ddev --head":               true,
+		"-j debug download-ddev --pr 1":         true,
+		"completion bash":                       true,
+		"utility diagnose":                      true,
+		"utility instrumentation flush":         true,
+		"aliases":                               true,
+		"add-on list":                           true,
+		"add-on search redis":                   true,
+		"tui":                                   true,
+		"describe":                              true,
+		"st -j":                                 true,
+		"dotenv get .env --foo":                 true,
+		"utility configyaml":                    true,
+		"utility check-custom-config":           true,
+		"add-on get ddev/ddev-redis":            false,
+		"utility compose-config":                false,
+		"xhgui status":                          false,
+		"utility":                               true,
+		"auth":                                  true,
+		"mutagen":                               true,
+		"dotenv global get --foo":               true,
+		"utility instrumentation clean":         true,
+		"auth ssh":                              false,
+		"mutagen sync list":                     false,
+		"utility rebuild":                       false,
+		"utility test":                          false,
+		"start":                                 false,
+		"-j list":                               true,
+		"ls --active-only":                      true,
+		"composer download-ddev":                false,
+		"utility tls-diagnose":                  true,
+		"utility port-diagnose":                 true,
+		"utility mutagen sync list":             true,
+		"mutagen version":                       true,
+		"utility dockercheck":                   true,
+		"utility hyperlink https://example.com": true,
+	}
+	RootCmd.InitDefaultHelpCmd()
+	RootCmd.InitDefaultCompletionCmd()
+	for args, expected := range tests {
+		cmd, _, err := RootCmd.Find(strings.Fields(args))
+		require.NoError(t, err, "ddev %s", args)
+		require.Equal(t, expected, canRunWithoutDocker(cmd), "ddev %s", args)
 	}
 }

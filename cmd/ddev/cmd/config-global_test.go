@@ -9,6 +9,7 @@ import (
 	"github.com/ddev/ddev/pkg/exec"
 	"github.com/ddev/ddev/pkg/fileutil"
 	"github.com/ddev/ddev/pkg/globalconfig"
+	"github.com/ddev/ddev/pkg/nodeps"
 	asrt "github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -40,24 +41,25 @@ func TestCmdGlobalConfig(t *testing.T) {
 	// nolint: errcheck
 	t.Cleanup(func() {
 		// Even though the global config is going to be deleted, make sure it's sane before leaving
-		args := []string{"config", "global", "--omit-containers", "", "--performance-mode-reset", "--simple-formatting=false", "--table-style=default", `--required-docker-compose-version=""`, `--use-docker-compose-from-path=false`, `--xdebug-ide-location`, "", `--traefik-monitor-port=10999`}
+		args := []string{"config", "global", "--omit-containers", "", "--performance-mode-reset", "--simple-formatting=false", "--table-style=default", `--xdebug-ide-location`, "", `--traefik-monitor-port=10999`, `--docker-buildx-version=system`}
 		globalconfig.DdevGlobalConfig.OmitContainersGlobal = nil
 		out, err := exec.RunHostCommand(DdevBin, args...)
 		assert.NoError(err, "error running ddev config global; output=%s", out)
 		globalconfig.DdevGlobalConfig = backupConfig
 		globalconfig.DdevGlobalConfig.OmitContainersGlobal = nil
 
-		err = os.Remove(configFile)
+		// Restore the original global config to disk rather than removing it and
+		// regenerating defaults. Otherwise settings applied before this test (for
+		// example the rootless-podman router-http-port=8080 override from
+		// .buildkite/test.sh) are lost, and later tests that start projects fail
+		// trying to bind privileged port 80.
+		err = globalconfig.WriteGlobalConfig(globalconfig.DdevGlobalConfig)
 		if err != nil {
-			t.Logf("Unable to remove %v: %v", configFile, err)
+			t.Logf("Unable to WriteGlobalConfig: %v", err)
 		}
 		err = os.Remove(projectsFile)
 		if err != nil {
-			t.Logf("Unable to remove %v: %v", configFile, err)
-		}
-		err = globalconfig.ReadGlobalConfig()
-		if err != nil {
-			t.Logf("Unable to ReadGlobalConfig: %v", err)
+			t.Logf("Unable to remove %v: %v", projectsFile, err)
 		}
 	})
 
@@ -77,8 +79,6 @@ func TestCmdGlobalConfig(t *testing.T) {
 	assert.Contains(out, "simple-formatting=false")
 	assert.Contains(out, "use-hardened-images=false")
 	assert.Contains(out, "fail-on-hook-fail=false")
-	assert.Contains(out, fmt.Sprintf("required-docker-compose-version=%s", globalconfig.DdevGlobalConfig.RequiredDockerComposeVersion))
-	assert.Contains(out, "use-docker-compose-from-path=false")
 	assert.Contains(out, "project-tld="+globalconfig.DdevGlobalConfig.ProjectTldGlobal)
 	assert.Contains(out, "xdebug-ide-location=")
 	assert.Contains(out, "wsl2-no-windows-hosts-mgt=false")
@@ -88,11 +88,13 @@ func TestCmdGlobalConfig(t *testing.T) {
 	assert.Contains(out, "mailpit-https-port=8026")
 	assert.Contains(out, "traefik-monitor-port=10999")
 	assert.Contains(out, "omit-project-name-by-default=false")
+	assert.Contains(out, "omit-snapshot-on-delete=false")
+	assert.Contains(out, "docker-buildx-version=system")
 
 	// Update a config
 	// Don't include no-bind-mounts because global testing
 	// will turn it on and break this
-	args = []string{"config", "global", "--project-tld=ddev.test", "--instrumentation-opt-in=false", "--omit-containers=ddev-ssh-agent", "--performance-mode=mutagen", "--router-bind-all-interfaces=true", "--internet-detection-timeout-ms=850", "--table-style=bright", "--simple-formatting=true", "--use-hardened-images=true", "--fail-on-hook-fail=true", `--web-environment="SOMEENV=some+val"`, `--xdebug-ide-location=container`, `--router-http-port=8081`, `--router-https-port=8882`, "--mailpit-http-port=18025", "--mailpit-https-port=10826", `--omit-project-name-by-default=true`, `--traefik-monitor-port=11999`}
+	args = []string{"config", "global", "--project-tld=ddev.test", "--instrumentation-opt-in=false", "--omit-containers=ddev-ssh-agent", "--performance-mode=mutagen", "--router-bind-all-interfaces=true", "--internet-detection-timeout-ms=850", "--table-style=bright", "--simple-formatting=true", "--use-hardened-images=true", "--fail-on-hook-fail=true", `--web-environment="SOMEENV=some+val"`, `--xdebug-ide-location=container`, `--router-http-port=8081`, `--router-https-port=8882`, "--mailpit-http-port=18025", "--mailpit-https-port=10826", `--omit-project-name-by-default=true`, `--traefik-monitor-port=11999`, `--omit-snapshot-on-delete=true`}
 	out, err = exec.RunCommand(DdevBin, args)
 	require.NoError(t, err)
 	assert.NoError(err, "error running ddev config global; output=%s", out)
@@ -101,25 +103,24 @@ func TestCmdGlobalConfig(t *testing.T) {
 	assert.Contains(out, fmt.Sprintf("performance-mode=%s", configTypes.PerformanceModeMutagen))
 	assert.Contains(out, "router-bind-all-interfaces=true")
 	assert.Contains(out, "internet-detection-timeout-ms=850")
-	assert.Contains(out, "use-letsencrypt=false")
-	assert.Contains(out, "letsencrypt-email=\n")
 	assert.Contains(out, "omit-project-name-by-default=true\n")
+	assert.Contains(out, "omit-snapshot-on-delete=true")
 	assert.Contains(out, "table-style=bright")
 	assert.Contains(out, "simple-formatting=true")
 	assert.Contains(out, "use-hardened-images=true")
 	assert.Contains(out, "fail-on-hook-fail=true")
-	assert.Contains(out, fmt.Sprintf("required-docker-compose-version=%s", globalconfig.DdevGlobalConfig.RequiredDockerComposeVersion))
-	assert.Contains(out, "use-docker-compose-from-path=false")
-	assert.Contains(out, "project-tld=")
-	assert.Contains(out, "wsl2-no-windows-hosts-mgt=false")
-
+	assert.Contains(out, "project-tld=ddev.test")
+	assert.Contains(out, "web-environment=[SOMEENV]")
 	assert.Contains(out, "xdebug-ide-location=container")
-	assert.Contains(out, "wsl2-no-windows-hosts-mgt=false")
 	assert.Contains(out, "router-http-port=8081")
 	assert.Contains(out, "router-https-port=8882")
 	assert.Contains(out, "mailpit-http-port=18025")
 	assert.Contains(out, "mailpit-https-port=10826")
 	assert.Contains(out, "traefik-monitor-port=11999")
+	// Settings not given on the command line are not reported
+	assert.NotContains(out, "use-letsencrypt=")
+	assert.NotContains(out, "wsl2-no-windows-hosts-mgt=")
+	assert.NotContains(out, "docker-buildx-version=")
 
 	globalconfig.EnsureGlobalConfig()
 	assert.False(globalconfig.DdevGlobalConfig.InstrumentationOptIn)
@@ -129,6 +130,7 @@ func TestCmdGlobalConfig(t *testing.T) {
 	assert.Equal("ddev.test", globalconfig.DdevGlobalConfig.ProjectTldGlobal)
 	assert.True(globalconfig.DdevGlobalConfig.UseHardenedImages)
 	assert.True(globalconfig.DdevGlobalConfig.FailOnHookFailGlobal)
+	assert.True(globalconfig.DdevGlobalConfig.OmitSnapshotOnDelete)
 	assert.True(globalconfig.DdevGlobalConfig.SimpleFormatting)
 	assert.Equal("bright", globalconfig.DdevGlobalConfig.TableStyle)
 	assert.Equal("container", globalconfig.DdevGlobalConfig.XdebugIDELocation)
@@ -137,8 +139,9 @@ func TestCmdGlobalConfig(t *testing.T) {
 
 	// Test that variables can be appended to the web environment
 	args = []string{"config", "global", `--web-environment-add="FOO=bar"`}
-	_, err = exec.RunCommand(DdevBin, args)
+	out, err = exec.RunCommand(DdevBin, args)
 	require.NoError(t, err)
+	require.Equal(t, "web-environment=[FOO]\n", out)
 
 	// Test that we can remove array elements with `--item=""`
 	args = []string{"config", "global", `--web-environment=""`, `--omit-containers=""`}
@@ -148,4 +151,39 @@ func TestCmdGlobalConfig(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, globalconfig.DdevGlobalConfig.WebEnvironment)
 	require.Empty(t, globalconfig.DdevGlobalConfig.OmitContainersGlobal)
+}
+
+// TestCmdGlobalConfigSSHAgentUpstream checks that `ddev config global
+// --ssh-agent-upstream` accepts and persists the path forms schema.json
+// allows alongside "host" and a Unix absolute path: a "~/..." path on every
+// OS, and a drive-letter or UNC path on native Windows.
+func TestCmdGlobalConfigSSHAgentUpstream(t *testing.T) {
+	assert := asrt.New(t)
+	backupConfig := globalconfig.DdevGlobalConfig
+	t.Cleanup(func() {
+		globalconfig.DdevGlobalConfig = backupConfig
+		if err := globalconfig.WriteGlobalConfig(globalconfig.DdevGlobalConfig); err != nil {
+			t.Logf("Unable to WriteGlobalConfig: %v", err)
+		}
+	})
+
+	values := []string{"host", "/absolute/path/agent.sock", "~/agent.sock", ""}
+	if nodeps.IsWindows() {
+		values = append(values, `C:\Users\me\agent.sock`, `\\.\pipe\openssh-ssh-agent`)
+	}
+
+	for _, value := range values {
+		args := []string{"config", "global", "--ssh-agent-upstream=" + value}
+		out, err := exec.RunCommand(DdevBin, args)
+		require.NoError(t, err, "value=%q output=%s", value, out)
+		assert.Contains(out, "ssh-agent-upstream="+value, "value=%q", value)
+
+		// Viper's Unmarshal only sets fields present in the file, so reset
+		// first: omitempty drops an empty value, and a stale in-memory field
+		// would otherwise survive the read.
+		globalconfig.DdevGlobalConfig = globalconfig.GlobalConfig{}
+		err = globalconfig.ReadGlobalConfig()
+		require.NoError(t, err, "value=%q", value)
+		assert.Equal(value, globalconfig.DdevGlobalConfig.SSHAgentUpstream, "value=%q", value)
+	}
 }

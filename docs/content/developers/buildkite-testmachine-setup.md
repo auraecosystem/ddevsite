@@ -2,9 +2,50 @@
 search:
   boost: .2
 ---
+
 # Buildkite Test Agent Setup
 
 We are using [Buildkite](https://buildkite.com/ddev) for Windows and macOS testing. The build machines and `buildkite-agent` must be set up before use.
+
+## Git Mirrors (all platforms)
+
+Set `git-mirrors-path` in `buildkite-agent.cfg` on every agent. Buildkite keeps
+a local bare mirror of the repository there, so a wiped or first-time build
+directory does an incremental fetch from the mirror instead of a fresh clone
+against GitHub — this avoids the exposure to transient network failures that
+a full clone has. See [Buildkite's Git mirrors docs](https://buildkite.com/docs/agent/self-hosted/configure/git-mirrors).
+
+`buildkite-agent.cfg` doesn't expand `$HOME`-style variables, only a leading
+`~`. Point `git-mirrors-path` at a sibling of that agent's own `build-path`,
+matching whichever form (`~` or absolute) `build-path` already uses. To check
+or fix an existing agent, run the matching one-liner below (idempotent — safe
+to run again) and restart the agent afterward:
+
+* macOS/Pi, `build-path="~/tmp/buildkite-agent/builds"`:
+
+    ```bash
+    CFG=/usr/local/etc/buildkite-agent/buildkite-agent.cfg; [ -f "$CFG" ] || CFG=/opt/homebrew/etc/buildkite-agent/buildkite-agent.cfg
+    grep -q '^git-mirrors-path=' "$CFG" || echo 'git-mirrors-path="~/tmp/buildkite-agent/git-mirrors"' | sudo tee -a "$CFG"
+    brew services restart buildkite-agent@4
+    ```
+
+* Linux/WSL2 package default, `build-path="/var/lib/buildkite-agent/builds"`:
+
+    ```bash
+    grep -q '^git-mirrors-path=' /etc/buildkite-agent/buildkite-agent.cfg || echo 'git-mirrors-path="/var/lib/buildkite-agent/git-mirrors"' | sudo tee -a /etc/buildkite-agent/buildkite-agent.cfg
+    sudo systemctl restart buildkite-agent
+    ```
+
+* Windows, `build-path=C:\Users\testbot\tmp\buildkite` (Git Bash):
+
+    ```bash
+    grep -q '^git-mirrors-path=' /c/buildkite-agent/buildkite-agent.cfg || echo 'git-mirrors-path="C:\Users\testbot\tmp\buildkite-git-mirrors"' >> /c/buildkite-agent/buildkite-agent.cfg
+    nssm.exe restart buildkite-agent
+    ```
+
+  Windows agents provisioned with the package default `build-path=C:\buildkite-agent\builds`
+  instead use `git-mirrors-path="C:\buildkite-agent\git-mirrors"` — check
+  `build-path` in the file first.
 
 ## Windows Test Agent Setup
 
@@ -13,16 +54,16 @@ We are using [Buildkite](https://buildkite.com/ddev) for Windows and macOS testi
 3. (WSL2/Docker Desktop and traditional Windows only): Install either [Docker Desktop for Windows](https://docs.docker.com/desktop/release-notes/) (from the release notes page, which is best maintained) or [Rancher Desktop](https://rancherdesktop.io/). With Rancher Desktop, turn off Kubernetes. (Rancher Desktop on Windows appears to be too unreliable to use at this point in its history.)
 4. In admin PowerShell, `Set-ExecutionPolicy -Scope "CurrentUser" -ExecutionPolicy "Unrestricted"`.
 5. In admin PowerShell, download and run [windows_buildkite_start.ps1](scripts/windows_buildkite_start.ps1) with `curl <url> -O windows_buildkite_start.ps1`.
-6. Install items as needed; `git`, `jq`, `mysql-cli`, `golang`, `make` are only required for a traditional Windows test machine. `choco install -y git jq  mysql-cli golang make mkcert netcat zip`.
+6. Install items as needed; `git`, `jq`, `mysql-cli`, `golang`, `make`, `nodejs-lts` are only required for a traditional Windows test machine. `choco install -y git jq mysql-cli golang make mkcert netcat zip nodejs-lts`.
 7. After restart, in **administrative** Git Bash window, `Rename-Computer <testbot-win10(home|pro)-<description>-1` and then `export BUILDKITE_AGENT_TOKEN=<token>`.
 8. (Traditional Windows test runner only): Download and run [windows_buildkite_setup.sh](scripts/windows_buildkite_setup.sh).
-9. If using Rancher Desktop, adjust the /c/buildkite-agent/buildkite-agent.cfg file to set `rancher-desktop=true` in the tags instead of `docker-desktop`. If using Docker Desktop, set `docker-desktop=true`.
+9. If using Rancher Desktop, adjust the /c/buildkite-agent/buildkite-agent.cfg file to set `rancher-desktop=true` in the tags instead of `docker-desktop`. If using Docker Desktop, set `docker-desktop=true`. While editing that file, also add `git-mirrors-path` (see [Git Mirrors](#git-mirrors-all-platforms)): `echo 'git-mirrors-path="C:\buildkite-agent\git-mirrors"' >> /c/buildkite-agent/buildkite-agent.cfg`.
 10. (Traditional Windows test runner only): Download and run [windows_postinstall.sh](scripts/windows_postinstall.sh).
 11. (Traditional Windows or Docker Desktop WSL2 Only) Launch Docker. It may require you to take further actions.
     * Check "Start Docker Desktop when you sign in" or the equivalent with Rancher Desktop.
     * Check "Add the *.docker.internal names to the host's /etc/hosts file"
     * Uncheck "SBOM Indexing"
-    * Under "Resources" uncheck "Resource Saver"
+    * Under "Resources" uncheck "Resource Saver" — **important**: Docker Desktop may re-enable this after a full restart. Verify it is unchecked after any Docker Desktop upgrade or manual restart. When Resource Saver is active, Docker Desktop pauses the Linux VM when no containers are running; `docker ps` and WSL2 integration fail until it is un-paused, causing spurious test failures.
 12. After starting Docker Desktop or Rancher Desktop, set the correct Docker context in the Git Bash window with `docker context use desktop-linux` (Docker Desktop) or `docker context use default` (Rancher Desktop).
 13. Log into Chrome with the user `ddevtestbot@gmail.com` and enable Chrome Remote Desktop.
 14. (Traditional Windows test runner only): Enable `gd`, `fileinfo`, and `curl` extensions in `/c/tools/php*/php.ini`.
@@ -43,43 +84,220 @@ We are using [Buildkite](https://buildkite.com/ddev) for Windows and macOS testi
 
 1. The Ubuntu distro should be set up with the user `buildkite-agent` and the password used for `ddevtestbot@gmail.com`.
 2. Stop Docker Desktop if it is running.
-3. (Optionally if hostname is not same as appropriate hostname for WSL2) set the hostname in `/etc/wsl.conf` in the network section, for example:
+3. Log into Chrome with the user `ddevtestbot@gmail.com` and enable Chrome Remote Desktop.
+4. Windows Terminal should be installed. Set "Ubuntu" (or this distro) as the default and have it start on Windows startup. Enable "copy on select" in behaviors.
+5. `nc.exe -L -p 9003` on Windows to trigger and allow Windows Defender.
+6. For a docker-ce/WSL2 runner (`BUILDKITE_DOCKER_TYPE=wsl2` below), Mirrored Mode
+   is normal: edit `~/.wslconfig` on Windows to add the WSL2 settings below. A
+   Docker Desktop runner (`BUILDKITE_DOCKER_TYPE=dockerforwindows`) keeps the
+   default NAT networking instead, so skip this step for it.
 
     ```
-    [network]
-    hostname=tb-wsl-16-dockerce
-    ```
-
-4. Log into Chrome with the user `ddevtestbot@gmail.com` and enable Chrome Remote Desktop.
-5. Windows Terminal should be installed. Set "Ubuntu" (or this distro) as the default and have it start on Windows startup. Enable "copy on select" in behaviors.
-6. `nc.exe -L -p 9003` on Windows to trigger and allow Windows Defender.
-7. Optionally edit the `~/.wslconfig` on Windows to add appropriate WSL2 memory allocation and `autoMemoryReclaim`
-
-    ```
-    memory=12GB
+    [wsl2]
+    networkingMode=Mirrored
     [experimental]
-    autoMemoryReclaim=dropcache
+    hostAddressLoopback=true
+    ```
+
+7. **Before running the setup script**, configure mkcert CAROOT on Windows (PowerShell as the testbot user). This must happen first so that `mkcert -install` in WSL2 installs the Windows CA (not a separate Linux-local one) into the Linux trust store:
+
+    ```powershell
+    choco install mkcert -y   # if not already installed
+    mkcert -install
+    setx CAROOT (mkcert -CAROOT)
+    setx WSLENV "CAROOT/up"
+    wsl --terminate Ubuntu    # restart distro so WSLENV takes effect
     ```
 
 8. In the Ubuntu distro:
     1. `export BUILDKITE_AGENT_TOKEN=<token>` with the token from 1Password `BUILDKITE_AGENT_TOKEN`.
-    2. `export BUILDKITE_DOCKER_TYPE=dockerforwindows` or `export BUILDKITE_DOCKER_TYPE=wsl2`
+    2. `export BUILDKITE_DOCKER_TYPE=dockerforwindows` or `export BUILDKITE_DOCKER_TYPE=wsl2` — this also picks the `os=` agent tag the setup script writes: `wsl2-mirrored` for `wsl2` (docker-ce), plain `wsl2` for `dockerforwindows`, matching step 6 above.
     3. Optionally `export NGROK_TOKEN=<token>` with the `NGROK_TOKEN` from 1Password ngrok.com `nopaid` account.
-    4. Run the script [wsl2-test-runner-setup.sh](scripts/wsl2-test-runner-setup.sh) in the Ubuntu distro.
+    4. Run the script [wsl2-test-runner-setup.sh](scripts/wsl2-test-runner-setup.sh) in the Ubuntu distro. This script reads `CAROOT` from the Windows registry via `powershell.exe`, exports it before calling `mkcert -install`, and then creates `/etc/buildkite-agent/hooks/environment` to repeat this for every buildkite-agent job (since systemd does not propagate `WSLENV`). It also sets `git-mirrors-path="/var/lib/buildkite-agent/git-mirrors"` in `/etc/buildkite-agent/buildkite-agent.cfg` (see [Git Mirrors](#git-mirrors-all-platforms)).
 9. Restart the distro with `wsl.exe -t Ubuntu` and then restart it by opening the Ubuntu window.
 10. If using Docker Desktop, start Docker Desktop.
 11. In `~/workspace/ddev/.buildkite`, run `./testbot_maintenance.sh`.
 12. In `~/workspace/ddev/.buildkite`, run `./sanetestbot.sh` to check your work.
 
+## Windows Installer Test Distros
+
+The Windows GUI installer tests run in their own dedicated Buildkite pipeline
+(`windows-installer`, driven by `.buildkite/windows-installer.yml` +
+`.buildkite/installer-test.sh`), separate from the traditional Windows suite.
+Each matrix case is a parallel job that installs DDEV into a dedicated WSL2
+distro using a specific Docker provider.
+
+These tests need a **Windows-native** (`os=windows`) `buildkite-agent` — the same
+kind of agent as the traditional Windows runner — because they drive `wsl.exe`,
+`reg.exe`, and the installer `.exe`. The matrix spreads its jobs across all
+available `os=windows` agents, so adding more such machines increases parallelism.
+
+!!!warning "One `os=windows` agent per machine"
+    An installer run mutates global Windows state (registry `CAROOT`/`WSLENV` and
+    the machine-wide `mkcert` CA root). Two installer jobs must never run on the
+    same machine at the same time. A Buildkite agent runs one job at a time, so
+    running exactly **one** `os=windows` agent per physical machine guarantees
+    this; the jobs then only overlap across separate machines.
+
+The test does **not** create distros — it resets and reuses them. Provision the
+six named instances **once per runner** (the normal install handles user
+creation; complete first-run with the `testbot` user, which is the default user
+the test harness expects):
+
+```powershell
+wsl --install Ubuntu       --name ddev-test-ubuntu-ce
+wsl --install Ubuntu       --name ddev-test-ubuntu-desktop
+wsl --install Ubuntu-24.04 --name ddev-test-ubuntu2404-ce
+wsl --install Ubuntu-24.04 --name ddev-test-ubuntu2404-desktop
+wsl --install Debian       --name ddev-test-debian-ce
+wsl --install Debian       --name ddev-test-debian-desktop
+```
+
+For the `*-desktop` instances only, enable Docker Desktop's WSL integration for
+that instance (Docker Desktop → Settings → Resources → WSL integration).
+Otherwise the `docker-desktop` cases skip gracefully. The base distro names
+above (`Ubuntu`, `Ubuntu-24.04`, `Debian`) must be available in the WSL catalog;
+verify with `wsl -l -o`.
+
+Remove `unattended-upgrades` from all test instances. Ubuntu 24.04 in particular
+runs it on boot and holds the dpkg lock while the installer is trying to run
+`apt-get`, causing intermittent failures. It serves no purpose in these
+short-lived test distros:
+
+```powershell
+foreach ($d in @("ddev-test-ubuntu-ce","ddev-test-ubuntu-desktop","ddev-test-ubuntu2404-ce","ddev-test-ubuntu2404-desktop","ddev-test-debian-ce","ddev-test-debian-desktop")) {
+    wsl -d $d -u root apt-get remove -y unattended-upgrades 2>$null
+}
+```
+
+Install [wsl-fix-interop](https://github.com/rfay/wsl-fix-interop) in all test
+instances and configure it to run on every distro boot. WSL interop (binfmt_misc)
+loses its `WSLInterop` entry whenever `docker-ce` is removed — the package's
+post-remove scripts clear binfmt_misc entries. Without it, any Windows `.exe`
+called from within WSL fails with "Exec format error", causing `mkcert.exe`
+failures and TLS test failures.
+
+First install the script and sudoers entry:
+
+```powershell
+foreach ($d in @("ddev-test-ubuntu-ce","ddev-test-ubuntu-desktop","ddev-test-ubuntu2404-ce","ddev-test-ubuntu2404-desktop","ddev-test-debian-ce","ddev-test-debian-desktop")) {
+    wsl -d $d -u root bash -c "cd /tmp && curl -fsSL https://raw.githubusercontent.com/rfay/wsl-fix-interop/main/wsl-fix-interop -o wsl-fix-interop && curl -fsSL https://raw.githubusercontent.com/rfay/wsl-fix-interop/main/install.sh -o install.sh && bash install.sh testbot"
+}
+```
+
+Then wire it into `/etc/wsl.conf` in each distro so it re-registers automatically
+on every distro boot (including after `docker-ce` removal clears binfmt_misc):
+
+```powershell
+foreach ($d in @("ddev-test-ubuntu-ce","ddev-test-ubuntu-desktop","ddev-test-ubuntu2404-ce","ddev-test-ubuntu2404-desktop","ddev-test-debian-ce","ddev-test-debian-desktop")) {
+    wsl -d $d -u root bash -c "grep -q 'wsl-fix-interop' /etc/wsl.conf 2>/dev/null || printf '\n[boot]\ncommand = /usr/local/sbin/wsl-fix-interop\n' >> /etc/wsl.conf"
+}
+```
+
+To run a single case manually (e.g. for debugging), select it by instance name,
+which is also the Go subtest name:
+
+```bash
+make testwininstaller TESTARGS="-run TestWindowsInstallerWSL2/ddev-test-debian-ce"
+```
+
+### WSL2 install-script tests
+
+The `ddev-windows-installer` pipeline also tests the manual WSL2 install
+PowerShell scripts (`scripts/install_ddev_wsl2_docker_inside.ps1` and
+`scripts/install_ddev_wsl2_docker_desktop.ps1`) against current Ubuntu, as the
+`ps1-docker-inside` and `ps1-docker-desktop` matrix cases. These run only when a
+ps1 script (or its test/plumbing) changes, plus on `main` and manual builds.
+
+They **reuse the two Ubuntu instances** above — no extra provisioning. The
+scripts now accept a `-Distro` parameter so the test passes the distro name
+directly without changing the system default:
+
+* `ps1-docker-inside` → `ddev-test-ubuntu-ce`, which must have Docker Desktop WSL
+  integration **disabled** (the script aborts if `/mnt/wsl/docker-desktop`
+  exists). This is the same state the docker-ce installer case wants.
+* `ps1-docker-desktop` → `ddev-test-ubuntu-desktop`, which must have Docker
+  Desktop running with WSL integration **enabled**.
+* `mkcert.exe` must be on the Windows PATH (already installed via choco above).
+
+Run one manually with:
+
+```bash
+make testwsl2scripts TESTARGS="-run TestWSL2InstallScripts/docker-inside"
+```
+
 ## Icinga2 monitoring setup for WSL2 instances
 
 1. Icinga Director web UI, configure the host on `monitor.ddev.com`, normally making a copy of an existing identical item.
 2. Deploy the new host using Icinga Director.
-3. `sudo icinga2 node wizard` to configure the agent, see [docs](https://icinga.com/docs/icinga-2/latest/doc/06-distributed-monitoring/#agentsatellite-setup-on-linux)
+3. `sudo icinga2 node wizard` to configure the agent, see [docs](https://icinga.com/docs/icinga-2/latest/doc/06-distributed-monitoring/#agentsatellite-setup-on-linux).
+
+    ```
+    buildkite-agent@tb-wsldd-16:~$ sudo icinga2 node wizard
+    Welcome to the Icinga 2 Setup Wizard!
+
+    We will guide you through all required configuration details.
+
+    Please specify if this is an agent/satellite setup ('n' installs a master setup) [Y/n]:
+
+    Starting the Agent/Satellite setup routine...
+
+    Please specify the common name (CN) [tb-wsldd-16.localdomain]: tb-wsldd-16
+
+    Please specify the parent endpoint(s) (master or satellite) where this node should connect to:
+    Master/Satellite Common Name (CN from your master/satellite node): monitor.ddev.com
+
+    Do you want to establish a connection to the parent node from this node? [Y/n]: y
+    Please specify the master/satellite connection information:
+    Master/Satellite endpoint host (IP address or FQDN): monitor.ddev.com
+    Master/Satellite endpoint port [5665]:
+
+    Add more master/satellite endpoints? [y/N]:
+    Parent certificate information:
+
+    Version:             3
+    Subject:             CN = monitor.ddev.com
+    Issuer:              CN = Icinga CA
+    Valid From:          Feb 22 22:34:09 2026 GMT
+    Valid Until:         Mar 26 22:34:09 2027 GMT
+    Serial:              02:0e:20:7e:a1:a9:f0:b4:8d:07:63:49:46:fb:d7:90:29:fd:c4:bc
+
+    Signature Algorithm: sha256WithRSAEncryption
+    Subject Alt Names:   monitor.ddev.com
+    Fingerprint:         4A 99 90 F6 F4 F7 F9 20 1B DD 9D 51 EE 86 50 C7 BB 38 09 9B B0 40 4A E0 52 C9 52 2D A1 B8 72 D5
+
+    Is this information correct? [y/N]: y
+
+    Please specify the request ticket generated on your Icinga 2 master (optional).
+    (Hint: # icinga2 pki ticket --cn 'tb-wsldd-16'): c5b9fa649792abcde3941862a664be0fe8d126
+    Please specify the API bind host/port (optional):
+    Bind Host []:
+    Bind Port []:
+
+    Accept config from parent node? [y/N]: y
+    Accept commands from parent node? [y/N]: y
+
+    Reconfiguring Icinga...
+
+    Local zone name [tb-wsldd-16]:
+    Parent zone name [master]:
+
+    Default global zones: global-templates director-global
+    Do you want to specify additional global zones? [y/N]:
+
+    Do you want to disable the inclusion of the conf.d directory [Y/n]:
+    Disabling the inclusion of the conf.d directory...
+
+    Done.
+
+    Now restart your Icinga 2 daemon to finish the installation!
+    buildkite-agent@tb-wsldd-16:~$ sudo systemctl restart icinga2
+    ```
+
 4. Restart `sudo systemctl restart icinga2`
 5. On `monitor.ddev.com` edit `/usr/local/bin/check_buildkite_agents.sh` to include the hostname of the new instance.
 
-## macOS Docker Desktop Test Agent Setup (Intel and Apple Silicon)
+## macOS Docker Desktop Test Agent Setup (Apple Silicon)
 
 1. Create the user “testbot” on the machine. Use the password for `ddevtestbot@gmail.com`, available in 1Password.
 2. Change the name of the machine to something in keeping with current style, perhaps `testbot-macos-arm64-8`. This is done in **Settings** → **General** → **About** → **Name** and in **Sharing** → **Computer Name** and in **Sharing** → **Local Hostname**.
@@ -93,7 +311,7 @@ We are using [Buildkite](https://buildkite.com/ddev) for Windows and macOS testi
 10. `sudo mkdir -p /usr/local/bin && sudo chown -R testbot /usr/local/bin`
 11. Install [Homebrew](https://brew.sh/) `/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"`
 12. After installing Homebrew follow the instructions it gives you at the end to add brew to your PATH.
-13. Install everything you’ll need with `brew install buildkite/buildkite/buildkite-agent bats-core composer ddev/ddev/ddev git golang jq mysql-client@8.0 mkcert netcat p7zip  && brew install --cask docker iterm2 ngrok && brew link --force mysql-client`.
+13. Install everything you’ll need with `brew install buildkite/buildkite/buildkite-agent@4 bats-core composer ddev/ddev/ddev git golang jq mysql-client@8.0 mkcert netcat p7zip  && brew install --cask docker iterm2 ngrok && brew link --force mysql-client`.
 14. Run `ngrok authtoken <token>` with token for free account from 1Password.
 15. Run `mkcert -install`.
 16. If Docker Desktop will be deployed, run Docker manually and go through its configuration routine.
@@ -113,7 +331,8 @@ We are using [Buildkite](https://buildkite.com/ddev) for Windows and macOS testi
     * the agent `name` (the name of the machine).
     * `tags`, like `"os=macos,architecture=arm64,osvariant=sonoma,dockertype=dockerformac,rancher-desktop=true,orbstack=true,docker-desktop=true"`
     * `build-path="~/tmp/buildkite-agent/builds"`
-23. Run `brew services start buildkite-agent`.
+    * `git-mirrors-path="~/tmp/buildkite-agent/git-mirrors"` (see [Git Mirrors](#git-mirrors-all-platforms))
+23. Run `brew services start buildkite-agent@4`.
 24. Run `bash ~/workspace/ddev/.buildkite/testbot_maintenance.sh`.
 25. Run `bash ~/workspace/ddev/.buildkite/sanetestbot.sh` to check your work.
 26. The `testbot` user's SSH account is used for monitoring, so `ssh-keygen` and then add the public key `id_testbot` from 1Password to `~/.ssh/authorized_keys` and `chmod 600 ~/.ssh/authorized_keys`.
@@ -136,8 +355,102 @@ Then the Buildkite agent must be configured with tags `colima_vz=true`.
 
 ## Additional Lima macOS setup
 
-1. `limactl create --name=lima-vz --vm-type=vz --mount-type=virtiofs --mount-writable --mount="~/:w" --memory=6 --cpus=4 --disk=60 template://docker`
+1. `limactl create --name=lima-vz --vm-type=vz --mount-type=virtiofs --mount-writable --mount="~/:w" --memory=6 --cpus=4 --disk=60 template:docker`
 2. `limactl start lima-vz`
 3. `docker context use lima-lima-vz`
 
 Then the Buildkite agent must be configured with tags `lima=true`.
+
+## Additional Podman Rootless macOS Setup
+
+Podman rootless on macOS runs containers in a lightweight VM managed by `podman machine`.
+
+1. Follow the instructions for [Podman on macOS](../users/install/docker-installation.md#macos-podman-rootless) to install Podman and set up a rootless Podman machine with 6GB of memory. On a testbot whose machine was created with the 2GB default, resize it with `podman machine stop && podman machine set --memory 6144`.
+2. Verify connectivity: `docker context use podman-rootless && docker ps` should return an empty container list.
+3. Stop the machine when done with initial setup: `podman machine stop`
+
+!!!note
+    Rootless containers cannot bind to ports below 1024. `test.sh` handles this automatically by setting `DDEV_XDG_CONFIG_HOME` to an isolated config directory and configuring `router-http-port=8080` and `router-https-port=8443` via `ddev config global`.
+
+Then configure the Buildkite agent with tag `podman-rootless=true` in addition to the standard macOS tags:
+
+```
+tags="os=macos,architecture=arm64,osvariant=sonoma,...,podman-rootless=true"
+```
+
+The `test.sh` script uses `podman machine start` and `docker context use podman-rootless` to activate the provider, then stops the machine in the cleanup trap on exit.
+
+## Performance Benchmark Harness Prerequisites
+
+The nightly performance benchmark harness (`perf/`, see `perf/README.md`)
+needs Node.js on every testbot, for the Puppeteer-driven Drupal install metric
+(`perf/metrics/03-drupal-install/`). On Linux, Puppeteer's downloaded Chrome
+build also needs a handful of OS shared libraries a bare testbot image doesn't
+ship with.
+
+### WSL2 / Linux testbots (docker-ce or Docker Desktop's WSL2 backend)
+
+1. Install Node.js 22, matching the version `perf-linux.yml` uses:
+
+    ```bash
+    curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+    sudo apt-get install -y nodejs
+    ```
+
+2. Install Chrome's runtime shared library dependencies. A bare Ubuntu 24.04
+   image is missing all of these; without them Puppeteer fails the first time
+   it tries to launch Chrome, with an error like `error while loading shared
+   libraries: libatk-1.0.so.0` (or any of the others below, one at a time as
+   each is fixed):
+
+    ```bash
+    sudo apt-get install -y \
+      libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libasound2t64 \
+      libxkbcommon0 libgbm1 libx11-6 libxext6 libxcb1 libcairo2 \
+      libpango-1.0-0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
+      libatspi2.0-0
+    ```
+
+    The `t64` suffix on some of these is Ubuntu 24.04-specific: it renamed
+    several packages during the 64-bit `time_t` ABI transition (`libatk1.0-0`
+    → `libatk1.0-0t64`, etc.). Older or non-Ubuntu distros use the
+    un-suffixed names. This list was derived by running `ldd` against the
+    actual downloaded Chrome binary
+    (`~/.cache/puppeteer/chrome/linux-*/chrome-linux64/chrome`); if a future
+    Chrome version needs more, `ldd <path-to-chrome> | grep "not found"` shows
+    what's still missing.
+
+### macOS testbots
+
+Add `node` to the `brew install` list in step 13 of the macOS setup above.
+
+### Traditional (native) Windows testbots
+
+Install Node.js via `choco install -y nodejs-lts` (see step 6 of Windows Test
+Agent Setup above). Confirmed working, including headless Chrome launching
+from the NSSM-installed `buildkite-agent` service context.
+
+## Running Targeted Builds on Specific Pipelines
+
+To test a branch against only selected pipelines (e.g. WSL2 only) or to run a subset of tests without waiting for the full matrix:
+
+1. Push your branch to upstream.
+2. In the [Buildkite dashboard](https://buildkite.com/ddev), open the pipeline you want (e.g. "wsl2-mirrored").
+3. Click **New Build** and set the branch to your branch name.
+4. Expand **Environment Variables** and add:
+
+    ```
+    TESTARGS=-run TestCheck -failfast
+    ```
+
+    Adjust the `-run` pattern to match the tests you want. Use a common prefix where possible. If you need `|` for alternation, wrap the regular expression in single quotes so the shell does not interpret the pipe as a pipeline operator:
+
+    ```
+    TESTARGS=-run 'TestCheckLiveConnectivity|TestCheckMkcertInstallation' -failfast
+    ```
+
+    `TESTARGS` defaults to `-failfast` when not set, so include `-failfast` explicitly if you want it.
+
+5. Click **Create Build**.
+
+Use `[skip ci]` in your commit message to prevent all pipelines from triggering automatically when you push, then manually trigger only the pipelines you need.

@@ -5,12 +5,27 @@ SHELL = /bin/bash
 
 SANITIZED_DOCKER_REPO = $(subst /,_,$(DOCKER_REPO))
 
+# Value for the com.ddev.image-tag label. Separate from VERSION because a
+# multi-arch push builds each arch under an intermediate `<tag>-<arch>` tag that
+# is combined into the manifest and then deleted; the label has to record the
+# tag people actually pull.
+DDEV_IMAGE_TAG ?= $(VERSION)
+
 DOTFILE_IMAGE = $(subst /,_,$(IMAGE))-$(VERSION)
+
+# Standard OCI descriptive metadata (source, revision, created, ...) shared with
+# every other image and with the push workflows - see containers/image-metadata.sh.
+DDEV_IMAGE_LABELS = $(shell ../image-metadata.sh labels $(DDEV_IMAGE_TAG) $(notdir $(DOCKER_REPO)))
+
+# Podman reads an OCI image config without its Healthcheck
+# (containers/podman#18904), so load Docker media types there. Docker keeps
+# its default output: its containerd store adds attestations this format rejects.
+LOCAL_OUTPUT_ARGS := $(shell docker version --format '{{range .Server.Components}}{{.Name}};{{end}}' 2>/dev/null | grep -q 'Podman Engine' && echo --output=type=docker,oci-mediatypes=false)
 
 .PHONY: container push
 
 container: container-name
-	docker build -t $(DOCKER_REPO):$(VERSION) $(DOCKER_ARGS) --label "build-info=$(DOCKER_REPO):$(VERSION) commit=$(shell git describe --tags --always)" .
+	docker build $(LOCAL_OUTPUT_ARGS) -t $(DOCKER_REPO):$(VERSION) $(DOCKER_ARGS) --label "build-info=$(DOCKER_REPO):$(VERSION) commit=$(shell git describe --tags --always)" $(DDEV_IMAGE_LABELS) .
 
 container-name:
 	@echo "container: $(DOCKER_REPO):$(VERSION)"
@@ -29,5 +44,6 @@ push:
 			$${tags} \
 			--label "build-info=$(DOCKER_ORG)/$${item}:$(VERSION) commit=$(shell git describe --tags --always) built $$(date) by $$(id -un) on $$(hostname)" \
 			--label "maintainer=DDEV <support@ddev.com>" \
+			$$(../image-metadata.sh labels "$(DDEV_IMAGE_TAG)" "$${item}") \
 			$(DOCKER_ARGS) . ; \
 	done

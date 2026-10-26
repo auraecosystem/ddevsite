@@ -2,22 +2,177 @@ package ddevapp
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io/fs"
+	"net"
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"text/template"
+	"time"
 
 	ddevImages "github.com/ddev/ddev/pkg/docker"
 	"github.com/ddev/ddev/pkg/dockerutil"
+	"github.com/ddev/ddev/pkg/exec"
 	"github.com/ddev/ddev/pkg/globalconfig"
+	"github.com/ddev/ddev/pkg/nodeps"
 	"github.com/ddev/ddev/pkg/util"
-	"github.com/ddev/ddev/pkg/versionconstants"
+	"github.com/docker/compose/v5/cmd/display"
+	"github.com/docker/compose/v5/pkg/api"
 	"github.com/moby/moby/api/types/container"
 )
 
 // SSHAuthName is the "machine name" of the ddev-ssh-agent docker-compose service
 const SSHAuthName = "ddev-ssh-agent"
+
+// sshAgentUpstreamLabel records the upstream socket a ddev-ssh-agent container
+// relays to, so a changed ssh_agent_upstream recreates the container.
+const sshAgentUpstreamLabel = "com.ddev.ssh-agent-upstream"
+
+// hostServicesSSHAuthSock is where Docker Desktop, OrbStack, and Colima
+// (started with --ssh-agent) expose the macOS host's SSH agent to containers.
+const hostServicesSSHAuthSock = "/run/host-services/ssh-auth.sock"
+
+// SSHAgentUpstreamSocket returns the socket, as seen by the Docker host, that
+// ddev-ssh-agent relays to when ssh_agent_upstream is set, or "" when
+// ddev-ssh-agent runs its own agent.
+func SSHAgentUpstreamSocket() (string, error) {
+	upstream := globalconfig.DdevGlobalConfig.SSHAgentUpstream
+	// Windows agents such as 1Password and OpenSSH listen on a named pipe,
+	// which Windows Docker providers can't pass to a Linux container.
+	if upstream != "" && nodeps.IsWindows() {
+		return "", fmt.Errorf("ssh_agent_upstream=%s doesn't work on Windows, where Docker can't reach agents such as 1Password or the OpenSSH agent; run 'ddev config global --ssh-agent-upstream=\"\"' and add key files with 'ddev auth ssh'", upstream)
+	}
+	switch upstream {
+	case "":
+		return "", nil
+	case "host":
+		// Docker Desktop on Windows forwards no agent, and from WSL2 it binds
+		// sockets from the user's distro, so $SSH_AUTH_SOCK works there.
+		if (dockerutil.IsDockerDesktop() && !nodeps.IsWSL2()) || dockerutil.IsOrbStack() || dockerutil.IsColima() {
+			return hostServicesSSHAuthSock, nil
+		}
+		if dockerutil.IsLima() {
+			return limaForwardedAgentSocket()
+		}
+		// Other macOS providers run Docker in a VM that cannot reach a host
+		// socket.
+		if !nodeps.IsLinux() {
+			return "", fmt.Errorf("ssh_agent_upstream=host works on this OS only with Docker Desktop, OrbStack, Colima, or Lima, which forward the host's SSH agent; use one of them or run 'ddev config global --ssh-agent-upstream=\"\"'")
+		}
+		sock := os.Getenv("SSH_AUTH_SOCK")
+		if sock == "" {
+			return "", fmt.Errorf("ssh_agent_upstream=host but SSH_AUTH_SOCK is not set; start or forward an SSH agent first")
+		}
+		sock, err := resolveSSHAgentSocket(sock, fmt.Sprintf("SSH_AUTH_SOCK in this shell (%s)", sock), "open a new terminal")
+		if err != nil {
+			return "", err
+		}
+		return requireSSHAgentSocketDir(sock)
+	default:
+		sock, _ := util.ExpandHomedir(upstream)
+		if !filepath.IsAbs(sock) {
+			return "", fmt.Errorf("ssh_agent_upstream must be empty, 'host', or an absolute socket path, not '%s'", upstream)
+		}
+		sock, err := resolveSSHAgentSocket(sock, fmt.Sprintf("ssh_agent_upstream (%s)", sock), "point ssh_agent_upstream at the current socket")
+		if err != nil {
+			return "", err
+		}
+		return requireSSHAgentSocketDir(sock)
+	}
+}
+
+// ErrSSHAgentSocketStale means the upstream is a symlink to a socket that is
+// gone, such as a forwarded agent's socket after VS Code or SSH reconnects.
+var ErrSSHAgentSocketStale = errors.New("stale SSH agent socket")
+
+// resolveSSHAgentSocket follows symlinks, because ddev-ssh-agent mounts the
+// socket's directory, where a symlink's target is out of reach.
+func resolveSSHAgentSocket(sock string, desc string, remedy string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(sock)
+	if err == nil {
+		return resolved, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return "", fmt.Errorf("can't resolve %s: %w", desc, err)
+	}
+	if fi, err := os.Lstat(sock); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		target, _ := os.Readlink(sock)
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(sock), target)
+		}
+		// A target directory that still exists means the agent hasn't started
+		// yet; a forwarded agent's directory goes away with its connection.
+		if dir, err := filepath.EvalSymlinks(filepath.Dir(target)); err == nil {
+			return filepath.Join(dir, filepath.Base(target)), nil
+		}
+		return "", fmt.Errorf("%w: %s points to %s, an agent socket that no longer exists, which happens after VS Code or SSH reconnects; %s", ErrSSHAgentSocketStale, desc, target, remedy)
+	}
+	// The agent hasn't created its socket yet.
+	if dir, err := filepath.EvalSymlinks(filepath.Dir(sock)); err == nil {
+		return filepath.Join(dir, filepath.Base(sock)), nil
+	}
+	return sock, nil
+}
+
+// requireSSHAgentSocketDir returns an error when the socket's directory is
+// missing, because Docker would create it as a root-owned bind-mount source,
+// and the agent could then no longer create its socket there.
+func requireSSHAgentSocketDir(sock string) (string, error) {
+	if _, err := os.Stat(filepath.Dir(sock)); err != nil {
+		return "", fmt.Errorf("the SSH agent socket directory %s doesn't exist; start the agent first, or run 'ddev config global --ssh-agent-upstream=\"\"'", filepath.Dir(sock))
+	}
+	return sock, nil
+}
+
+// limaForwardedAgentSocket returns the socket that Lima's persistent SSH
+// connection forwards the host agent to when ssh.forwardAgent is enabled.
+// Its path is random and changes when the VM restarts.
+func limaForwardedAgentSocket() (string, error) {
+	info, err := dockerutil.GetDockerClientInfo()
+	if err != nil {
+		return "", err
+	}
+	instance := strings.TrimPrefix(info.Name, "lima-")
+	out, err := exec.RunHostCommand("limactl", "shell", instance, "printenv", "SSH_AUTH_SOCK")
+	sock := strings.TrimSpace(out)
+	if err != nil || sock == "" {
+		return "", fmt.Errorf("the Lima instance '%s' does not forward an SSH agent; enable it with 'limactl edit %s --set .ssh.forwardAgent=true', or run 'ddev config global --ssh-agent-upstream=\"\"'", instance, instance)
+	}
+	return sock, nil
+}
+
+// CheckSSHAgentUpstreamListening returns an error when no agent accepts
+// connections on the upstream socket. A socket a provider forwards with "host"
+// is inside its VM, so it can't be checked from here.
+func CheckSSHAgentUpstreamListening(upstream string) error {
+	if globalconfig.DdevGlobalConfig.SSHAgentUpstream == "host" &&
+		(upstream == hostServicesSSHAuthSock || dockerutil.IsLima()) {
+		return nil
+	}
+	conn, err := net.DialTimeout("unix", upstream, 2*time.Second)
+	if opErr, ok := errors.AsType[*net.OpError](err); ok {
+		return opErr.Err
+	}
+	if err != nil {
+		return err
+	}
+	return conn.Close()
+}
+
+// sshAgentUpstreamMount returns the bind mount that exposes the upstream socket
+// under /upstream, and the socket's name there.
+func sshAgentUpstreamMount(upstream string) (mount string, name string) {
+	// A host agent can recreate its socket, which a file bind mount would
+	// miss, so mount the directory. Provider sockets live as long as the VM,
+	// and Colima's is a symlink that only a file mount resolves.
+	if upstream == hostServicesSSHAuthSock {
+		return upstream + ":/upstream/agent.sock", "agent.sock"
+	}
+	return path.Dir(upstream) + ":/upstream", path.Base(upstream)
+}
 
 // SSHAuthComposeYAMLPath returns the filepath to the base .ssh-auth-compose yaml file.
 func SSHAuthComposeYAMLPath() string {
@@ -36,16 +191,46 @@ func FullRenderedSSHAuthComposeYAMLPath() string {
 
 // EnsureSSHAgentContainer ensures the ssh-auth container is running.
 func (app *DdevApp) EnsureSSHAgentContainer() error {
+	RunUpgradeCheck()
+
+	util.Verbose("Ensuring ddev-ssh-agent container is running with the current image")
+	// An unusable upstream must not block projects from starting.
+	upstream, err := SSHAgentUpstreamSocket()
+	if err != nil {
+		util.Warning("%v; using DDEV's own SSH agent instead", err)
+	}
+	// Keep relaying to a socket that isn't there yet, because the directory
+	// mount lets the relay reach the agent once it starts.
+	var listenErr error
+	if upstream != "" {
+		if listenErr = CheckSSHAgentUpstreamListening(upstream); listenErr != nil {
+			util.Warning("No SSH agent is listening at %s (%v); containers can't use its keys until that agent is running", upstream, listenErr)
+		}
+	}
+	// The lock is not reentrant, so the network has to exist before it is taken.
+	dockerutil.EnsureDdevNetwork()
+
+	// A download can be slow, so it happens before the lock is taken.
+	if err := dockerutil.Pull(ddevImages.GetSSHAuthImage()); err != nil {
+		return err
+	}
+
+	// Released before the wait for the container to become ready.
+	unlock := dockerutil.AcquireGlobalLock("ddev-ssh-agent setup")
+	defer unlock()
+
 	sshContainer, err := findDdevSSHAuth()
 	if err != nil {
 		return err
 	}
-	// If we already have a running ssh container, there's nothing to do.
-	if sshContainer != nil && (sshContainer.State == "running" || sshContainer.State == "starting") {
+	// Nothing to do if the ssh container is running with the current image and upstream.
+	// Use HasSuffix to handle registry prefixes (e.g. docker.io/) that Podman includes in image names.
+	if sshContainer != nil &&
+		strings.HasSuffix(sshContainer.Image, ddevImages.GetSSHAuthImage()) &&
+		sshContainer.Labels[sshAgentUpstreamLabel] == upstream &&
+		(sshContainer.State == "running" || sshContainer.State == "starting") {
 		return nil
 	}
-
-	dockerutil.EnsureDdevNetwork()
 
 	composeFile, err := app.CreateSSHAuthComposeFile()
 	if err != nil {
@@ -54,20 +239,47 @@ func (app *DdevApp) EnsureSSHAgentContainer() error {
 
 	_ = app.DockerEnv()
 
-	err = dockerutil.Pull(ddevImages.GetSSHAuthImage())
-	if err != nil {
-		return err
+	downProject, loadErr := dockerutil.LoadComposeProject([]string{composeFile}, api.ProjectLoadOptions{
+		ProjectName: SSHAuthName,
+	})
+	if loadErr != nil {
+		util.Warning("failed to load compose project for %s: %v", composeFile, loadErr)
+	} else {
+		downCtx, downSvc, svcErr := dockerutil.NewComposeService()
+		if svcErr != nil {
+			util.Warning("failed to create compose service: %v", svcErr)
+		} else if downErr := downSvc.Down(downCtx, downProject.Name, api.DownOptions{Project: downProject, RemoveOrphans: true}); downErr != nil {
+			util.Warning("failed to docker-compose down on %s: %v", composeFile, downErr)
+		}
 	}
 
-	// run docker-compose up -d
-	// This will force-recreate, discarding existing auth if there is a stopped container.
-	_, _, err = dockerutil.ComposeCmd(&dockerutil.ComposeCmdOpts{
-		ComposeFiles: []string{composeFile},
-		Action:       []string{"-p", SSHAuthName, "up", "--build", "--force-recreate", "-d"},
+	// Now restart ddev-ssh-agent
+	upProject, err := dockerutil.LoadComposeProject([]string{composeFile}, api.ProjectLoadOptions{
+		ProjectName: SSHAuthName,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to start ddev-ssh-agent: %v", err)
 	}
+	upCtx, upSvc, err := dockerutil.NewComposeService()
+	if err != nil {
+		return fmt.Errorf("failed to start ddev-ssh-agent: %v", err)
+	}
+	progress := display.ModeQuiet
+	if globalconfig.DdevVerbose {
+		progress = display.ModePlain
+	}
+	err = upSvc.Up(upCtx, upProject, api.UpOptions{
+		Create: api.CreateOptions{
+			Build:         &api.BuildOptions{Progress: progress},
+			RemoveOrphans: true,
+		},
+		Start: api.StartOptions{Project: upProject},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to start ddev-ssh-agent: %v", err)
+	}
+
+	unlock()
 
 	// ensure we have a happy sshAuth
 	label := map[string]string{
@@ -81,12 +293,24 @@ func (app *DdevApp) EnsureSSHAgentContainer() error {
 		return fmt.Errorf("ddev-ssh-agent failed to become ready; log=%s, err=%v", logOutput, err)
 	}
 
-	util.Warning("ssh-agent container is running: If you want to add authentication to the ssh-agent container, run 'ddev auth ssh' to enable your keys.")
+	if upstream != "" {
+		if listenErr == nil {
+			util.Success("ssh-agent container is relaying to the SSH agent at %s", upstream)
+		}
+	} else {
+		util.Warning("ssh-agent container is running: If you want to add authentication to the ssh-agent container, run 'ddev auth ssh' to enable your keys.")
+	}
 	return nil
 }
 
 // RemoveSSHAgentContainer brings down the ddev-ssh-agent if it's running.
 func RemoveSSHAgentContainer() error {
+	defer dockerutil.AcquireGlobalLock("ddev-ssh-agent setup")()
+	return removeSSHAgentContainer()
+}
+
+// removeSSHAgentContainer is RemoveSSHAgentContainer for callers that already hold the global lock.
+func removeSSHAgentContainer() error {
 	// Stop the container if it exists
 	err := dockerutil.RemoveContainer(globalconfig.DdevSSHAgentContainer)
 	if err != nil {
@@ -94,7 +318,9 @@ func RemoveSSHAgentContainer() error {
 			return err
 		}
 	}
-	util.Warning("The ddev-ssh-agent container has been removed. When you start it again you will have to use 'ddev auth ssh' to provide key authentication again.")
+	if globalconfig.DdevGlobalConfig.SSHAgentUpstream == "" {
+		util.Warning("The ddev-ssh-agent container has been removed. When you start it again you will have to use 'ddev auth ssh' to provide key authentication again.")
+	}
 	return nil
 }
 
@@ -107,26 +333,25 @@ func (app *DdevApp) CreateSSHAuthComposeFile() (string, error) {
 	}
 	defer util.CheckClose(f)
 
-	context := "./.sshimageBuild"
-	err := WriteBuildDockerfile(app, filepath.Join(globalconfig.GetGlobalDdevDir(), context, "Dockerfile"), "", nil, "", "")
-	if err != nil {
-		return "", err
-	}
-
-	uid, gid, username := dockerutil.GetContainerUser()
+	uid, gid, _ := dockerutil.GetContainerUser()
+	timezone, _ := util.GetLocalTimezone()
 
 	_ = app.DockerEnv()
 
-	templateVars := map[string]interface{}{
-		"ssh_auth_image":   versionconstants.SSHAuthImage,
-		"ssh_auth_tag":     versionconstants.SSHAuthTag,
-		"Username":         username,
-		"UID":              uid,
-		"GID":              gid,
-		"BuildContext":     context,
-		"IsPodmanRootless": dockerutil.IsPodmanRootless(),
+	upstream, _ := SSHAgentUpstreamSocket()
+	templateVars := map[string]any{
+		"SSHAuthImage":   ddevImages.GetSSHAuthImage(),
+		"UID":            uid,
+		"GID":            gid,
+		"Timezone":       timezone,
+		"UseKeepID":      dockerutil.UseKeepID(),
+		"UpstreamLabel":  sshAgentUpstreamLabel,
+		"UpstreamSocket": upstream,
 	}
-	t, err := template.New("ssh_auth_compose_template.yaml").ParseFS(bundledAssets, "ssh_auth_compose_template.yaml")
+	if upstream != "" {
+		templateVars["UpstreamMount"], templateVars["UpstreamName"] = sshAgentUpstreamMount(upstream)
+	}
+	t, err := template.New("ssh_auth_compose_template.yaml").Funcs(getTemplateFuncMap()).ParseFS(bundledAssets, "ssh_auth_compose_template.yaml")
 	if err != nil {
 		return "", err
 	}
@@ -145,14 +370,22 @@ func (app *DdevApp) CreateSSHAuthComposeFile() (string, error) {
 		return "", err
 	}
 	files := append([]string{SSHAuthComposeYAMLPath()}, userFiles...)
-	fullContents, _, err := dockerutil.ComposeCmd(&dockerutil.ComposeCmdOpts{
-		ComposeFiles: files,
-		Action:       []string{"config"},
+	project, err := dockerutil.LoadComposeProject(files, api.ProjectLoadOptions{
+		ProjectName: SSHAuthName,
 	})
 	if err != nil {
 		return "", err
 	}
-	_, err = fullHandle.WriteString(fullContents)
+	if err = project.CheckContainerNameUnicity(); err != nil {
+		return "", err
+	}
+	injectDdevLabels(project, nil)
+	fullContentsBytes, err := project.MarshalYAML()
+	if err != nil {
+		return "", err
+	}
+	fullContentsBytes = util.EscapeDollarSign(fullContentsBytes)
+	_, err = fullHandle.Write(fullContentsBytes)
 	if err != nil {
 		return "", err
 	}
@@ -176,7 +409,7 @@ func findDdevSSHAuth() (*container.Summary, error) {
 
 // RenderSSHAuthStatus returns a user-friendly string showing sshAuth-status
 func RenderSSHAuthStatus() string {
-	status := GetSSHAuthStatus()
+	status, _ := GetSSHAuthStatus()
 	var renderedStatus string
 
 	switch status {
@@ -190,22 +423,17 @@ func RenderSSHAuthStatus() string {
 	return fmt.Sprintf("\nssh-auth status: %v", renderedStatus)
 }
 
-// GetSSHAuthStatus outputs sshAuth status and warning if not
-// running or healthy, as applicable.
-func GetSSHAuthStatus() string {
+// GetSSHAuthStatus returns the ssh-agent container health and its latest
+// healthcheck log, or stopped if the container isn't found, like
+// GetRouterStatus().
+func GetSSHAuthStatus() (string, string) {
 	label := map[string]string{
 		"com.docker.compose.project": SSHAuthName,
 		"com.docker.compose.oneoff":  "False",
 	}
 	c, err := dockerutil.FindContainerByLabels(label)
-
-	if err != nil {
-		util.Error("Failed to execute FindContainerByLabels(%v): %v", label, err)
-		return SiteStopped
+	if err != nil || c == nil {
+		return SiteStopped, ""
 	}
-	if c == nil {
-		return SiteStopped
-	}
-	health, _ := dockerutil.GetContainerHealth(c)
-	return health
+	return dockerutil.GetContainerHealth(c)
 }

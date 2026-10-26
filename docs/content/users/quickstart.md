@@ -4,6 +4,56 @@ DDEV is [ready to go](./project.md) with generic project types for PHP framework
 
 Before proceeding, make sure your installation of DDEV is up to date. In a new and empty project folder, using your favorite shell, run the following commands:
 
+## Asterios
+
+Use a new or existing Composer project, or clone a Git repository.
+
+The Asterios project type can be used for [Scaffolding](https://github.com/asteriosframework/asterios-app) and others, as it is used with basic Asterios. DDEV automatically updates or creates the `.env` file with the database information.
+
+=== "Composer"
+
+    Create the project directory and configure DDEV:
+
+    ```bash
+    mkdir -p my-asterios-site && cd my-asterios-site
+    ddev config --project-type=asterios --docroot=public
+    ```
+
+    Start DDEV (this may take a minute):
+
+    ```bash
+    ddev start
+    ```
+
+    Install Asterios via Composer:
+
+    ```bash
+    ddev composer create-project asterios/app
+    ```
+
+    Launch the site:
+
+    ```bash
+    ddev launch
+    ```
+
+    ??? tip "Prefer to run as a script?"
+        To run the whole setup as a script, examine and run this script:
+
+        ```bash
+        cat > setup-asterios.sh << 'EOF'
+        #!/usr/bin/env bash
+        set -euo pipefail
+        mkdir -p my-asterios-site && cd my-asterios-site
+        ddev config --project-type=asterios --docroot=public
+        ddev start -y
+        ddev composer create-project asterios/app
+        ddev launch
+        EOF
+        chmod +x setup-asterios.sh
+        ./setup-asterios.sh
+        ```
+
 ## Backdrop
 
 You can start a new [Backdrop](https://backdropcms.org) project or configure an existing one.
@@ -13,7 +63,7 @@ You can start a new [Backdrop](https://backdropcms.org) project or configure an 
     Create the project directory and configure DDEV:
 
     ```bash
-    mkdir my-backdrop-site && cd my-backdrop-site
+    mkdir -p my-backdrop-site && cd my-backdrop-site
     ddev config --project-type=backdrop
     # Add the official Bee CLI add-on
     ddev add-on get backdrop-ops/ddev-backdrop-bee
@@ -48,7 +98,7 @@ You can start a new [Backdrop](https://backdropcms.org) project or configure an 
         cat > setup-backdrop.sh << 'EOF'
         #!/usr/bin/env bash
         set -euo pipefail
-        mkdir my-backdrop-site && cd my-backdrop-site
+        mkdir -p my-backdrop-site && cd my-backdrop-site
         ddev config --project-type=backdrop
         ddev add-on get backdrop-ops/ddev-backdrop-bee
         ddev start -y
@@ -67,7 +117,7 @@ You can start a new [Backdrop](https://backdropcms.org) project or configure an 
     Create project directory and clone your repository:
 
     ```bash
-    mkdir my-backdrop-site && cd my-backdrop-site
+    mkdir -p my-backdrop-site && cd my-backdrop-site
     git clone https://github.com/ddev/test-backdrop.git .
     ```
 
@@ -94,6 +144,7 @@ You can start a new [Backdrop](https://backdropcms.org) project or configure an 
     ```bash
     ddev import-db --file=/path/to/db.sql.gz
     ddev import-files --source=/path/to/files.tar.gz
+    ddev bee cc all
     ```
 
     Launch the site:
@@ -109,13 +160,14 @@ You can start a new [Backdrop](https://backdropcms.org) project or configure an 
         cat > setup-backdrop-existing.sh << 'EOF'
         #!/usr/bin/env bash
         set -euo pipefail
-        mkdir my-backdrop-site && cd my-backdrop-site
+        mkdir -p my-backdrop-site && cd my-backdrop-site
         git clone https://github.com/ddev/test-backdrop.git .
         ddev config --project-type=backdrop
         ddev add-on get backdrop-ops/ddev-backdrop-bee
         ddev start -y
         ddev import-db --file=/path/to/db.sql.gz
         ddev import-files --source=/path/to/files.tar.gz
+        ddev bee cc all
         ddev launch
         EOF
         chmod +x setup-backdrop-existing.sh
@@ -135,7 +187,7 @@ Please note that you will need to change the PHP version to 7.4 to be able to wo
     Create the project directory and configure DDEV:
 
     ```bash
-    mkdir my-cakephp-site && cd my-cakephp-site
+    mkdir -p my-cakephp-composer-site && cd my-cakephp-composer-site
     ddev config --project-type=cakephp --docroot=webroot
     ```
 
@@ -164,7 +216,7 @@ Please note that you will need to change the PHP version to 7.4 to be able to wo
         cat > setup-cakephp.sh << 'EOF'
         #!/usr/bin/env bash
         set -euo pipefail
-        mkdir my-cakephp-site && cd my-cakephp-site
+        mkdir -p my-cakephp-composer-site && cd my-cakephp-composer-site
         ddev config --project-type=cakephp --docroot=webroot
         ddev start -y
         ddev composer create-project --prefer-dist --no-interaction cakephp/app:~5.0
@@ -179,8 +231,8 @@ Please note that you will need to change the PHP version to 7.4 to be able to wo
     Clone the repository and configure DDEV:
 
     ```bash
-    git clone <my-cakephp-repo> my-cakephp-site
-    cd my-cakephp-site
+    git clone <my-cakephp-repo> my-cakephp-git-site
+    cd my-cakephp-git-site
     ddev config --project-type=cakephp --docroot=webroot
     ```
 
@@ -205,8 +257,8 @@ Please note that you will need to change the PHP version to 7.4 to be able to wo
         cat > setup-cakephp-git.sh << 'EOF'
         #!/usr/bin/env bash
         set -euo pipefail
-        git clone <my-cakephp-repo> my-cakephp-site
-        cd my-cakephp-site
+        git clone <my-cakephp-repo> my-cakephp-git-site
+        cd my-cakephp-git-site
         ddev config --project-type=cakephp --docroot=webroot
         ddev start -y
         ddev composer install
@@ -224,7 +276,7 @@ Please note that you will need to change the PHP version to 7.4 to be able to wo
 Create the project directory and configure DDEV:
 
 ```bash
-mkdir my-civicrm-site && cd my-civicrm-site
+mkdir -p my-civicrm-site && cd my-civicrm-site
 ddev config --project-type=php --composer-root=core --upload-dirs=public/media
 ```
 
@@ -237,9 +289,8 @@ ddev start
 Download and extract CiviCRM:
 
 ```bash
-ddev exec "curl -LsS https://download.civicrm.org/latest/civicrm-STABLE-standalone.tar.gz -o /tmp/civicrm-standalone.tar.gz"
+ddev exec "curl -fsSL https://download.civicrm.org/latest/civicrm-STABLE-standalone.tar.gz -o /tmp/civicrm-standalone.tar.gz"
 ddev exec "tar --strip-components=1 -xzf /tmp/civicrm-standalone.tar.gz"
-ddev composer update civicrm/composer-compile-plugin --no-scripts
 ddev composer require civicrm/cli-tools --no-scripts
 ```
 
@@ -272,12 +323,11 @@ ddev launch
     cat > setup-civicrm.sh << 'EOF'
     #!/usr/bin/env bash
     set -euo pipefail
-    mkdir my-civicrm-site && cd my-civicrm-site
+    mkdir -p my-civicrm-site && cd my-civicrm-site
     ddev config --project-type=php --composer-root=core --upload-dirs=public/media
     ddev start -y
-    ddev exec "curl -LsS https://download.civicrm.org/latest/civicrm-STABLE-standalone.tar.gz -o /tmp/civicrm-standalone.tar.gz"
+    ddev exec "curl -fsSL https://download.civicrm.org/latest/civicrm-STABLE-standalone.tar.gz -o /tmp/civicrm-standalone.tar.gz"
     ddev exec "tar --strip-components=1 -xzf /tmp/civicrm-standalone.tar.gz"
-    ddev composer update civicrm/composer-compile-plugin --no-scripts
     ddev composer require civicrm/cli-tools --no-scripts
     ddev exec cv core:install \
         --cms-base-url='$DDEV_PRIMARY_URL' \
@@ -292,6 +342,56 @@ ddev launch
     ./setup-civicrm.sh
     ```
 
+## CodeIgniter
+
+Use a new or existing Composer project, or clone a Git repository.
+
+DDEV automatically updates or creates the `.env` file with the database information.
+
+=== "Composer"
+
+    Create the project directory and configure DDEV:
+
+    ```bash
+    mkdir -p my-ci4-site && cd my-ci4-site
+    ddev config --project-type=codeigniter --docroot=public
+    ```
+
+    Start DDEV (this may take a minute):
+
+    ```bash
+    ddev start
+    ```
+
+    Install CodeIgniter via Composer:
+
+    ```bash
+    ddev composer create-project codeigniter4/appstarter
+    ```
+
+    Launch the site:
+
+    ```bash
+    ddev launch
+    ```
+
+    ??? tip "Prefer to run as a script?"
+        To run the whole setup as a script, examine and run this script:
+
+        ```bash
+        cat > setup-codeigniter.sh << 'EOF'
+        #!/usr/bin/env bash
+        set -euo pipefail
+        mkdir -p my-ci4-site && cd my-ci4-site
+        ddev config --project-type=codeigniter --docroot=public
+        ddev start -y
+        ddev composer create-project codeigniter4/appstarter
+        ddev launch
+        EOF
+        chmod +x setup-codeigniter.sh
+        ./setup-codeigniter.sh
+        ```
+
 ## Contao
 
 Further information on the DDEV procedure can also be found in the [Contao documentation](https://docs.contao.org/manual/en/guides/local-installation/ddev/).
@@ -301,14 +401,14 @@ Further information on the DDEV procedure can also be found in the [Contao docum
     Create the project directory and configure DDEV:
 
     ```bash
-    mkdir my-contao-site && cd my-contao-site
-    ddev config --project-type=php --docroot=public --webserver-type=apache-fpm --php-version=8.2
+    mkdir -p my-contao-composer-site && cd my-contao-composer-site
+    ddev config --project-type=php --docroot=public --webserver-type=apache-fpm --php-version=8.4
     ```
 
     Install Contao via Composer (this may take a minute):
 
     ```bash
-    ddev composer create-project contao/managed-edition:5.3
+    ddev composer create-project contao/managed-edition:5.7
     ```
 
     Configure database and mailer settings:
@@ -342,9 +442,9 @@ Further information on the DDEV procedure can also be found in the [Contao docum
         cat > setup-contao.sh << 'EOF'
         #!/usr/bin/env bash
         set -euo pipefail
-        mkdir my-contao-site && cd my-contao-site
-        ddev config --project-type=php --docroot=public --webserver-type=apache-fpm --php-version=8.2
-        ddev composer create-project contao/managed-edition:5.3
+        mkdir -p my-contao-composer-site && cd my-contao-composer-site
+        ddev config --project-type=php --docroot=public --webserver-type=apache-fpm --php-version=8.4
+        ddev composer create-project contao/managed-edition:5.7
         ddev dotenv set .env.local --database-url=mysql://db:db@db:3306/db --mailer-dsn=smtp://localhost:1025
         ddev exec contao-console contao:migrate --no-interaction
         ddev exec contao-console contao:user:create --username=admin --name=Administrator --email=admin@example.com --language=en --password=Password123 --admin
@@ -361,8 +461,8 @@ Further information on the DDEV procedure can also be found in the [Contao docum
     Create the project directory and configure DDEV:
 
     ```bash
-    mkdir my-contao-site && cd my-contao-site
-    ddev config --project-type=php --docroot=public --webserver-type=apache-fpm --php-version=8.2
+    mkdir -p my-contao-manager-site && cd my-contao-manager-site
+    ddev config --project-type=php --docroot=public --webserver-type=apache-fpm --php-version=8.4
     ```
 
     Configure database and mailer settings:
@@ -396,8 +496,8 @@ Further information on the DDEV procedure can also be found in the [Contao docum
         cat > setup-contao-manager.sh << 'EOF'
         #!/usr/bin/env bash
         set -euo pipefail
-        mkdir my-contao-site && cd my-contao-site
-        ddev config --project-type=php --docroot=public --webserver-type=apache-fpm --php-version=8.2
+        mkdir -p my-contao-manager-site && cd my-contao-manager-site
+        ddev config --project-type=php --docroot=public --webserver-type=apache-fpm --php-version=8.4
         ddev dotenv set .env.local --database-url=mysql://db:db@db:3306/db --mailer-dsn=smtp://localhost:1025
         ddev start -y
         ddev exec "wget -O public/contao-manager.phar.php https://download.contao.org/contao-manager/stable/contao-manager.phar"
@@ -426,7 +526,7 @@ DDEV injects a number of special environment variables into the container (via `
     Create the project directory and configure DDEV:
 
     ```bash
-    mkdir my-craft-site && cd my-craft-site
+    mkdir -p my-craft-site && cd my-craft-site
     ddev config --project-type=craftcms --docroot=web
     ```
 
@@ -453,7 +553,7 @@ DDEV injects a number of special environment variables into the container (via `
         cat > setup-craft.sh << 'EOF'
         #!/usr/bin/env bash
         set -euo pipefail
-        mkdir my-craft-site && cd my-craft-site
+        mkdir -p my-craft-site && cd my-craft-site
         ddev config --project-type=craftcms --docroot=web
         ddev start -y
         ddev composer create-project craftcms/craft
@@ -528,7 +628,7 @@ Set [`composer_root`](./configuration/config.md#composer_root) to the subdirecto
     Create the project directory and configure DDEV:
 
     ```bash
-    mkdir my-drupal-site && cd my-drupal-site
+    mkdir -p my-drupal11-site && cd my-drupal11-site
     ddev config --project-type=drupal11 --docroot=web
     ```
 
@@ -541,7 +641,7 @@ Set [`composer_root`](./configuration/config.md#composer_root) to the subdirecto
     Install Drupal via Composer:
 
     ```bash
-    ddev composer create-project "drupal/recommended-project:^11"
+    ddev composer create-project drupal/recommended-project
     ddev composer require drush/drush
     ```
 
@@ -554,7 +654,7 @@ Set [`composer_root`](./configuration/config.md#composer_root) to the subdirecto
     ddev launch $(ddev drush uli)
     ```
 
-    Read more about: [Drupal Core](https://new.drupal.org/about/overview/technical) & [Documentation](https://www.drupal.org/docs)
+    Read more about [Drupal Core](https://new.drupal.org/about/overview/technical) & [Documentation](https://www.drupal.org/docs).
 
     ??? tip "Prefer to run as a script?"
         To run the whole setup as a script, examine and run this script:
@@ -563,10 +663,10 @@ Set [`composer_root`](./configuration/config.md#composer_root) to the subdirecto
         cat > setup-drupal11.sh << 'EOF'
         #!/usr/bin/env bash
         set -euo pipefail
-        mkdir my-drupal-site && cd my-drupal-site
+        mkdir -p my-drupal11-site && cd my-drupal11-site
         ddev config --project-type=drupal11 --docroot=web
         ddev start -y
-        ddev composer create-project "drupal/recommended-project:^11"
+        ddev composer create-project drupal/recommended-project
         ddev composer require drush/drush
         ddev drush site:install --account-name=admin --account-pass=admin -y
         ddev launch
@@ -580,7 +680,7 @@ Set [`composer_root`](./configuration/config.md#composer_root) to the subdirecto
     Create the project directory and configure DDEV:
 
     ```bash
-    mkdir my-drupal-site && cd my-drupal-site
+    mkdir -p my-drupalcms-site && cd my-drupalcms-site
     ddev config --project-type=drupal11 --docroot=web
     ```
 
@@ -594,6 +694,8 @@ Set [`composer_root`](./configuration/config.md#composer_root) to the subdirecto
 
     ```bash
     ddev composer create-project drupal/cms
+    # Note: recipe-unpack runs automatically in DDEV v1.25.0+
+    ddev composer drupal:recipe-unpack
     ```
 
     Launch the site:
@@ -602,7 +704,7 @@ Set [`composer_root`](./configuration/config.md#composer_root) to the subdirecto
     ddev launch
     ```
 
-    Read more about: [Drupal CMS](https://new.drupal.org/drupal-cms) & [Documentation](https://new.drupal.org/docs/drupal-cms)
+    Read more about [Drupal CMS](https://new.drupal.org/drupal-cms) & [Documentation](https://new.drupal.org/docs/drupal-cms).
 
     ??? tip "Prefer to run as a script?"
         To run the whole setup as a script, examine and run this script:
@@ -611,10 +713,12 @@ Set [`composer_root`](./configuration/config.md#composer_root) to the subdirecto
         cat > setup-drupal-cms.sh << 'EOF'
         #!/usr/bin/env bash
         set -euo pipefail
-        mkdir my-drupal-site && cd my-drupal-site
+        mkdir -p my-drupalcms-site && cd my-drupalcms-site
         ddev config --project-type=drupal11 --docroot=web
         ddev start -y
         ddev composer create-project drupal/cms
+        # Note: recipe-unpack runs automatically in DDEV v1.25.0+
+        ddev composer drupal:recipe-unpack
         ddev launch
         EOF
         chmod +x setup-drupal-cms.sh
@@ -626,7 +730,7 @@ Set [`composer_root`](./configuration/config.md#composer_root) to the subdirecto
     Create the project directory and configure DDEV:
 
     ```bash
-    mkdir my-drupal-site && cd my-drupal-site
+    mkdir -p my-drupal10-site && cd my-drupal10-site
     ddev config --project-type=drupal10 --docroot=web
     ```
 
@@ -652,7 +756,7 @@ Set [`composer_root`](./configuration/config.md#composer_root) to the subdirecto
     ddev launch $(ddev drush uli)
     ```
 
-    Read more about: [Drupal Core](https://new.drupal.org/about/overview/technical) & [Documentation](https://www.drupal.org/docs)
+    Read more about [Drupal Core](https://new.drupal.org/about/overview/technical) & [Documentation](https://www.drupal.org/docs).
 
     ??? tip "Prefer to run as a script?"
         To run the whole setup as a script, examine and run this script:
@@ -661,7 +765,7 @@ Set [`composer_root`](./configuration/config.md#composer_root) to the subdirecto
         cat > setup-drupal10.sh << 'EOF'
         #!/usr/bin/env bash
         set -euo pipefail
-        mkdir my-drupal-site && cd my-drupal-site
+        mkdir -p my-drupal10-site && cd my-drupal10-site
         ddev config --project-type=drupal10 --docroot=web
         ddev start -y
         ddev composer create-project "drupal/recommended-project:^10"
@@ -718,12 +822,14 @@ Set [`composer_root`](./configuration/config.md#composer_root) to the subdirecto
 
 === "Git Clone"
 
-    Clone your Drupal repository:
+    This example shows how to work on an existing Drupal project, using a clone of a test repository. Replace with your Git repository.
+
+    Clone your web project repository:
 
     ```bash
     PROJECT_GIT_URL=https://github.com/ddev/test-drupal11.git
-    git clone ${PROJECT_GIT_URL} my-drupal-site
-    cd my-drupal-site
+    git clone ${PROJECT_GIT_URL} my-drupal11-site
+    cd my-drupal11-site
     ```
 
     Configure and start DDEV:
@@ -746,7 +852,7 @@ Set [`composer_root`](./configuration/config.md#composer_root) to the subdirecto
     ddev launch
     ```
 
-    Read more about: [Drupal Core](https://new.drupal.org/about/overview/technical) & [Documentation](https://www.drupal.org/docs)
+    Read more about [Drupal Core](https://new.drupal.org/about/overview/technical) & [Documentation](https://www.drupal.org/docs).
 
     ??? tip "Prefer to run as a script?"
         To run the whole setup as a script, examine and run this script:
@@ -756,8 +862,8 @@ Set [`composer_root`](./configuration/config.md#composer_root) to the subdirecto
         #!/usr/bin/env bash
         set -euo pipefail
         PROJECT_GIT_URL=https://github.com/ddev/test-drupal11.git
-        git clone ${PROJECT_GIT_URL} my-drupal-site
-        cd my-drupal-site
+        git clone ${PROJECT_GIT_URL} my-drupal11-site
+        cd my-drupal11-site
         ddev config --project-type=drupal11 --docroot=web
         ddev start -y
         ddev composer install
@@ -768,6 +874,58 @@ Set [`composer_root`](./configuration/config.md#composer_root) to the subdirecto
         ./setup-drupal-git.sh
         ```
 
+=== "Drupal 12 (HEAD)"
+
+    Those who want to try out the unreleased upcoming Drupal 12 can install it this way:
+
+    ```bash
+    mkdir -p my-drupal12-site && cd my-drupal12-site
+    ddev config --project-type=drupal12 --docroot=web
+    ```
+
+    Start DDEV (this may take a minute):
+
+    ```bash
+    ddev start
+    ```
+
+    Install Drupal via Composer:
+
+    ```bash
+    ddev composer create-project drupal/recommended-project:main-dev@dev
+    ddev composer require drush/drush
+    ```
+
+    Run Drupal installation and launch:
+
+    ```bash
+    ddev drush site:install --account-name=admin --account-pass=admin -y
+    ddev launch
+    # or automatically log in with:
+    ddev launch $(ddev drush uli)
+    ```
+
+    Read more about [Drupal Core](https://new.drupal.org/about/overview/technical) & [Documentation](https://www.drupal.org/docs).
+
+    ??? tip "Prefer to run as a script?"
+        To run the whole setup as a script, examine and run this script:
+
+        ```bash
+        cat > setup-drupal12.sh << 'EOF'
+        #!/usr/bin/env bash
+        set -euo pipefail
+        mkdir -p my-drupal12-site && cd my-drupal12-site
+        ddev config --project-type=drupal12 --docroot=web
+        ddev start -y
+        ddev composer create-project drupal/recommended-project:main-dev@dev
+        ddev composer require drush/drush
+        ddev drush site:install --account-name=admin --account-pass=admin -y
+        ddev launch
+        EOF
+        chmod +x setup-drupal12.sh
+        ./setup-drupal12.sh
+        ```
+
 ## ExpressionEngine
 
 === "ExpressionEngine ZIP File Download"
@@ -775,13 +933,14 @@ Set [`composer_root`](./configuration/config.md#composer_root) to the subdirecto
     Create the project directory:
 
     ```bash
-    mkdir my-ee-site && cd my-ee-site
+    mkdir -p my-ee-zip-site && cd my-ee-zip-site
     ```
 
     Download and extract the latest ExpressionEngine release:
 
     ```bash
-    curl -o ee.zip -L $(curl -sL https://api.github.com/repos/ExpressionEngine/ExpressionEngine/releases/latest | docker run -i --rm ddev/ddev-utilities jq -r '.assets | map(select(.name | test("^ExpressionEngine.*\\.zip$")))[0].browser_download_url')
+    DOWNLOAD_URL=$(curl -fsSL https://api.github.com/repos/ExpressionEngine/ExpressionEngine/releases/latest | docker run -i --rm ddev/ddev-utilities jq -r '.assets | map(select(.name | test("^ExpressionEngine.*\\.zip$")))[0].browser_download_url')
+    curl -fsSL -o ee.zip "${DOWNLOAD_URL}"
     unzip ee.zip && rm -f ee.zip
     ```
 
@@ -809,8 +968,9 @@ Set [`composer_root`](./configuration/config.md#composer_root) to the subdirecto
         cat > setup-ee.sh << 'EOF'
         #!/usr/bin/env bash
         set -euo pipefail
-        mkdir my-ee-site && cd my-ee-site
-        curl -o ee.zip -L $(curl -sL https://api.github.com/repos/ExpressionEngine/ExpressionEngine/releases/latest | docker run -i --rm ddev/ddev-utilities jq -r '.assets | map(select(.name | test("^ExpressionEngine.*\\.zip$")))[0].browser_download_url')
+        mkdir -p my-ee-zip-site && cd my-ee-zip-site
+        DOWNLOAD_URL=$(curl -fsSL https://api.github.com/repos/ExpressionEngine/ExpressionEngine/releases/latest | docker run -i --rm ddev/ddev-utilities jq -r '.assets | map(select(.name | test("^ExpressionEngine.*\\.zip$")))[0].browser_download_url')
+        curl -fsSL -o ee.zip "${DOWNLOAD_URL}"
         unzip ee.zip && rm -f ee.zip
         ddev config --database=mysql:8.0
         ddev start -y
@@ -827,7 +987,7 @@ Set [`composer_root`](./configuration/config.md#composer_root) to the subdirecto
     Create the project directory and clone the repository:
 
     ```bash
-    mkdir my-ee-site && cd my-ee-site
+    mkdir -p my-ee-git-site && cd my-ee-git-site
     git clone https://github.com/ExpressionEngine/ExpressionEngine .
     ```
 
@@ -861,7 +1021,7 @@ Set [`composer_root`](./configuration/config.md#composer_root) to the subdirecto
         cat > setup-ee-git.sh << 'EOF'
         #!/usr/bin/env bash
         set -euo pipefail
-        mkdir my-ee-site && cd my-ee-site
+        mkdir -p my-ee-git-site && cd my-ee-git-site
         git clone https://github.com/ExpressionEngine/ExpressionEngine .
         ddev config --database=mysql:8.0
         ddev start -y
@@ -874,132 +1034,91 @@ Set [`composer_root`](./configuration/config.md#composer_root) to the subdirecto
         ./setup-ee-git.sh
         ```
 
-## Generic (FrankenPHP)
+## Generic
 
-This example of the `webserver_type: generic` puts [FrankenPHP](https://frankenphp.dev/) into DDEV as an experimental first step in using the innovative Golang-based PHP interpreter. It is in its infancy and may someday become a full-fledged `webserver_type`. Your feedback and improvements are welcome.
+The [`webserver_type: generic`](./configuration/config.md#webserver_type) allows you to define your own web server process(es) and exposed ports for projects that don't use the standard `nginx-fpm` or `apache-fpm` configurations.
 
-This particular example uses a `drupal11` project with FrankenPHP, which then uses its own PHP 8.4 interpreter. The normal DDEV database container is used for database access.
+!!!tip "Looking for more advanced generic web server examples?"
+    Check out the [Node.js](#nodejs) and [Wagtail](#wagtail-python-generic) examples below.
 
-In this example, inside the web container the normal `php` CLI use used for CLI activities. Xdebug (and `ddev xdebug`) do not yet work.
+    See also the [ddev-frankenphp](https://github.com/ddev/ddev-frankenphp) add-on, which uses the `generic` webserver under the hood.
 
-The `generic` `webserver_type` is used here, so the `ddev-webserver` does not start the `nginx` or `php-fpm` daemons, and the `frankenphp` process does all the work.
+=== "PHP's built-in web server"
 
-Create the project directory and configure DDEV:
+    This trivial example demonstrates running PHP's built-in web server inside DDEV's web container. The `ddev-webserver` container will not start the default `nginx` or `php-fpm` daemons—the PHP built-in server will handle all requests. You probably wouldn't find this useful compared to the normal `nginx-fpm` or `apache-fpm` configurations, but it's offered here as an example of how the `generic` webserver type works.
 
-```bash
-export FRANKENPHP_SITENAME=my-frankenphp-site
-mkdir ${FRANKENPHP_SITENAME} && cd ${FRANKENPHP_SITENAME}
-ddev config --project-type=drupal11 --webserver-type=generic --docroot=web --php-version=8.4
-```
-
-Start DDEV (this may take a minute):
-
-```bash
-ddev start
-```
-
-Create FrankenPHP configuration:
-
-```bash
-cat <<'EOF' > .ddev/config.frankenphp.yaml
-web_extra_daemons:
-    - name: "frankenphp"
-      command: "frankenphp php-server --listen=0.0.0.0:80 --root=\"/var/www/html/${DDEV_DOCROOT:-}\" -v -a"
-      directory: /var/www/html
-web_extra_exposed_ports:
-    - name: "frankenphp"
-      container_port: 80
-      http_port: 80
-      https_port: 443
-EOF
-```
-
-Create Dockerfile for FrankenPHP:
-
-```bash
-cat <<'DOCKERFILEEND' >.ddev/web-build/Dockerfile.frankenphp
-RUN curl -fsSL https://key.henderkes.com/static-php.gpg -o /usr/share/keyrings/static-php.gpg && \
-    echo "deb [signed-by=/usr/share/keyrings/static-php.gpg] https://deb.henderkes.com/ stable main" > /etc/apt/sources.list.d/static-php.list
-# Install FrankenPHP and extensions, see https://frankenphp.dev/docs/#deb-packages for details.
-# You can find the list of available extensions at https://deb.henderkes.com/pool/main/p/
-RUN (apt-get update || true) && DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Options::="--force-confnew" --no-install-recommends --no-install-suggests \
-    frankenphp \
-    php-zts-cli \
-    php-zts-gd \
-    php-zts-pdo-mysql
-# Make sure that 'php' command uses the ZTS version of PHP
-# and that the php.ini in use by FrankenPHP is the one from DDEV.
-RUN ln -sf /usr/bin/php-zts /usr/local/bin/php && \
-    ln -sf /etc/php/${DDEV_PHP_VERSION}/fpm/php.ini /etc/php-zts/php.ini
-DOCKERFILEEND
-```
-
-Install Drupal and configure:
-
-```bash
-ddev composer create-project drupal/recommended-project
-ddev composer require drush/drush
-ddev restart
-ddev drush site:install demo_umami --account-name=admin --account-pass=admin -y
-```
-
-Launch your site:
-
-```bash
-ddev launch
-# or automatically log in with:
-ddev launch $(ddev drush uli)
-```
-
-??? tip "Prefer to run as a script?"
-    To run the whole setup as a script, examine and run this script:
+    Create the project directory and configure DDEV:
 
     ```bash
-    cat > setup-frankenphp.sh << 'EOF'
-    #!/usr/bin/env bash
-    set -euo pipefail
-    export FRANKENPHP_SITENAME=my-frankenphp-site
-    mkdir ${FRANKENPHP_SITENAME} && cd ${FRANKENPHP_SITENAME}
-    ddev config --project-type=drupal11 --webserver-type=generic --docroot=web --php-version=8.4
-    ddev start -y
+    export GENERIC_SITENAME=my-generic-site
+    mkdir -p ${GENERIC_SITENAME} && cd ${GENERIC_SITENAME}
+    ddev config --project-type=php
+    ```
 
-    cat <<'INNEREOF' > .ddev/config.frankenphp.yaml
+    Create a sample PHP info page:
+
+    ```bash
+    echo "<?php phpinfo(); ?>" > index.php
+    ```
+
+    Configure the web server to run PHP's built-in server:
+
+    ```bash
+    cat <<'EOF' > .ddev/config.php-server.yaml
+    webserver_type: generic
     web_extra_daemons:
-        - name: "frankenphp"
-          command: "frankenphp php-server --listen=0.0.0.0:80 --root=\"/var/www/html/${DDEV_DOCROOT:-}\" -v -a"
+        - name: "php-server"
+          command: "php -S 0.0.0.0:8000 -t \"${DDEV_DOCROOT:-.}\""
           directory: /var/www/html
     web_extra_exposed_ports:
-        - name: "frankenphp"
-          container_port: 80
+        - name: "php-server"
+          container_port: 8000
           http_port: 80
           https_port: 443
-    INNEREOF
-
-    cat <<'INNEREOF' >.ddev/web-build/Dockerfile.frankenphp
-    RUN curl -fsSL https://key.henderkes.com/static-php.gpg -o /usr/share/keyrings/static-php.gpg && \
-        echo "deb [signed-by=/usr/share/keyrings/static-php.gpg] https://deb.henderkes.com/ stable main" > /etc/apt/sources.list.d/static-php.list
-    # Install FrankenPHP and extensions, see https://frankenphp.dev/docs/#deb-packages for details.
-    # You can find the list of available extensions at https://deb.henderkes.com/pool/main/p/
-    RUN (apt-get update || true) && DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Options::="--force-confnew" --no-install-recommends --no-install-suggests \
-        frankenphp \
-        php-zts-cli \
-        php-zts-gd \
-        php-zts-pdo-mysql
-    # Make sure that 'php' command uses the ZTS version of PHP
-    # and that the php.ini in use by FrankenPHP is the one from DDEV.
-    RUN ln -sf /usr/bin/php-zts /usr/local/bin/php && \
-        ln -sf /etc/php/${DDEV_PHP_VERSION}/fpm/php.ini /etc/php-zts/php.ini
-    INNEREOF
-
-    ddev composer create-project drupal/recommended-project
-    ddev composer require drush/drush
-    ddev restart
-    ddev drush site:install demo_umami --account-name=admin --account-pass=admin -y
-    ddev launch
     EOF
-    chmod +x setup-frankenphp.sh
-    ./setup-frankenphp.sh
     ```
+
+    Start DDEV (this may take a minute):
+
+    ```bash
+    ddev start
+    ```
+
+    Launch the site:
+
+    ```bash
+    ddev launch
+    ```
+
+    ??? tip "Prefer to run as a script?"
+        To run the whole setup as a script, examine and run this script:
+
+        ```bash
+        cat > setup-generic.sh << 'EOF'
+        #!/usr/bin/env bash
+        set -euo pipefail
+        export GENERIC_SITENAME=my-generic-site
+        mkdir -p ${GENERIC_SITENAME} && cd ${GENERIC_SITENAME}
+        ddev config --project-type=php
+        echo "<?php phpinfo(); ?>" > index.php
+        cat <<'INNEREOF' > .ddev/config.php-server.yaml
+        webserver_type: generic
+        web_extra_daemons:
+            - name: "php-server"
+              command: "php -S 0.0.0.0:8000 -t \"${DDEV_DOCROOT:-.}\""
+              directory: /var/www/html
+        web_extra_exposed_ports:
+            - name: "php-server"
+              container_port: 8000
+              http_port: 80
+              https_port: 443
+        INNEREOF
+        ddev start -y
+        ddev launch
+        EOF
+        chmod +x setup-generic.sh
+        ./setup-generic.sh
+        ```
 
 ## Grav
 
@@ -1008,7 +1127,7 @@ ddev launch $(ddev drush uli)
     Create the project directory and configure DDEV:
 
     ```bash
-    mkdir my-grav-site && cd my-grav-site
+    mkdir -p my-grav-composer-site && cd my-grav-composer-site
     ddev config --php-version=8.3 --omit-containers=db
     ```
 
@@ -1024,10 +1143,10 @@ ddev launch $(ddev drush uli)
     ddev composer create-project getgrav/grav
     ```
 
-    Install the admin plugin and launch:
+    Install the [Admin2](https://github.com/getgrav/grav-plugin-admin2) plugin and launch:
 
     ```bash
-    ddev exec gpm install admin -y
+    ddev exec gpm install admin2 -y
     ddev launch
     ```
 
@@ -1038,11 +1157,11 @@ ddev launch $(ddev drush uli)
         cat > setup-grav.sh << 'EOF'
         #!/usr/bin/env bash
         set -euo pipefail
-        mkdir my-grav-site && cd my-grav-site
+        mkdir -p my-grav-composer-site && cd my-grav-composer-site
         ddev config --php-version=8.3 --omit-containers=db
         ddev start -y
         ddev composer create-project getgrav/grav
-        ddev exec gpm install admin -y
+        ddev exec gpm install admin2 -y
         ddev launch
         EOF
         chmod +x setup-grav.sh
@@ -1054,7 +1173,7 @@ ddev launch $(ddev drush uli)
     Create the project directory and clone Grav:
 
     ```bash
-    mkdir my-grav-site && cd my-grav-site
+    mkdir -p my-grav-git-site && cd my-grav-git-site
     git clone -b master https://github.com/getgrav/grav.git .
     ```
 
@@ -1077,10 +1196,10 @@ ddev launch $(ddev drush uli)
     ddev exec grav install
     ```
 
-    Install the admin plugin and launch:
+    Install the [Admin2](https://github.com/getgrav/grav-plugin-admin2) plugin and launch:
 
     ```bash
-    ddev exec gpm install admin -y
+    ddev exec gpm install admin2 -y
     ddev launch
     ```
 
@@ -1091,13 +1210,13 @@ ddev launch $(ddev drush uli)
         cat > setup-grav-git.sh << 'EOF'
         #!/usr/bin/env bash
         set -euo pipefail
-        mkdir my-grav-site && cd my-grav-site
+        mkdir -p my-grav-git-site && cd my-grav-git-site
         git clone -b master https://github.com/getgrav/grav.git .
         ddev config --php-version=8.3 --omit-containers=db
         ddev start -y
         ddev composer install
         ddev exec grav install
-        ddev exec gpm install admin -y
+        ddev exec gpm install admin2 -y
         ddev launch
         EOF
         chmod +x setup-grav-git.sh
@@ -1126,8 +1245,8 @@ Install [Ibexa DXP](https://www.ibexa.co) OSS Edition.
 Create the project directory and configure DDEV:
 
 ```bash
-mkdir my-ibexa-site && cd my-ibexa-site
-ddev config --project-type=php --docroot=public --web-environment-add DATABASE_URL=mysql://db:db@db:3306/db
+mkdir -p my-ibexa-site && cd my-ibexa-site
+ddev config --project-type=symfony --docroot=public
 ```
 
 Start DDEV (this may take a minute):
@@ -1145,8 +1264,8 @@ ddev composer create-project ibexa/oss-skeleton
 Run Ibexa installation:
 
 ```bash
-ddev exec console ibexa:install
-ddev exec console ibexa:graphql:generate-schema
+ddev console ibexa:install --no-interaction
+ddev console ibexa:graphql:generate-schema
 ```
 
 Launch the admin interface:
@@ -1166,12 +1285,12 @@ Visit [Ibexa documentation](https://doc.ibexa.co/en/latest/getting_started/insta
     cat > setup-ibexa.sh << 'EOF'
     #!/usr/bin/env bash
     set -euo pipefail
-    mkdir my-ibexa-site && cd my-ibexa-site
-    ddev config --project-type=php --docroot=public --web-environment-add DATABASE_URL=mysql://db:db@db:3306/db
+    mkdir -p my-ibexa-site && cd my-ibexa-site
+    ddev config --project-type=symfony --docroot=public
     ddev start -y
     ddev composer create-project ibexa/oss-skeleton
-    ddev exec console ibexa:install
-    ddev exec console ibexa:graphql:generate-schema
+    ddev console ibexa:install --no-interaction
+    ddev console ibexa:graphql:generate-schema
     ddev launch /admin/login
     EOF
     chmod +x setup-ibexa.sh
@@ -1183,17 +1302,22 @@ Visit [Ibexa documentation](https://doc.ibexa.co/en/latest/getting_started/insta
 Create the project directory and download Joomla:
 
 ```bash
-mkdir my-joomla-site && cd my-joomla-site
-# Download the latest version of Joomla! and unzip it.
-# This can be manually downloaded from https://downloads.joomla.org/ or done using curl as here.
-curl -o joomla.zip -L $(curl -sL https://api.github.com/repos/joomla/joomla-cms/releases/latest | docker run -i --rm ddev/ddev-utilities jq -r '.assets | map(select(.name | test("^Joomla.*Stable-Full_Package\\.zip$")))[0].browser_download_url')
+mkdir -p my-joomla-site && cd my-joomla-site
+curl -fsSL -o joomla.zip "https://www.joomla.org/latest"
 unzip joomla.zip && rm -f joomla.zip
 ```
 
 Configure DDEV:
 
 ```bash
-ddev config --project-type=php --webserver-type=apache-fpm --upload-dirs=images
+ddev config --project-type=joomla
+```
+
+Adjust `php.ini` settings for Joomla:
+
+```bash
+echo "display_errors = off" > .ddev/php/joomla.ini
+echo "output_buffering = off" >> .ddev/php/joomla.ini
 ```
 
 Start DDEV (this may take a minute):
@@ -1202,10 +1326,15 @@ Start DDEV (this may take a minute):
 ddev start
 ```
 
-Install Joomla and launch:
+Install Joomla:
 
 ```bash
 ddev php installation/joomla.php install --site-name="My Joomla Site" --admin-user="Administrator" --admin-username=admin --admin-password=AdminAdmin1! --admin-email=admin@example.com --db-type=mysql --db-encryption=0 --db-host=db --db-user=db --db-pass="db" --db-name=db --db-prefix=ddev_ --public-folder=""
+```
+
+Launch the admin interface (login with `admin` and `AdminAdmin1!`):
+
+```bash
 ddev launch /administrator
 ```
 
@@ -1216,10 +1345,12 @@ ddev launch /administrator
     cat > setup-joomla.sh << 'EOF'
     #!/usr/bin/env bash
     set -euo pipefail
-    mkdir my-joomla-site && cd my-joomla-site
-    curl -o joomla.zip -L $(curl -sL https://api.github.com/repos/joomla/joomla-cms/releases/latest | docker run -i --rm ddev/ddev-utilities jq -r '.assets | map(select(.name | test("^Joomla.*Stable-Full_Package\\.zip$")))[0].browser_download_url')
+    mkdir -p my-joomla-site && cd my-joomla-site
+    curl -fsSL -o joomla.zip "https://www.joomla.org/latest"
     unzip joomla.zip && rm -f joomla.zip
-    ddev config --project-type=php --webserver-type=apache-fpm --upload-dirs=images
+    ddev config --project-type=joomla
+    echo "display_errors = off" > .ddev/php/joomla.ini
+    echo "output_buffering = off" >> .ddev/php/joomla.ini
     ddev start -y
     ddev php installation/joomla.php install --site-name="My Joomla Site" --admin-user="Administrator" --admin-username=admin --admin-password=AdminAdmin1! --admin-email=admin@example.com --db-type=mysql --db-encryption=0 --db-host=db --db-user=db --db-pass="db" --db-name=db --db-prefix=ddev_ --public-folder=""
     ddev launch /administrator
@@ -1239,7 +1370,7 @@ Start a new [Kirby CMS](https://getkirby.com) project or use an existing one.
     Create the project directory and configure DDEV:
 
     ```bash
-    mkdir my-kirby-site && cd my-kirby-site
+    mkdir -p my-kirby-site && cd my-kirby-site
     ddev config --omit-containers=db --webserver-type=apache-fpm
     ```
 
@@ -1268,7 +1399,7 @@ Start a new [Kirby CMS](https://getkirby.com) project or use an existing one.
         cat > setup-kirby.sh << 'EOF'
         #!/usr/bin/env bash
         set -euo pipefail
-        mkdir my-kirby-site && cd my-kirby-site
+        mkdir -p my-kirby-site && cd my-kirby-site
         ddev config --omit-containers=db --webserver-type=apache-fpm
         ddev start -y
         ddev composer create-project getkirby/starterkit
@@ -1338,7 +1469,7 @@ The Laravel project type can be used for [StarterKits](https://laravel.com/docs/
     Create the project directory and configure DDEV:
 
     ```bash
-    mkdir my-laravel-site && cd my-laravel-site
+    mkdir -p my-laravel-composer-site && cd my-laravel-composer-site
     ddev config --project-type=laravel --docroot=public
     ```
 
@@ -1351,7 +1482,7 @@ The Laravel project type can be used for [StarterKits](https://laravel.com/docs/
     Install Laravel via Composer:
 
     ```bash
-    ddev composer create-project "laravel/laravel:^12"
+    ddev composer create-project laravel/laravel
     ```
 
     Launch the site:
@@ -1367,10 +1498,10 @@ The Laravel project type can be used for [StarterKits](https://laravel.com/docs/
         cat > setup-laravel.sh << 'EOF'
         #!/usr/bin/env bash
         set -euo pipefail
-        mkdir my-laravel-site && cd my-laravel-site
+        mkdir -p my-laravel-composer-site && cd my-laravel-composer-site
         ddev config --project-type=laravel --docroot=public
         ddev start -y
-        ddev composer create-project "laravel/laravel:^12"
+        ddev composer create-project laravel/laravel
         ddev launch
         EOF
         chmod +x setup-laravel.sh
@@ -1384,8 +1515,8 @@ The Laravel project type can be used for [StarterKits](https://laravel.com/docs/
     Create the project directory and configure DDEV:
 
     ```bash
-    mkdir my-laravel-site && cd my-laravel-site
-    ddev config --project-type=laravel --docroot=public --omit-containers=db --disable-settings-management=true
+    mkdir -p my-laravel-sqlite-site && cd my-laravel-sqlite-site
+    ddev config --project-type=laravel --docroot=public --omit-containers=db
     ```
 
     Start DDEV (this may take a minute):
@@ -1397,7 +1528,7 @@ The Laravel project type can be used for [StarterKits](https://laravel.com/docs/
     Install Laravel via Composer:
 
     ```bash
-    ddev composer create-project "laravel/laravel:^12"
+    ddev composer create-project laravel/laravel
     ```
 
     Launch the site:
@@ -1413,10 +1544,10 @@ The Laravel project type can be used for [StarterKits](https://laravel.com/docs/
         cat > setup-laravel-sqlite.sh << 'EOF'
         #!/usr/bin/env bash
         set -euo pipefail
-        mkdir my-laravel-site && cd my-laravel-site
-        ddev config --project-type=laravel --docroot=public --omit-containers=db --disable-settings-management=true
+        mkdir -p my-laravel-sqlite-site && cd my-laravel-sqlite-site
+        ddev config --project-type=laravel --docroot=public --omit-containers=db
         ddev start -y
-        ddev composer create-project "laravel/laravel:^12"
+        ddev composer create-project laravel/laravel
         ddev launch
         EOF
         chmod +x setup-laravel-sqlite.sh
@@ -1428,7 +1559,7 @@ The Laravel project type can be used for [StarterKits](https://laravel.com/docs/
     Configure for SQLite and restart:
 
     ```bash
-    ddev config --project-type=laravel --docroot=public --omit-containers=db --disable-settings-management=true
+    ddev config --project-type=laravel --docroot=public --omit-containers=db
     ddev restart
     ```
 
@@ -1453,7 +1584,7 @@ The Laravel project type can be used for [StarterKits](https://laravel.com/docs/
         cat > switch-laravel-sqlite.sh << 'EOF'
         #!/usr/bin/env bash
         set -euo pipefail
-        ddev config --project-type=laravel --docroot=public --omit-containers=db --disable-settings-management=true
+        ddev config --project-type=laravel --docroot=public --omit-containers=db
         ddev restart
         ddev composer run-script post-root-package-install
         ddev dotenv set .env --db-connection=sqlite
@@ -1469,10 +1600,10 @@ The Laravel project type can be used for [StarterKits](https://laravel.com/docs/
     Create the project directory and configure DDEV:
 
     ```bash
-    mkdir my-laravel-site && cd my-laravel-site
+    mkdir -p my-laravel-installer-site && cd my-laravel-installer-site
     ddev config --project-type=laravel --docroot=public
     # For SQLite instead, use:
-    # ddev config --project-type=laravel --docroot=public --omit-containers=db --disable-settings-management=true
+    # ddev config --project-type=laravel --docroot=public --omit-containers=db
     ```
 
     Create Dockerfile to add Laravel installer:
@@ -1527,7 +1658,7 @@ The Laravel project type can be used for [StarterKits](https://laravel.com/docs/
         cat > setup-laravel-installer.sh << 'EOF'
         #!/usr/bin/env bash
         set -euo pipefail
-        mkdir my-laravel-site && cd my-laravel-site
+        mkdir -p my-laravel-installer-site && cd my-laravel-installer-site
         ddev config --project-type=laravel --docroot=public
 
         cat <<'INNEREOF' >.ddev/web-build/Dockerfile.laravel
@@ -1554,8 +1685,8 @@ The Laravel project type can be used for [StarterKits](https://laravel.com/docs/
     Clone your Laravel repository:
 
     ```bash
-    git clone <my-laravel-repo> my-laravel-site
-    cd my-laravel-site
+    git clone <my-laravel-repo> my-laravel-git-site
+    cd my-laravel-git-site
     ```
 
     Configure and start DDEV:
@@ -1586,8 +1717,8 @@ The Laravel project type can be used for [StarterKits](https://laravel.com/docs/
         cat > setup-laravel-git.sh << 'EOF'
         #!/usr/bin/env bash
         set -euo pipefail
-        git clone <my-laravel-repo> my-laravel-site
-        cd my-laravel-site
+        git clone <my-laravel-repo> my-laravel-git-site
+        cd my-laravel-git-site
         ddev config --project-type=laravel --docroot=public
         ddev start -y
         ddev composer install
@@ -1607,11 +1738,7 @@ The Laravel project type can be used for [StarterKits](https://laravel.com/docs/
 Normal details of a Composer build for Magento 2 are on the [Magento 2 site](https://experienceleague.adobe.com/docs/commerce-operations/installation-guide/composer.html). You must have a public and private key to install from Magento’s repository. When prompted for “username” and “password” in `composer create-project`, it’s asking for your public key as "username" and private key as "password".
 
 !!!tip "Store Adobe/Magento Composer credentials in the global DDEV config"
-    If you have Composer installed on your workstation and have an `auth.json` you can reuse the `auth.json` by making a symlink. See [In-Container Home Directory and Shell Configuration](extend/in-container-configuration.md):
-
-    ```bash
-    mkdir -p $HOME/.ddev/homeadditions/.composer && ln -s ~/.composer/auth.json $HOME/.ddev/homeadditions/.composer/auth.json
-    ```
+    If you have Composer installed on your workstation and have an `auth.json` you can reuse the `auth.json` by making a symlink. See the example in [Composer Authentication](extend/in-container-configuration.md#composer-authentication).
 
     Alternately, you can install the Adobe/Magento Composer credentials in your global `$HOME/.ddev/homeadditions/.composer/auth.json` and never have to enter them again (see below):
 
@@ -1637,7 +1764,7 @@ Create the project directory and configure DDEV:
 
 ```bash
 export MAGENTO_HOSTNAME=my-magento2-site
-mkdir ${MAGENTO_HOSTNAME} && cd ${MAGENTO_HOSTNAME}
+mkdir -p ${MAGENTO_HOSTNAME} && cd ${MAGENTO_HOSTNAME}
 ddev config --project-type=magento2 --docroot=pub --upload-dirs=media --disable-settings-management
 ddev add-on get ddev/ddev-opensearch
 ```
@@ -1687,7 +1814,7 @@ Change the admin name and related information as needed.
     #!/usr/bin/env bash
     set -euo pipefail
     export MAGENTO_HOSTNAME=my-magento2-site
-    mkdir ${MAGENTO_HOSTNAME} && cd ${MAGENTO_HOSTNAME}
+    mkdir -p ${MAGENTO_HOSTNAME} && cd ${MAGENTO_HOSTNAME}
     ddev config --project-type=magento2 --docroot=pub --upload-dirs=media --disable-settings-management
     ddev add-on get ddev/ddev-opensearch
     ddev start -y
@@ -1717,6 +1844,261 @@ ddev magento sampledata:deploy
 ddev magento setup:upgrade
 ```
 
+## Maho
+
+You can start a new [Maho](https://mahocommerce.com) project or configure an existing one. Maho is an e-commerce platform derived from Magento 1, with modern PHP support and no external service requirements: it needs only a web server, PHP and a database.
+
+DDEV automatically creates `app/etc/local.xml` with the database connection details, so importing an existing site is just `ddev import-db` and `ddev import-files` away. For a fresh installation the Maho installer needs `--force` to take over that pre-created file.
+
+=== "Composer"
+
+    Create the project directory and configure DDEV:
+
+    ```bash
+    mkdir -p my-maho-site && cd my-maho-site
+    ddev config --project-type=maho --docroot=public
+    ```
+
+    Start DDEV (this may take a minute):
+
+    ```bash
+    ddev start
+    ```
+
+    Install Maho via Composer:
+
+    ```bash
+    ddev composer create-project mahocommerce/maho-starter
+    ```
+
+    Run the Maho installer with sample data:
+
+    ```bash
+    ddev maho install --force \
+      --license_agreement_accepted yes \
+      --locale en_US --timezone UTC --default_currency USD \
+      --db_host db --db_name db --db_user db --db_pass db \
+      --url "$(ddev exec echo '$DDEV_PRIMARY_URL')" \
+      --use_secure 1 --secure_base_url "$(ddev exec echo '$DDEV_PRIMARY_URL')" --use_secure_admin 1 \
+      --admin_firstname Store --admin_lastname Admin --admin_email admin@example.com \
+      --admin_username admin --admin_password veryl0ngpassw0rd \
+      --sample_data 1
+    ```
+
+    Re-index and flush the cache:
+
+    ```bash
+    ddev maho index:reindex:all && ddev maho cache:flush
+    ```
+
+    Launch the admin interface (login with `admin` and `veryl0ngpassw0rd`):
+
+    ```bash
+    ddev launch /admin
+    ```
+
+    ??? tip "Prefer to run as a script?"
+        To run the whole setup as a script, examine and run this script:
+
+        ```bash
+        cat > setup-maho.sh << 'EOF'
+        #!/usr/bin/env bash
+        set -euo pipefail
+        mkdir -p my-maho-site && cd my-maho-site
+        ddev config --project-type=maho --docroot=public
+        ddev start -y
+        ddev composer create-project mahocommerce/maho-starter
+        ddev maho install --force \
+          --license_agreement_accepted yes \
+          --locale en_US --timezone UTC --default_currency USD \
+          --db_host db --db_name db --db_user db --db_pass db \
+          --url "$(ddev exec echo '$DDEV_PRIMARY_URL')" \
+          --use_secure 1 --secure_base_url "$(ddev exec echo '$DDEV_PRIMARY_URL')" --use_secure_admin 1 \
+          --admin_firstname Store --admin_lastname Admin --admin_email admin@example.com \
+          --admin_username admin --admin_password veryl0ngpassw0rd \
+          --sample_data 1
+        ddev maho index:reindex:all && ddev maho cache:flush
+        ddev launch /admin
+        EOF
+        chmod +x setup-maho.sh
+        ./setup-maho.sh
+        ```
+
+=== "Git Clone (for contributors)"
+
+    !!!warning "For contributing to Maho core only"
+        This setup is only for contributing to Maho itself. Never build a store on a clone of the core repository — use the Composer setup instead.
+
+    Create the project directory and clone the repository:
+
+    ```bash
+    mkdir -p maho && cd maho
+    git clone https://github.com/MahoCommerce/maho .
+    ```
+
+    Configure and start DDEV:
+
+    ```bash
+    ddev config --project-type=maho --docroot=public
+    ddev start
+    ```
+
+    Install Composer dependencies:
+
+    ```bash
+    ddev composer install
+    ```
+
+    Run the Maho installer with sample data:
+
+    ```bash
+    ddev maho install --force \
+      --license_agreement_accepted yes \
+      --locale en_US --timezone UTC --default_currency USD \
+      --db_host db --db_name db --db_user db --db_pass db \
+      --url "$(ddev exec echo '$DDEV_PRIMARY_URL')" \
+      --use_secure 1 --secure_base_url "$(ddev exec echo '$DDEV_PRIMARY_URL')" --use_secure_admin 1 \
+      --admin_firstname Store --admin_lastname Admin --admin_email admin@example.com \
+      --admin_username admin --admin_password veryl0ngpassw0rd \
+      --sample_data 1
+    ```
+
+    Re-index and flush the cache:
+
+    ```bash
+    ddev maho index:reindex:all && ddev maho cache:flush
+    ```
+
+    Launch the admin interface (login with `admin` and `veryl0ngpassw0rd`):
+
+    ```bash
+    ddev launch /admin
+    ```
+
+    ??? tip "Prefer to run as a script?"
+        To run the whole setup as a script, examine and run this script:
+
+        ```bash
+        cat > setup-maho-git.sh << 'EOF'
+        #!/usr/bin/env bash
+        set -euo pipefail
+        mkdir -p maho && cd maho
+        git clone https://github.com/MahoCommerce/maho .
+        ddev config --project-type=maho --docroot=public
+        ddev start -y
+        ddev composer install
+        ddev maho install --force \
+          --license_agreement_accepted yes \
+          --locale en_US --timezone UTC --default_currency USD \
+          --db_host db --db_name db --db_user db --db_pass db \
+          --url "$(ddev exec echo '$DDEV_PRIMARY_URL')" \
+          --use_secure 1 --secure_base_url "$(ddev exec echo '$DDEV_PRIMARY_URL')" --use_secure_admin 1 \
+          --admin_firstname Store --admin_lastname Admin --admin_email admin@example.com \
+          --admin_username admin --admin_password veryl0ngpassw0rd \
+          --sample_data 1
+        ddev maho index:reindex:all && ddev maho cache:flush
+        ddev launch /admin
+        EOF
+        chmod +x setup-maho-git.sh
+        ./setup-maho-git.sh
+        ```
+
+## MODX Revolution
+
+DDEV supports both [MODX](https://modx.com/) Revolution 2.x and 3.x.
+
+=== "Composer (MODX 3.x)"
+
+    Create the project directory and configure DDEV:
+
+    ```bash
+    mkdir -p my-modx-site && cd my-modx-site
+    ddev config --project-type=modx
+    ```
+
+    Start DDEV (this may take a minute):
+
+    ```bash
+    ddev start
+    ```
+
+    Install MODX Revolution via Composer:
+
+    ```bash
+    ddev composer create-project modx/revolution
+    ```
+
+=== "ZIP Download"
+
+    Create the project directory:
+
+    ```bash
+    mkdir -p my-modx-site && cd my-modx-site
+    ```
+
+    Download the latest MODX Revolution release and extract it. The archive extracts into a versioned subdirectory, so move its contents up to the project root:
+
+    ```bash
+    MODX_VERSION=$(curl -fsSL https://api.github.com/repos/modxcms/revolution/tags | grep -o '"v[0-9][0-9.]*-pl"' | head -1 | tr -dc '0-9.')
+    curl -fLo modx.zip "https://modx.s3.amazonaws.com/releases/${MODX_VERSION}/modx-${MODX_VERSION}-pl.zip"
+    unzip -q modx.zip && rm -f modx.zip
+    (shopt -s dotglob && mv "modx-${MODX_VERSION}-pl"/* .) && rmdir "modx-${MODX_VERSION}-pl"
+    ```
+
+    Set `MODX_VERSION` yourself to install a specific release, for example `MODX_VERSION=2.8.9` for MODX Revolution 2.x. Releases are also listed on [modx.com](https://modx.com/download).
+
+    Configure and start DDEV:
+
+    ```bash
+    ddev config --project-type=modx
+    ddev start
+    ```
+
+DDEV generates a `#ddev-generated` `core/config/config.inc.php` with the DDEV database credentials (database name, user, and password are all `db`; host is `db`). Install MODX with the CLI installer, which performs a fresh install using those credentials:
+
+```bash
+ddev php setup/cli-install.php \
+  --database_server=db --database=db --database_user=db --database_password=db \
+  --table_prefix=modx_ --http_host=my-modx-site.ddev.site \
+  --cmsadmin=admin --cmspassword=Admin123! --cmsadminemail=admin@example.com --language=en \
+  --context_mgr_path=/var/www/html/manager/ --context_mgr_url=/manager/ \
+  --context_connectors_path=/var/www/html/connectors/ --context_connectors_url=/connectors/
+```
+
+The four `--context_*` arguments are the installer's own defaults. Passing them explicitly keeps the install non-interactive; leave them out and the installer stops to ask for each one.
+
+Launch the manager (log in with `admin` / `Admin123!`):
+
+```bash
+ddev launch /manager/
+```
+
+!!! note "Web installer and the DDEV-managed config"
+    You can also install through the web wizard with `ddev launch /setup/`. Because DDEV has already written a valid `core/config/config.inc.php`, MODX opens the web wizard in *upgrade* mode; for a brand-new site use the CLI installer above (or remove `core/config/config.inc.php` before opening `/setup/`). When you import an existing MODX site and its database (for example with [`ddev import-db`](./usage/commands.md#import-db)), the DDEV-generated `config.inc.php` connects it straight away with no installer step.
+
+??? tip "Prefer to run as a script?"
+    To run the whole setup as a script, examine and run this script:
+
+    ```bash
+    cat > setup-modx.sh << 'EOF'
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p my-modx-site && cd my-modx-site
+    ddev config --project-type=modx
+    ddev start -y
+    ddev composer create-project modx/revolution
+    ddev php setup/cli-install.php \
+      --database_server=db --database=db --database_user=db --database_password=db \
+      --table_prefix=modx_ --http_host=my-modx-site.ddev.site \
+      --cmsadmin=admin --cmspassword=Admin123! --cmsadminemail=admin@example.com --language=en \
+      --context_mgr_path=/var/www/html/manager/ --context_mgr_url=/manager/ \
+      --context_connectors_path=/var/www/html/connectors/ --context_connectors_url=/connectors/
+    ddev launch /manager/
+    EOF
+    chmod +x setup-modx.sh
+    ./setup-modx.sh
+    ```
+
 ## Moodle
 
 === "Composer"
@@ -1724,7 +2106,7 @@ ddev magento setup:upgrade
     Create the project directory and configure DDEV:
 
     ```bash
-    mkdir my-moodle-site && cd my-moodle-site
+    mkdir -p my-moodle-site && cd my-moodle-site
     ddev config --docroot=public --webserver-type=apache-fpm
     ```
 
@@ -1743,16 +2125,14 @@ ddev magento setup:upgrade
     Run Moodle installation:
 
     ```bash
-    ddev exec 'php admin/cli/install.php --non-interactive --agree-license --wwwroot=$DDEV_PRIMARY_URL --dbtype=mariadb --dbhost=db --dbname=db --dbuser=db --dbpass=db --fullname="DDEV Moodle Demo" --shortname=Demo --adminpass=password'
+    ddev exec 'php admin/cli/install.php --non-interactive --agree-license --wwwroot=$DDEV_PRIMARY_URL --dbtype=mariadb --dbhost=db --dbname=db --dbuser=db --dbpass=db --fullname="DDEV Moodle Demo" --shortname=Demo --adminemail=admin@example.com --adminpass=password'
     ```
 
-    Launch Moodle:
+    Launch Moodle (login with `admin` and `password`)::
 
     ```bash
     ddev launch /login
     ```
-
-    In the web browser, log into your account using `admin` and `password`.
 
     Visit the [Moodle Admin Quick Guide](https://docs.moodle.org/400/en/Admin_quick_guide) for more information.
 
@@ -1766,11 +2146,11 @@ ddev magento setup:upgrade
         cat > setup-moodle.sh << 'EOF'
         #!/usr/bin/env bash
         set -euo pipefail
-        mkdir my-moodle-site && cd my-moodle-site
+        mkdir -p my-moodle-site && cd my-moodle-site
         ddev config --docroot=public --webserver-type=apache-fpm
         ddev start -y
         ddev composer create-project moodle/moodle
-        ddev exec 'php admin/cli/install.php --non-interactive --agree-license --wwwroot=$DDEV_PRIMARY_URL --dbtype=mariadb --dbhost=db --dbname=db --dbuser=db --dbpass=db --fullname="DDEV Moodle Demo" --shortname=Demo --adminpass=password'
+        ddev exec 'php admin/cli/install.php --non-interactive --agree-license --wwwroot=$DDEV_PRIMARY_URL --dbtype=mariadb --dbhost=db --dbname=db --dbuser=db --dbpass=db --fullname="DDEV Moodle Demo" --shortname=Demo --adminemail=admin@example.com --adminpass=password'
         ddev launch /login
         EOF
         chmod +x setup-moodle.sh
@@ -1787,29 +2167,27 @@ ddev magento setup:upgrade
 
     ```bash
     export SVELTEKIT_SITENAME=my-sveltekit-site
-    mkdir ${SVELTEKIT_SITENAME} && cd ${SVELTEKIT_SITENAME}
+    mkdir -p ${SVELTEKIT_SITENAME} && cd ${SVELTEKIT_SITENAME}
     ddev config --project-type=generic --webserver-type=generic
     ddev start
 
     cat <<EOF > .ddev/config.sveltekit.yaml
     web_extra_exposed_ports:
-    - name: svelte
-      container_port: 3000
-      http_port: 80
-      https_port: 443
+        - name: svelte
+          container_port: 3000
+          http_port: 80
+          https_port: 443
     web_extra_daemons:
-    - name: "sveltekit-demo"
-      command: "node build"
-      directory: /var/www/html
+        - name: "sveltekit-demo"
+          command: "node build"
+          directory: /var/www/html
     EOF
 
+    # When it prompts "Directory not empty. Continue?", choose Yes
     ddev exec "npx sv create --template=demo --types=ts --no-add-ons --no-install ."
-    # When it prompts "Directory not empty. Continue?", choose Yes.
 
-    # Install an example svelte.config.js that uses adapter-node
-    ddev exec curl -s -OL https://raw.githubusercontent.com/ddev/test-sveltekit/main/svelte.config.js
-    # Install an example vite.config.ts that sets the port and allows all hostnames
-    ddev exec curl -s -OL https://raw.githubusercontent.com/ddev/test-sveltekit/main/vite.config.ts
+    # Use adapter-node, and set the port and allowed hosts in vite.config.ts
+    ddev exec "sed -i -e 's#adapter-auto#adapter-node#' -e 's#^export default defineConfig({#&\n\tserver: { port: 3000, allowedHosts: true },#' vite.config.ts"
     ddev npm install @sveltejs/adapter-node
     ddev npm install
     ddev npm run build
@@ -1817,34 +2195,34 @@ ddev magento setup:upgrade
     ddev launch
     ```
 
-    SvelteKit requires just a bit of configuration to make it run. There are many ways to make any Node.js site work, these are just examples. The `svelte.config.js` and `vite.config.js` used above can be adapted in many ways. For more comprehensive Vite configuration options, see the [Vite Integration](usage/vite.md) documentation.
+    SvelteKit requires just a bit of configuration to make it run. There are many ways to make any Node.js site work, these are just examples. SvelteKit 3 no longer uses `svelte.config.js`; its configuration is passed to the `sveltekit()` plugin in `vite.config.ts`, which can be adapted in many ways. For more Vite configuration options, see the [Vite Integration](usage/vite.md) documentation.
 
-    * `svelte.config.js` example uses `adapter-node`.
-    * `vite.config.js` uses port 3000 and `allowedHosts: true`
+    * The `sed` command switches the adapter from `adapter-auto` to `adapter-node`.
+    * It also sets `server.port` to 3000 and `server.allowedHosts` to `true` in `vite.config.ts`.
 
 === "Node.js Web Server"
 
     ```bash
     export NODEJS_SITENAME=my-nodejs-site
-    mkdir ${NODEJS_SITENAME} && cd ${NODEJS_SITENAME}
+    mkdir -p ${NODEJS_SITENAME} && cd ${NODEJS_SITENAME}
     ddev config --project-type=generic --webserver-type=generic
     ddev start
     ddev npm install express
 
     cat <<EOF > .ddev/config.nodejs.yaml
     web_extra_exposed_ports:
-    - name: node-example
-      container_port: 3000
-      http_port: 80
-      https_port: 443
+        - name: node-example
+          container_port: 3000
+          http_port: 80
+          https_port: 443
 
     web_extra_daemons:
-    - name: "node-example"
-      command: "node server.js"
-      directory: /var/www/html
+        - name: "node-example"
+          command: "node server.js"
+          directory: /var/www/html
     EOF
 
-    ddev exec curl -s -O https://raw.githubusercontent.com/ddev/test-nodejs/main/server.js
+    ddev exec curl -fsSLO https://raw.githubusercontent.com/ddev/test-nodejs/main/server.js
     ddev restart
     ddev launch
     ```
@@ -1860,7 +2238,7 @@ Visit [OpenMage Docs](https://docs.openmage.org) for more installation details.
     Create the project directory and configure DDEV:
 
     ```bash
-    mkdir my-openmage-site && cd my-openmage-site
+    mkdir -p my-openmage-composer-site && cd my-openmage-composer-site
     ddev config --project-type=magento --docroot=public_test --php-version=8.1 --web-environment-add=MAGE_IS_DEVELOPER_MODE=1
     ```
 
@@ -1913,7 +2291,7 @@ Visit [OpenMage Docs](https://docs.openmage.org) for more installation details.
         cat > setup-openmage.sh << 'EOF'
         #!/usr/bin/env bash
         set -euo pipefail
-        mkdir my-openmage-site && cd my-openmage-site
+        mkdir -p my-openmage-composer-site && cd my-openmage-composer-site
         ddev config --project-type=magento --docroot=public_test --php-version=8.1 --web-environment-add=MAGE_IS_DEVELOPER_MODE=1
         ddev start -y
         ddev composer init --name "openmage/composer-test" --description "OpenMage starter project" --type "project" -l "OSL-3.0" -s "dev" -q
@@ -1939,7 +2317,7 @@ Visit [OpenMage Docs](https://docs.openmage.org) for more installation details.
     Create the project directory and clone the repository:
 
     ```bash
-    mkdir my-openmage-site && cd my-openmage-site
+    mkdir -p my-openmage-git-site && cd my-openmage-git-site
     git clone https://github.com/OpenMage/magento-lts .
     ```
 
@@ -1977,7 +2355,7 @@ Visit [OpenMage Docs](https://docs.openmage.org) for more installation details.
         cat > setup-openmage-git.sh << 'EOF'
         #!/usr/bin/env bash
         set -euo pipefail
-        mkdir my-openmage-site && cd my-openmage-site
+        mkdir -p my-openmage-git-site && cd my-openmage-git-site
         git clone https://github.com/OpenMage/magento-lts .
         ddev config --project-type=magento --php-version=8.1 --web-environment-add=MAGE_IS_DEVELOPER_MODE=1
         ddev start -y
@@ -1989,6 +2367,123 @@ Visit [OpenMage Docs](https://docs.openmage.org) for more installation details.
         ./setup-openmage-git.sh
         ```
 
+## October CMS
+
+Start a new [October CMS](https://octobercms.com) project or configure an existing one.
+
+October CMS is built on Laravel, so it uses the `laravel` project type. DDEV automatically updates or creates the `.env` file with the database information.
+
+=== "New projects"
+
+    Create the project directory and configure DDEV:
+
+    ```bash
+    mkdir -p my-october-site && cd my-october-site
+    ddev config --project-type=laravel --webserver-type=apache-fpm
+    ```
+
+    Start DDEV (this may take a minute):
+
+    ```bash
+    ddev start
+    ```
+
+    Install October CMS via Composer:
+
+    ```bash
+    ddev composer create-project october/october
+    ```
+
+    Run the installer:
+
+    ```bash
+    ddev artisan october:install --no-interaction
+    ```
+
+    Launch the site:
+
+    ```bash
+    ddev launch
+    ```
+
+    ??? tip "Prefer to run as a script?"
+        To run the whole setup as a script, examine and run this script:
+
+        ```bash
+        cat > setup-october.sh << 'EOF'
+        #!/usr/bin/env bash
+        set -euo pipefail
+        mkdir -p my-october-site && cd my-october-site
+        ddev config --project-type=laravel --webserver-type=apache-fpm
+        ddev start -y
+        ddev composer create-project october/october
+        ddev artisan october:install --no-interaction
+        ddev launch
+        EOF
+        chmod +x setup-october.sh
+        ./setup-october.sh
+        ```
+
+=== "Existing projects"
+
+    You can start using DDEV with an existing October CMS project too — but make sure you have a database backup handy!
+
+    Clone the repository (or navigate to a local project directory):
+
+    ```bash
+    git clone <my-october-repo> my-october-site
+    cd my-october-site
+    ```
+
+    Configure DDEV:
+
+    ```bash
+    ddev config --project-type=laravel --webserver-type=apache-fpm
+    ```
+
+    Start DDEV and install dependencies:
+
+    ```bash
+    ddev start
+    ddev composer install
+    ```
+
+    Import your database and run migrations:
+
+    ```bash
+    ddev import-db --file=/path/to/db.sql.gz
+    ddev artisan october:migrate
+    ```
+
+    Launch the site:
+
+    ```bash
+    ddev launch
+    ```
+
+    ??? tip "Prefer to run as a script?"
+        To run the whole setup as a script, examine and run this script:
+
+        ```bash
+        cat > setup-october-existing.sh << 'EOF'
+        #!/usr/bin/env bash
+        set -euo pipefail
+        git clone <my-october-repo> my-october-site
+        cd my-october-site
+        ddev config --project-type=laravel --webserver-type=apache-fpm
+        ddev start -y
+        ddev composer install
+        ddev import-db --file=/path/to/db.sql.gz
+        ddev artisan october:migrate
+        ddev launch
+        EOF
+        chmod +x setup-october-existing.sh
+        ./setup-october-existing.sh
+        ```
+
+!!!tip "Installing October CMS"
+    Read more about installing October CMS in the [official documentation](https://docs.octobercms.com/3.x/setup/installation.html).
+
 ## Pimcore
 
 === "Composer"
@@ -1998,7 +2493,7 @@ Visit [OpenMage Docs](https://docs.openmage.org) for more installation details.
     Create the project directory and configure DDEV:
 
     ``` bash
-    mkdir my-pimcore-site && cd my-pimcore-site
+    mkdir -p my-pimcore-site && cd my-pimcore-site
     ddev config --project-type=php --docroot=public --webimage-extra-packages='php${DDEV_PHP_VERSION}-amqp'
     ```
 
@@ -2049,7 +2544,7 @@ Visit [OpenMage Docs](https://docs.openmage.org) for more installation details.
         cat > setup-pimcore.sh << 'EOF'
         #!/usr/bin/env bash
         set -euo pipefail
-        mkdir my-pimcore-site && cd my-pimcore-site
+        mkdir -p my-pimcore-site && cd my-pimcore-site
         ddev config --project-type=php --docroot=public --webimage-extra-packages='php${DDEV_PHP_VERSION}-amqp'
         ddev start -y
         ddev composer create-project pimcore/skeleton
@@ -2080,14 +2575,15 @@ To get started with [ProcessWire](https://processwire.com/), create a new direct
     Create the project directory:
 
     ```bash
-    mkdir my-processwire-site && cd my-processwire-site
+    mkdir -p my-processwire-zip-site && cd my-processwire-zip-site
     ```
 
     Download and extract ProcessWire:
 
     ```bash
     curl -LJOf https://github.com/processwire/processwire/archive/master.zip
-    unzip processwire-master.zip && rm -f processwire-master.zip && mv processwire-master/* . && mv processwire-master/.* . 2>/dev/null && rm -rf processwire-master
+    unzip processwire-master.zip && rm -f processwire-master.zip
+    cp -R processwire-master/. . && rm -rf processwire-master
     ```
 
     Configure and start DDEV:
@@ -2110,9 +2606,10 @@ To get started with [ProcessWire](https://processwire.com/), create a new direct
         cat > setup-processwire-zip.sh << 'EOF'
         #!/usr/bin/env bash
         set -euo pipefail
-        mkdir my-processwire-site && cd my-processwire-site
+        mkdir -p my-processwire-zip-site && cd my-processwire-zip-site
         curl -LJOf https://github.com/processwire/processwire/archive/master.zip
-        unzip processwire-master.zip && rm -f processwire-master.zip && mv processwire-master/* . && mv processwire-master/.* . 2>/dev/null && rm -rf processwire-master
+        unzip processwire-master.zip && rm -f processwire-master.zip
+        cp -R processwire-master/. . && rm -rf processwire-master
         ddev config --project-type=php --webserver-type=apache-fpm
         ddev start -y
         ddev launch
@@ -2126,7 +2623,7 @@ To get started with [ProcessWire](https://processwire.com/), create a new direct
     Create the project directory and configure DDEV:
 
     ```bash
-    mkdir my-processwire-site && cd my-processwire-site
+    mkdir -p my-processwire-composer-site && cd my-processwire-composer-site
     ddev config --project-type=php --webserver-type=apache-fpm
     ```
 
@@ -2155,7 +2652,7 @@ To get started with [ProcessWire](https://processwire.com/), create a new direct
         cat > setup-processwire.sh << 'EOF'
         #!/usr/bin/env bash
         set -euo pipefail
-        mkdir my-processwire-site && cd my-processwire-site
+        mkdir -p my-processwire-composer-site && cd my-processwire-composer-site
         ddev config --project-type=php --webserver-type=apache-fpm
         ddev start -y
         ddev composer create-project "processwire/processwire:^3"
@@ -2170,7 +2667,7 @@ To get started with [ProcessWire](https://processwire.com/), create a new direct
     Create the project directory:
 
     ```bash
-    mkdir my-processwire-site && cd my-processwire-site
+    mkdir -p my-processwire-git-site && cd my-processwire-git-site
     ```
 
     Clone ProcessWire (main branch for stable release):
@@ -2201,7 +2698,7 @@ To get started with [ProcessWire](https://processwire.com/), create a new direct
         cat > setup-processwire-git.sh << 'EOF'
         #!/usr/bin/env bash
         set -euo pipefail
-        mkdir my-processwire-site && cd my-processwire-site
+        mkdir -p my-processwire-git-site && cd my-processwire-git-site
         git clone https://github.com/processwire/processwire.git .
         ddev config --webserver-type=apache-fpm
         ddev start -y
@@ -2228,8 +2725,6 @@ If you get a warning about "Apache mod_rewrite" during the compatibility check, 
 ddev config --upload-dirs=sites/assets/files && ddev restart
 ```
 
-If you have any questions there is lots of help in the [DDEV thread in the ProcessWire forum](https://processwire.com/talk/topic/27433-using-ddev-for-local-processwire-development-tips-tricks/).
-
 ## Shopware
 
 === "Composer"
@@ -2239,7 +2734,7 @@ If you have any questions there is lots of help in the [DDEV thread in the Proce
     Create the project directory and configure DDEV:
 
     ```bash
-    mkdir my-shopware-site && cd my-shopware-site
+    mkdir -p my-shopware-site && cd my-shopware-site
     ddev config --project-type=shopware6 --docroot=public
     ```
 
@@ -2260,14 +2755,12 @@ If you have any questions there is lots of help in the [DDEV thread in the Proce
     Run Shopware installation and launch:
 
     ```bash
-    ddev exec console system:install --basic-setup
+    ddev console system:install --basic-setup
     ddev launch /admin
     # Default username and password are `admin` and `shopware`
     ```
 
     Log into the admin site (`/admin`) using the web browser. The default credentials are username `admin` and password `shopware`. You can use the web UI to install sample data or accomplish many other tasks.
-
-    For more advanced tasks like adding elasticsearch, building and watching storefront and administration, see [susi.dev](https://susi.dev/ddev-shopware-6).
 
     ??? tip "Prefer to run as a script?"
         To run the whole setup as a script, examine and run this script:
@@ -2276,16 +2769,39 @@ If you have any questions there is lots of help in the [DDEV thread in the Proce
         cat > setup-shopware.sh << 'EOF'
         #!/usr/bin/env bash
         set -euo pipefail
-        mkdir my-shopware-site && cd my-shopware-site
+        mkdir -p my-shopware-site && cd my-shopware-site
         ddev config --project-type=shopware6 --docroot=public
         ddev start -y
-        ddev composer create-project shopware/production
-        ddev exec console system:install --basic-setup
+        # Answer `x` to "Do you want to include Docker configuration from recipes?"
+        # so Shopware's Docker recipe is not added (DDEV provides the environment).
+        printf "x\n" | ddev composer create-project shopware/production
+        ddev console system:install --basic-setup
         ddev launch /admin
         EOF
         chmod +x setup-shopware.sh
         ./setup-shopware.sh
         ```
+
+    For more advanced tasks, such as
+
+    - setting up workers and the scheduler as automated tasks,
+    - installing additional services like RabbitMQ, or
+    - mirroring production media through an nginx proxy,
+
+    see [notebook.vanwittlaer.de](https://notebook.vanwittlaer.de/ddev-for-shopware/).
+
+### shopware-cli and hot-reload watchers
+
+For `shopware6` projects, DDEV bundles the [`shopware-cli`](https://github.com/shopware/shopware-cli) tool and hot-reload watcher commands automatically, with no add-on required. The `shopware-cli` binary is baked into the web image, and these commands become available:
+
+- `ddev shopware-cli` — run `shopware-cli` inside the web container
+- `ddev storefront-watch` — hot-reload the storefront (proxy on port 9998)
+- `ddev admin-watch <plugin-dir>` — hot-reload a plugin's administration (Vite, port 5173)
+
+Reach the watchers through your project's primary URL with the relevant port, for example `https://my-shopware-site.ddev.site:9998` for the storefront, not `localhost`.
+
+!!!note "Requires Shopware 6.7.4.2 or newer"
+    The bundled watchers target the Vite-based administration (port 5173) introduced in Shopware 6.7.4.2. Older Shopware versions use a different watcher setup.
 
 ## Silverstripe CMS
 
@@ -2296,7 +2812,7 @@ Use a new or existing Composer project, or clone a Git repository.
     Create the project directory and configure DDEV:
 
     ```bash
-    mkdir my-silverstripe-site && cd my-silverstripe-site
+    mkdir -p my-silverstripe-composer-site && cd my-silverstripe-composer-site
     ddev config --project-type=silverstripe --docroot=public
     ```
 
@@ -2326,7 +2842,7 @@ Use a new or existing Composer project, or clone a Git repository.
         cat > setup-silverstripe.sh << 'EOF'
         #!/usr/bin/env bash
         set -euo pipefail
-        mkdir my-silverstripe-site && cd my-silverstripe-site
+        mkdir -p my-silverstripe-composer-site && cd my-silverstripe-composer-site
         ddev config --project-type=silverstripe --docroot=public
         ddev start -y
         ddev composer create-project --prefer-dist silverstripe/installer
@@ -2340,8 +2856,8 @@ Use a new or existing Composer project, or clone a Git repository.
 === "Git Clone"
 
     ```bash
-    git clone <my-silverstripe-repo> my-silverstripe-site
-    cd my-silverstripe-site
+    git clone <my-silverstripe-repo> my-silverstripe-git-site
+    cd my-silverstripe-git-site
     ddev config --project-type=silverstripe --docroot=public
     ddev start
     ddev composer install
@@ -2368,7 +2884,7 @@ The Laravel project type can be used for [Statamic](https://statamic.com/) like 
     Create the project directory and configure DDEV:
 
     ```bash
-    mkdir my-statamic-site && cd my-statamic-site
+    mkdir -p my-statamic-composer-site && cd my-statamic-composer-site
     ddev config --project-type=laravel --docroot=public
     ```
 
@@ -2392,7 +2908,7 @@ The Laravel project type can be used for [Statamic](https://statamic.com/) like 
         cat > setup-statamic.sh << 'EOF'
         #!/usr/bin/env bash
         set -euo pipefail
-        mkdir my-statamic-site && cd my-statamic-site
+        mkdir -p my-statamic-composer-site && cd my-statamic-composer-site
         ddev config --project-type=laravel --docroot=public
         ddev composer create-project --prefer-dist statamic/statamic
         ddev php please make:user admin@example.com --password=admin1234 --super --no-interaction
@@ -2405,8 +2921,8 @@ The Laravel project type can be used for [Statamic](https://statamic.com/) like 
 === "Git Clone"
 
     ```bash
-    git clone <my-statamic-repo> my-statamic-site
-    cd my-statamic-site
+    git clone <my-statamic-repo> my-statamic-git-site
+    cd my-statamic-git-site
     ddev config --project-type=laravel --docroot=public
     ddev start
     ddev composer install
@@ -2419,7 +2935,7 @@ The Laravel project type can be used for [Statamic](https://statamic.com/) like 
 Create the project directory and configure DDEV:
 
 ```bash
-mkdir my-sulu-site && cd my-sulu-site
+mkdir -p my-sulu-site && cd my-sulu-site
 ddev config --project-type=php --docroot=public --upload-dirs=uploads --database=mysql:8.0
 ```
 
@@ -2490,7 +3006,7 @@ ddev launch /admin
     cat > setup-sulu.sh << 'EOF'
     #!/usr/bin/env bash
     set -euo pipefail
-    mkdir my-sulu-site && cd my-sulu-site
+    mkdir -p my-sulu-site && cd my-sulu-site
     ddev config --project-type=php --docroot=public --upload-dirs=uploads --database=mysql:8.0
     ddev start -y
     ddev composer create-project sulu/skeleton
@@ -2518,7 +3034,7 @@ DDEV automatically updates or creates the `.env.local` file with the database in
     Create the project directory and configure DDEV:
 
     ```bash
-    mkdir my-symfony-site && cd my-symfony-site
+    mkdir -p my-symfony-composer-site && cd my-symfony-composer-site
     ddev config --project-type=symfony --docroot=public
     ```
 
@@ -2528,10 +3044,10 @@ DDEV automatically updates or creates the `.env.local` file with the database in
     ddev start
     ```
 
-    Install Symfony via Composer:
+    Install Symfony via Composer, pinned to the current [long-term support (LTS) release](https://symfony.com/doc/current/setup.html#symfony-lts-versions):
 
     ```bash
-    ddev composer create-project symfony/skeleton
+    ddev composer create-project symfony/skeleton:"7.4.*"
     ddev composer require webapp
     # When it asks if you want to include docker configuration, say "no" with "x"
     ```
@@ -2549,10 +3065,10 @@ DDEV automatically updates or creates the `.env.local` file with the database in
         cat > setup-symfony.sh << 'EOF'
         #!/usr/bin/env bash
         set -euo pipefail
-        mkdir my-symfony-site && cd my-symfony-site
+        mkdir -p my-symfony-composer-site && cd my-symfony-composer-site
         ddev config --project-type=symfony --docroot=public
         ddev start -y
-        ddev composer create-project symfony/skeleton
+        ddev composer create-project symfony/skeleton:"7.4.*"
         ddev composer require webapp
         ddev launch
         EOF
@@ -2563,11 +3079,12 @@ DDEV automatically updates or creates the `.env.local` file with the database in
 === "Symfony CLI"
 
     ```bash
-    mkdir my-symfony-site && cd my-symfony-site
+    mkdir -p my-symfony-cli-site && cd my-symfony-cli-site
     ddev config --project-type=symfony --docroot=public
     ddev start
     ddev exec symfony check:requirements
-    ddev exec symfony new temp --webapp
+    # --version=lts always resolves to the current long-term support release
+    ddev exec symfony new temp --webapp --version=lts
     # 'symfony new' can't install in the current directory right away,
     # so we use 'rsync' to move the installed files one level up
     ddev exec 'rsync -rltgopD temp/ ./ && rm -rf temp'
@@ -2577,8 +3094,8 @@ DDEV automatically updates or creates the `.env.local` file with the database in
 === "Git Clone"
 
     ```bash
-    git clone <my-symfony-repo> my-symfony-site
-    cd my-symfony-site
+    git clone <my-symfony-repo> my-symfony-git-site
+    cd my-symfony-git-site
     ddev config --project-type=symfony --docroot=public
     ddev start
     ddev composer install
@@ -2599,6 +3116,54 @@ DDEV automatically updates or creates the `.env.local` file with the database in
     ddev exec symfony server:log
     ```
 
+## Tempest
+
+=== "Composer"
+
+    Create the project directory and configure DDEV:
+
+    ```bash
+    PROJECT_NAME=my-tempest-site
+    mkdir -p ${PROJECT_NAME} && cd ${PROJECT_NAME}
+    ddev config --project-type=php --docroot=public --php-version=8.5 --omit-containers=db
+    ```
+
+    Start DDEV (this may take a minute):
+
+    ```bash
+    ddev start
+    ```
+
+    Install Tempest via Composer:
+
+    ```bash
+    ddev composer create-project tempest/app
+    ```
+
+    Launch the site:
+
+    ```bash
+    ddev launch
+    ```
+
+    ??? tip "Prefer to run as a script?"
+        To run the whole setup as a script, examine and run this script:
+
+        ```bash
+        cat > setup-tempest.sh << 'EOF'
+        #!/usr/bin/env bash
+        set -euo pipefail
+        PROJECT_NAME=my-tempest-site
+        mkdir -p ${PROJECT_NAME} && cd ${PROJECT_NAME}
+        ddev config --project-type=php --docroot=public --php-version=8.5 --omit-containers=db
+        ddev start -y
+        ddev composer create-project tempest/app
+        ddev launch
+        EOF
+        chmod +x setup-tempest.sh
+        ./setup-tempest.sh
+        ```
+
 ## TYPO3
 
 === "Composer"
@@ -2607,7 +3172,7 @@ DDEV automatically updates or creates the `.env.local` file with the database in
 
     ```bash
     PROJECT_NAME=my-typo3-site
-    mkdir ${PROJECT_NAME} && cd ${PROJECT_NAME}
+    mkdir -p ${PROJECT_NAME} && cd ${PROJECT_NAME}
     ddev config --project-type=typo3 --docroot=public
     ```
 
@@ -2623,13 +3188,18 @@ DDEV automatically updates or creates the `.env.local` file with the database in
     ddev composer create-project "typo3/cms-base-distribution:^14"
     ```
 
+    Install the Camino default theme [recommended for TYPO3 Core](https://docs.typo3.org/m/typo3/tutorial-getting-started/main/en-us/Installation/Install.html):
+
+    ```bash
+    ddev composer require typo3/theme-camino
+    ```
+
     Run the TYPO3 setup:
 
     ```bash
     ddev typo3 setup \
         --admin-user-password="Demo123*" \
         --driver=mysqli \
-        --create-site=https://${PROJECT_NAME}.ddev.site \
         --server-type=other \
         --dbname=db \
         --username=db \
@@ -2641,8 +3211,13 @@ DDEV automatically updates or creates the `.env.local` file with the database in
         --project-name="My TYPO3 site" \
         --force
     ```
+    Launch the site content:
 
-    Launch the site:
+    ```bash
+    ddev launch /camino
+    ```
+
+    Launch the backend:
 
     ```bash
     ddev launch /typo3/
@@ -2660,10 +3235,10 @@ DDEV automatically updates or creates the `.env.local` file with the database in
         ddev config --project-type=typo3 --docroot=public
         ddev start -y
         ddev composer create-project "typo3/cms-base-distribution:^14"
+        ddev composer require typo3/theme-camino
         ddev typo3 setup \
             --admin-user-password="Demo123*" \
             --driver=mysqli \
-            --create-site=https://${PROJECT_NAME}.ddev.site \
             --server-type=other \
             --dbname=db \
             --username=db \
@@ -2674,6 +3249,7 @@ DDEV automatically updates or creates the `.env.local` file with the database in
             --admin-email=admin@example.com \
             --project-name="My TYPO3 site" \
             --force
+        ddev launch /camino
         ddev launch /typo3/
         EOF
         chmod +x setup-typo3.sh
@@ -2682,7 +3258,7 @@ DDEV automatically updates or creates the `.env.local` file with the database in
 
 === "Git Clone"
 
-    This example uses a clone of a test repository, `github.com/ddev/test-typo3.git`. 
+    This example uses a clone of a test repository, `github.com/ddev/test-typo3.git`.
     Replace that with your git repository.
 
     ```bash
@@ -2697,6 +3273,136 @@ DDEV automatically updates or creates the `.env.local` file with the database in
     ddev launch /typo3/install.php
     ```
 
+## Wagtail (Python, Generic)
+
+[Wagtail](https://wagtail.org/) is a popular, open-source content management system built on the Django web framework. This quickstart demonstrates how to set up a new Wagtail project using DDEV with Python and a virtual environment.
+
+Create the project directory and configure DDEV:
+
+```bash
+export WAGTAIL_SITENAME=my-wagtail-site
+mkdir -p ${WAGTAIL_SITENAME} && cd ${WAGTAIL_SITENAME}
+ddev config --project-type=generic --webserver-type=generic \
+    --webimage-extra-packages=python3-pip,python3-venv \
+    --web-environment-add=DJANGO_SETTINGS_MODULE=mysite.settings.dev \
+    --omit-containers=db
+```
+
+Configure the container to automatically activate the Python virtual environment:
+
+```bash
+cat <<'DOCKERFILEEND' >.ddev/web-build/Dockerfile.python-venv
+RUN for file in /etc/bash.bashrc /etc/bash.nointeractive.bashrc; do \
+        echo '[ -s "$DDEV_APPROOT/env/bin/activate" ] && source "$DDEV_APPROOT/env/bin/activate"' >> "$file"; \
+    done
+DOCKERFILEEND
+```
+
+Start DDEV (this may take a minute):
+
+```bash
+ddev start
+```
+
+Create a Python virtual environment and install Wagtail:
+
+```bash
+ddev exec python -m venv env
+ddev exec pip install wagtail
+```
+
+Initialize the Wagtail project:
+
+```bash
+ddev exec wagtail start mysite .
+ddev exec pip install -r requirements.txt
+```
+
+Configure Django to detect HTTPS behind the [Traefik](./extend/traefik-router.md) router:
+
+```bash
+ddev exec "echo \"SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')\" >> mysite/settings/dev.py"
+```
+
+Run database migrations and create a superuser:
+
+```bash
+ddev exec python manage.py migrate --noinput
+ddev exec "DJANGO_SUPERUSER_PASSWORD=admin python manage.py createsuperuser --username=admin --email=admin@example.com --noinput"
+```
+
+Configure DDEV to run the Wagtail development server:
+
+```bash
+cat <<'EOF' > .ddev/config.wagtail.yaml
+web_extra_daemons:
+    - name: "wagtail"
+      command: "python manage.py runserver 0.0.0.0:8000"
+      directory: /var/www/html
+web_extra_exposed_ports:
+    - name: "wagtail"
+      container_port: 8000
+      http_port: 80
+      https_port: 443
+EOF
+```
+
+Restart DDEV to apply the configuration:
+
+```bash
+ddev restart
+```
+
+Launch the Wagtail admin interface (login with `admin` and `admin`):
+
+```bash
+ddev launch /admin
+```
+
+??? tip "Prefer to run as a script?"
+    To run the whole setup as a script, examine and run this script:
+
+    ```bash
+    cat > setup-wagtail.sh << 'EOF'
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export WAGTAIL_SITENAME=my-wagtail-site
+    mkdir -p ${WAGTAIL_SITENAME} && cd ${WAGTAIL_SITENAME}
+    ddev config --project-type=generic --webserver-type=generic \
+        --webimage-extra-packages=python3-pip,python3-venv \
+        --web-environment-add=DJANGO_SETTINGS_MODULE=mysite.settings.dev \
+        --omit-containers=db
+    cat <<'INNEREOF' >.ddev/web-build/Dockerfile.python-venv
+    RUN for file in /etc/bash.bashrc /etc/bash.nointeractive.bashrc; do \
+            echo '[ -s "$DDEV_APPROOT/env/bin/activate" ] && source "$DDEV_APPROOT/env/bin/activate"' >> "$file"; \
+        done
+    INNEREOF
+    ddev start -y
+    ddev exec python -m venv env
+    ddev exec pip install wagtail
+    ddev exec wagtail start mysite .
+    ddev exec pip install -r requirements.txt
+    ddev exec "echo \"SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')\" >> mysite/settings/dev.py"
+    ddev exec python manage.py migrate --noinput
+    ddev exec "DJANGO_SUPERUSER_PASSWORD=admin python manage.py createsuperuser --username=admin --email=admin@example.com --noinput"
+    cat <<'INNEREOF' > .ddev/config.wagtail.yaml
+    web_extra_daemons:
+        - name: "wagtail"
+          command: "python manage.py runserver 0.0.0.0:8000"
+          directory: /var/www/html
+    web_extra_exposed_ports:
+        - name: "wagtail"
+          container_port: 8000
+          http_port: 80
+          https_port: 443
+    INNEREOF
+    ddev restart
+    ddev launch /admin
+    EOF
+    chmod +x setup-wagtail.sh
+    ./setup-wagtail.sh
+    ```
+
 ## WordPress
 
 There are several easy ways to use DDEV with WordPress:
@@ -2708,7 +3414,7 @@ There are several easy ways to use DDEV with WordPress:
     Create the project directory and configure DDEV:
 
     ```bash
-    mkdir my-wp-site && cd my-wp-site
+    mkdir -p my-wp-cli-site && cd my-wp-cli-site
     # Create a new DDEV project inside the newly-created folder
     # (Primary URL automatically set to `https://<folder>.ddev.site`)
     ddev config --project-type=wordpress
@@ -2732,8 +3438,7 @@ There are several easy ways to use DDEV with WordPress:
     # You can launch in browser to finish installation:
     # ddev launch
     # OR use the following installation command
-    # (we need to use single quotes to get the primary site URL from `.ddev/config.yaml` as variable)
-    ddev wp core install --url='$DDEV_PRIMARY_URL' --title='My WordPress site' --admin_user=admin --admin_password=admin --admin_email=admin@example.com
+    ddev wp core install --url="$(ddev exec echo '$DDEV_PRIMARY_URL')" --title='My WordPress site' --admin_user=admin --admin_password=admin --admin_email=admin@example.com
     ```
 
     Launch WordPress admin dashboard:
@@ -2749,11 +3454,11 @@ There are several easy ways to use DDEV with WordPress:
         cat > setup-wordpress.sh << 'EOF'
         #!/usr/bin/env bash
         set -euo pipefail
-        mkdir my-wp-site && cd my-wp-site
+        mkdir -p my-wp-cli-site && cd my-wp-cli-site
         ddev config --project-type=wordpress
         ddev start -y
         ddev wp core download
-        ddev wp core install --url='$DDEV_PRIMARY_URL' --title='My WordPress site' --admin_user=admin --admin_password=admin --admin_email=admin@example.com
+        ddev wp core install --url="$(ddev exec echo '$DDEV_PRIMARY_URL')" --title='My WordPress site' --admin_user=admin --admin_password=admin --admin_email=admin@example.com
         ddev launch wp-admin/
         EOF
         chmod +x setup-wordpress.sh
@@ -2765,32 +3470,40 @@ There are several easy ways to use DDEV with WordPress:
     [Bedrock](https://roots.io/bedrock/) is a modern, Composer-based installation in WordPress:
 
     ```bash
-    mkdir my-wp-site && cd my-wp-site
-    ddev config --project-type=wordpress --docroot=web
+    mkdir -p my-wp-bedrock-site && cd my-wp-bedrock-site
+    ddev config --project-type=wp-bedrock
     ddev start
     ddev composer create-project roots/bedrock
     ```
 
-    Rename the file `.env.example` to `.env` in the project root and make the following adjustments:
+    DDEV automatically manages the `.env` file with the correct database credentials and `WP_HOME` URL. No manual `.env` configuration is needed.
 
-    ```
-    DB_NAME=db
-    DB_USER=db
-    DB_PASSWORD=db
-    DB_HOST=db
-    WP_HOME=${DDEV_PRIMARY_URL}
-    WP_SITEURL=${WP_HOME}/wp
-    WP_ENV=development
-    ```
-
-    You can then install the site with WP-CLI and log into the admin interface:
+    You can then run:
 
     ```bash
-    ddev wp core install --url='$DDEV_PRIMARY_URL' --title='My WordPress site' --admin_user=admin --admin_password=admin --admin_email=admin@example.com
-    ddev launch wp-admin/
+    ddev wp core install --url="$(ddev exec echo '$DDEV_PRIMARY_URL')" --title='My Bedrock Site' --admin_user=admin --admin_password=admin --admin_email=admin@example.com
+    ddev launch /wp/wp-admin/
     ```
 
     For more details, see [Bedrock installation](https://docs.roots.io/bedrock/master/installation/).
+
+    ??? tip "Prefer to run as a script?"
+        To run the whole setup as a script, examine and run this script:
+
+        ```bash
+        cat > setup-wp-bedrock.sh << 'EOF'
+        #!/usr/bin/env bash
+        set -euo pipefail
+        mkdir -p my-wp-bedrock-site && cd my-wp-bedrock-site
+        ddev config --project-type=wp-bedrock
+        ddev start -y
+        ddev composer create-project roots/bedrock
+        ddev wp core install --url="$(ddev exec echo '$DDEV_PRIMARY_URL')" --title='My Bedrock Site' --admin_user=admin --admin_password=admin --admin_email=admin@example.com
+        ddev launch /wp/wp-admin/
+        EOF
+        chmod +x setup-wp-bedrock.sh
+        ./setup-wp-bedrock.sh
+        ```
 
 === "Git Clone"
 
@@ -2798,11 +3511,11 @@ There are several easy ways to use DDEV with WordPress:
 
     ```bash
     PROJECT_GIT_URL=https://github.com/ddev/test-wordpress.git
-    git clone ${PROJECT_GIT_URL} my-wp-site
-    cd my-wp-site
+    git clone ${PROJECT_GIT_URL} my-wp-git-site
+    cd my-wp-git-site
     ddev config --project-type=wordpress
     ddev start
-    ddev wp core install --url='$DDEV_PRIMARY_URL' --title='My WordPress site' --admin_user=admin --admin_password=admin --admin_email=admin@example.com
+    ddev wp core install --url="$(ddev exec echo '$DDEV_PRIMARY_URL')" --title='My WordPress site' --admin_user=admin --admin_password=admin --admin_email=admin@example.com
     ddev launch wp-admin/
     ```
 

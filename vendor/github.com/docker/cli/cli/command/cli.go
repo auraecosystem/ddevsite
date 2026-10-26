@@ -1,5 +1,5 @@
 // FIXME(thaJeztah): remove once we are a module; the go:build directive prevents go from downgrading language version to go1.16:
-//go:build go1.24
+//go:build go1.26
 
 package command
 
@@ -60,6 +60,7 @@ type Cli interface {
 type DockerCli struct {
 	configFile         *configfile.ConfigFile
 	options            *cliflags.ClientOptions
+	clientOpts         []client.Opt
 	in                 *streams.In
 	out                *streams.Out
 	err                *streams.Out
@@ -67,12 +68,12 @@ type DockerCli struct {
 	serverInfo         ServerInfo
 	contextStore       store.Store
 	currentContext     string
+	contextResolver    func(*DockerCli) (string, error)
 	init               sync.Once
 	initErr            error
 	dockerEndpoint     docker.Endpoint
 	contextStoreConfig *store.Config
 	initTimeout        time.Duration
-	userAgent          string
 	res                telemetryResource
 
 	// baseCtx is the base context used for internal operations. In the future
@@ -208,6 +209,8 @@ func (cli *DockerCli) HooksEnabled() bool {
 
 // Initialize the dockerCli runs initialization that must happen after command
 // line flags are parsed.
+//
+//nolint:gocyclo
 func (cli *DockerCli) Initialize(opts *cliflags.ClientOptions, ops ...CLIOption) error {
 	for _, o := range ops {
 		if err := o(cli); err != nil {
@@ -255,6 +258,16 @@ func (cli *DockerCli) Initialize(opts *cliflags.ClientOptions, ops ...CLIOption)
 		Resolver: func() (*DefaultContext, error) {
 			return resolveDefaultContext(cli.options, *cli.contextStoreConfig)
 		},
+	}
+
+	if cli.contextResolver != nil {
+		contextName, err := cli.contextResolver(cli)
+		if err != nil {
+			return err
+		}
+		if contextName != "" {
+			cli.currentContext = contextName
+		}
 	}
 
 	// TODO(krissetto): pass ctx to the funcs instead of using this
@@ -316,7 +329,11 @@ func newAPIClientFromEndpoint(ep docker.Endpoint, configFile *configfile.ConfigF
 		opts = append(opts, withCustomHeaders)
 	}
 	opts = append(opts, extraOpts...)
-	return client.New(opts...)
+	apiClient, err := client.New(opts...)
+	if err != nil {
+		return nil, err
+	}
+	return apiClient, nil
 }
 
 func resolveDockerEndpoint(s store.Reader, contextName string) (docker.Endpoint, error) {
@@ -533,8 +550,7 @@ func (cli *DockerCli) initialize() error {
 			return
 		}
 		if cli.client == nil {
-			ops := []client.Opt{client.WithUserAgent(cli.userAgent)}
-			if cli.client, cli.initErr = newAPIClientFromEndpoint(cli.dockerEndpoint, cli.configFile, ops...); cli.initErr != nil {
+			if cli.client, cli.initErr = newAPIClientFromEndpoint(cli.dockerEndpoint, cli.configFile, cli.clientOpts...); cli.initErr != nil {
 				return
 			}
 		}
@@ -567,11 +583,12 @@ type ServerInfo struct {
 // It applies by default the standard streams, and the content trust from
 // environment.
 func NewDockerCli(ops ...CLIOption) (*DockerCli, error) {
-	defaultOps := []CLIOption{
+	defaultOps := make([]CLIOption, 0, 3+len(ops))
+	defaultOps = append(defaultOps,
 		WithDefaultContextStoreConfig(),
 		WithStandardStreams(),
 		WithUserAgent(UserAgent()),
-	}
+	)
 	ops = append(defaultOps, ops...)
 
 	cli := &DockerCli{baseCtx: context.Background()}

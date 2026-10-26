@@ -1,78 +1,229 @@
 #!/usr/bin/env bats
 
-# Requires bats-assert and bats-support
-# brew tap bats-core/bats-core &&
-# brew install bats-core bats-assert bats-support
 setup() {
   load setup.sh
 }
 
-@test "Verify required binaries are installed in normal image" {
-    if [ "${IS_HARDENED}" == "true" ]; then skip "Skipping because IS_HARDENED==true"; fi
-    COMMANDS="composer ddev drush8 git magerun magerun2 mkcert mysql mysqladmin mysqldump node npm patch platform ssh sudo symfony terminus wp"
-    for item in $COMMANDS; do
-#      echo "# looking for $item" >&3
-      docker exec $CONTAINER_NAME bash -c "command -v $item >/dev/null"
-    done
+teardown() {
+  # Only the composer test creates vendor/; this runs even when its asserts abort.
+  docker exec "$CONTAINER_NAME" rm -rf /var/www/html/vendor
 }
 
-@test "Verify some binaries binaries (sudo) are NOT installed in hardened image" {
-    if [ "${IS_HARDENED}" != "true" ]; then skip "Skipping because IS_HARDENED==false"; fi
-    COMMANDS="sudo terminus"
-    for item in $COMMANDS; do
-      rv=1
-      docker exec $CONTAINER_NAME bash -c "command -v $item >/dev/null 2>/dev/null" || rv=$?
-      if [ ${rv} -eq 0 ]; then echo "Found $item which should not be found" >/dev/stderr; return 1; fi
-    done
+@test "Verify required binaries are installed in normal image" {
+  if [ "${IS_HARDENED}" == "true" ]; then skip "Skipping because IS_HARDENED==true"; fi
+  COMMANDS="composer ddev git mkcert mysql mysqladmin mysqldump node npm patch platform ssh sudo terminus xdebugctl"
+  for item in $COMMANDS; do
+    run docker exec "$CONTAINER_NAME" bash -c "command -v $item"
+    assert_success
+  done
+}
+
+@test "Project-specific tools are not installed in the shared image" {
+  for item in wp wp-cli magerun magerun2 drush8 symfony shopware-cli; do
+    run docker exec "$CONTAINER_NAME" bash -c "command -v $item"
+    assert_failure
+  done
+  run docker exec "$CONTAINER_NAME" test -e /var/tmp/backdrop_drush_commands
+  assert_failure
+}
+
+@test "Verify some binaries (sudo) are NOT installed in hardened image" {
+  if [ "${IS_HARDENED}" != "true" ]; then skip "Skipping because IS_HARDENED==false"; fi
+  COMMANDS="sudo terminus"
+  for item in $COMMANDS; do
+    run docker exec "$CONTAINER_NAME" bash -c "command -v $item"
+    assert_failure
+  done
 }
 
 @test "Verify /var/www/html/vendor/bin is in PATH on ddev/docker exec" {
-    docker exec $CONTAINER_NAME bash -c 'echo $PATH | grep /var/www/html/vendor/bin'
+  run docker exec "$CONTAINER_NAME" bash -c 'echo $PATH'
+  assert_success
+  assert_output --partial "/var/www/html/vendor/bin"
+}
+
+@test "Verify PATH contains all expected directories in non-interactive, interactive, and login shells" {
+  local check='
+    for p in \
+      "$HOME/.local/bin" \
+      "$HOME/bin" \
+      "${DDEV_COMPOSER_ROOT:-/var/www/html}/vendor/bin" \
+      "/usr/local/n/bin" \
+      "/var/www/html/bin" \
+      "/mnt/ddev-global-cache/global-commands/web"; do
+      case ":$PATH:" in
+        *":$p:"*) ;;
+        *) echo "Missing from PATH: $p" >&2; exit 1 ;;
+      esac
+    done
+  '
+
+  run docker exec "$CONTAINER_NAME" bash -c "$check"
+  assert_success
+
+  run docker exec -t "$CONTAINER_NAME" bash -ic "$check"
+  assert_success
+
+  run docker exec "$CONTAINER_NAME" bash -lc "$check"
+  assert_success
+}
+
+@test "Verify composer resolves to the system install over vendor/bin/composer in bash and sh" {
+  local vendor_bin="/var/www/html/vendor/bin"
+  run docker exec "$CONTAINER_NAME" bash -c "mkdir -p $vendor_bin && printf '#!/bin/sh\necho vendor-composer\n' > $vendor_bin/composer && chmod +x $vendor_bin/composer"
+  assert_success
+
+  # sh is dash: PHP exec() and Symfony Process run commands through it, so bash-only lookup rules don't apply
+  run docker exec "$CONTAINER_NAME" bash -c 'composer --version'
+  assert_success
+  assert_output --partial "Composer version"
+
+  run docker exec "$CONTAINER_NAME" bash -lc 'composer --version'
+  assert_success
+  assert_output --partial "Composer version"
+
+  run docker exec "$CONTAINER_NAME" bash -c 'sh -c "composer --version"'
+  assert_success
+  assert_output --partial "Composer version"
+}
+
+@test "Verify PATH is identical across non-interactive, interactive, and login shells" {
+  run docker exec "$CONTAINER_NAME" bash -c 'echo $PATH'
+  assert_success
+  local noninteractive_path="$output"
+
+  run docker exec -t "$CONTAINER_NAME" bash -ic 'echo $PATH'
+  assert_success
+  # -t allocates a pseudo-TTY which adds \r to output; strip it before comparing
+  assert_equal "${output//$'\r'/}" "$noninteractive_path"
+
+  run docker exec "$CONTAINER_NAME" bash -lc 'echo $PATH'
+  assert_success
+  assert_equal "${output}" "$noninteractive_path"
+}
+
+@test "Verify /usr/local/n and /var/log are baked group-0-writable but not world-writable" {
+  # Regression guard for https://github.com/ddev/ddev/issues/8640: these
+  # directories must be owned by group 0 (root) and group-writable, so a
+  # per-project user (added to group 0 by WriteBuildDockerfile) can write
+  # into them (e.g. `npm install -g`, or an app logging to /var/log)
+  # without either directory being world-writable (see #8379).
+  for dir in /usr/local/n /var/log; do
+    run docker exec "$CONTAINER_NAME" stat -c '%g %A' "$dir"
+    assert_success
+    assert_output --regexp "^0 .{5}w.{2}[^w].\$"
+  done
+}
+
+@test "Verify a group-0 member (not the file owner) can write into /usr/local/n and /var/log" {
+  # Simulates the supplementary-group-0 membership that WriteBuildDockerfile
+  # adds for every project user (useradd -G tty,0), which is how a non-root,
+  # non-www-data user gets write access to these directories.
+  for dir in /usr/local/n /var/log; do
+    run docker run --rm -u "$MOUNTUID:$MOUNTGID" --group-add 0 "$DOCKER_IMAGE" bash -c "touch '$dir/ddev-group0-write-test' && rm -f '$dir/ddev-group0-write-test'"
+    assert_success
+  done
 }
 
 @test "verify that xdebug is disabled by default when using start.sh to start" {
-    docker exec $CONTAINER_NAME bash -c 'php --version | grep -v "with Xdebug"'
+  run docker exec "$CONTAINER_NAME" php --version
+  assert_success
+  refute_output --partial "with Xdebug"
 }
 
 @test "verify that xhprof is disabled by default when using start.sh to start" {
-    docker exec $CONTAINER_NAME bash -c 'php --modules | grep -v "xhprof"'
+  run docker exec "$CONTAINER_NAME" php --modules
+  assert_success
+  refute_output --partial "xhprof"
 }
 
 @test "verify that composer v2 is installed by default" {
-    v=$(docker exec $CONTAINER_NAME bash -c 'composer --version | awk "{ print $3;}"')
-    [[ "${v}" > "2." ]]
+  run docker exec "$CONTAINER_NAME" composer --version
+  assert_success
+  assert_output --partial "Composer version 2."
 }
 
-@test "verify that PHP assertion are enabled by default" {
-    enabled=$(docker exec $CONTAINER_NAME sh -c "php -r 'echo ini_get("'"zend.assertions"'");'")
-    [[ "${enabled}" -eq 1 ]]
+@test "verify that PHP assertions are enabled by default" {
+  run docker exec "$CONTAINER_NAME" php -r 'echo ini_get("zend.assertions");'
+  assert_success
+  assert_output "1"
 }
 
 @test "verify there aren't \"closed keepalive connection\" complaints" {
-	(docker logs $CONTAINER_NAME 2>&1 | grep -v "closed keepalive connection")  || (echo "Found unwanted closed keepalive connection messages" && exit 103)
+  run docker logs "$CONTAINER_NAME"
+  assert_success
+  refute_output --partial "closed keepalive connection"
 }
 
-@test "verify access to upstream error messages ($project_type)" {
-	ERRMSG="$(curl 127.0.0.1:$HOST_HTTP_PORT/test/upstream-error.php)"
-	if [ "$ERRMSG" != "Upstream error message" ] ; then
-	  exit 108
-	fi
+@test "verify access to upstream error messages" {
+  run curl -s "127.0.0.1:$HOST_HTTP_PORT/test/upstream-error.php"
+  assert_success
+  assert_output "Upstream error message"
 }
 
 @test "verify that xdebug is not enabled by default" {
-  docker run --rm $DOCKER_IMAGE bash -c 'php --version | grep -v "with Xdebug"'
+  run docker run --rm "$DOCKER_IMAGE" php --version
+  assert_success
+  refute_output --partial "with Xdebug"
 }
 
 @test "verify apt keys are not expiring within ${DDEV_MAX_DAYS_BEFORE_CERT_EXPIRATION:-90} days" {
   if [ "${DDEV_IGNORE_EXPIRING_KEYS:-}" = "true" ]; then
     skip "Skipping because DDEV_IGNORE_EXPIRING_KEYS is set"
   fi
-  docker cp ${TEST_SCRIPT_DIR}/check_key_expirations.sh ${CONTAINER_NAME}:/tmp
-  docker exec -u root -e "DDEV_MAX_DAYS_BEFORE_CERT_EXPIRATION=${DDEV_MAX_DAYS_BEFORE_CERT_EXPIRATION:-90}" ${CONTAINER_NAME} /tmp/check_key_expirations.sh >&3
+  run docker cp "${TEST_SCRIPT_DIR}/check_key_expirations.sh" "${CONTAINER_NAME}:/tmp"
+  assert_success
+  run docker exec -u root -e "DDEV_MAX_DAYS_BEFORE_CERT_EXPIRATION=${DDEV_MAX_DAYS_BEFORE_CERT_EXPIRATION:-90}" "${CONTAINER_NAME}" /tmp/check_key_expirations.sh
+  assert_success
+}
+
+@test "verify mariadb compat wrappers are installed and produce no deprecation warnings" {
+  for cmd in mysql mysqldump mysqladmin mysqlcheck; do
+    run docker exec "$CONTAINER_NAME" bash -c "command -v $cmd"
+    assert_success
+  done
+  run docker exec "$CONTAINER_NAME" bash -c "mysql --version 2>&1"
+  assert_success
+  refute_output --partial "Deprecated program name"
+}
+
+@test "verify mariadb compat wrappers are removed for MySQL and reinstalled for MariaDB" {
+  # Remove wrappers by switching to MySQL
+  run docker exec -u root -e DDEV_DATABASE="mysql:8.0" "$CONTAINER_NAME" mariadb-compat-install.sh
+  assert_success
+  run docker exec "$CONTAINER_NAME" bash -c "[ -f /usr/local/bin/mysql ] && head -n 3 /usr/local/bin/mysql | grep -q '#ddev-generated' && echo 'wrapper exists' || echo 'wrapper absent'"
+  assert_output "wrapper absent"
+  # Reinstall wrappers by switching back to MariaDB
+  run docker exec -u root -e DDEV_DATABASE="mariadb:11.8" "$CONTAINER_NAME" mariadb-compat-install.sh
+  assert_success
+  run docker exec "$CONTAINER_NAME" bash -c "command -v mysql"
+  assert_success
+}
+
+@test "verify mariadb skip-ssl wrappers are installed and contain --skip-ssl-verify-server-cert" {
+  for cmd in mariadb mariadb-admin mariadb-dump; do
+    run docker exec "$CONTAINER_NAME" bash -c "command -v $cmd"
+    assert_success
+    run docker exec "$CONTAINER_NAME" bash -c "grep -q -- '--skip-ssl-verify-server-cert' /usr/local/bin/$cmd"
+    assert_success
+  done
+}
+
+@test "verify mariadb skip-ssl wrappers are removed for MySQL and reinstalled for MariaDB" {
+  # Remove wrappers by switching to MySQL
+  run docker exec -u root -e DDEV_DATABASE="mysql:8.0" "$CONTAINER_NAME" mariadb-skip-ssl-wrapper-install.sh
+  assert_success
+  run docker exec "$CONTAINER_NAME" bash -c "[ -f /usr/local/bin/mariadb ] && head -n 3 /usr/local/bin/mariadb | grep -q '#ddev-generated' && echo 'wrapper exists' || echo 'wrapper absent'"
+  assert_output "wrapper absent"
+  # Reinstall wrappers by switching back to MariaDB
+  run docker exec -u root -e DDEV_DATABASE="mariadb:11.8" "$CONTAINER_NAME" mariadb-skip-ssl-wrapper-install.sh
+  assert_success
+  run docker exec "$CONTAINER_NAME" bash -c "grep -q -- '--skip-ssl-verify-server-cert' /usr/local/bin/mariadb"
+  assert_success
 }
 
 @test "verify python is installed" {
-  run docker exec ${CONTAINER_NAME} python --version
+  run docker exec "${CONTAINER_NAME}" python --version
   assert_success
   assert_output --partial "Python 3"
 }

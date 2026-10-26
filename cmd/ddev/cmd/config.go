@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -34,7 +35,7 @@ var (
 	// projectTypeArg is the DDEV project type.
 	projectTypeArg string
 
-	// phpVersionArg overrides the default version of PHP to be used in the web container, like 5.6-8.5 etc.
+	// phpVersionArg overrides the PHP version to be used in the web container.
 	phpVersionArg string
 
 	// routerHTTPPortArg overrides the default router HTTP port (80).
@@ -66,6 +67,12 @@ var (
 
 	// webImageDefaultArg allows a user to unset the specific web server container image
 	webImageDefaultArg bool
+
+	// dbImageArg allows a user to set the project's db server container image
+	dbImageArg string
+
+	// dbImageDefaultArg allows a user to unset the specific db server container image
+	dbImageDefaultArg bool
 
 	// webWorkingDirArg allows a user to define the working directory for the web service
 	webWorkingDirArg string
@@ -112,30 +119,39 @@ var (
 	// ngrokArgs provides additional args to the ngrok command in `ddev share`
 	ngrokArgs string
 
+	// shareDefaultProvider sets the default share provider for the project
+	shareDefaultProvider string
+
+	// shareProviderArgs provides additional args to the share provider
+	shareProviderArgs string
+
 	webEnvironmentLocal string
 
 	// ddevVersionConstraint sets a ddev version constraint to validate the ddev against
 	ddevVersionConstraint string
 )
 
-var providerName = nodeps.ProviderDefault
-
-// extraFlagsHandlingFunc does specific handling for additional flags, and is different per provider.
-var extraFlagsHandlingFunc func(cmd *cobra.Command, args []string, app *ddevapp.DdevApp) error
-
 // ConfigCommand represents the `ddev config` command
 var ConfigCommand = &cobra.Command{
-	Use:     "config [global]",
-	Short:   "Create or modify a DDEV project configuration in the current directory",
-	Example: `"ddev config" or "ddev config --docroot=web --project-type=drupal11"`,
-	Args:    cobra.ExactArgs(0),
-	Run:     handleConfigRun,
+	Use:         "config [global]",
+	Annotations: map[string]string{NoDockerCommand: "true"},
+	Short:       "Create or modify a DDEV project configuration in the current directory",
+	Example:     `"ddev config" or "ddev config --docroot=web --project-type=drupal11"`,
+	Args:        cobra.ExactArgs(0),
+	Run:         handleConfigRun,
 }
 
 // handleConfigRun handles all the flag processing for any provider
 func handleConfigRun(cmd *cobra.Command, args []string) {
-	app := getConfigApp(providerName)
+	runConfig(cmd, args, getConfigApp(), cmd.Flags().NFlag() == 0, nil)
+	util.Success("Configuration complete. You may now run 'ddev start'.")
+}
 
+// runConfig configures app and writes its config.yaml, asking the user for
+// the main settings if prompt is true and taking them from cmd's flags otherwise.
+// confirm, if not nil, sees the flag-based configuration before it is written,
+// and can return errCustomizeConfig to ask the questions instead.
+func runConfig(cmd *cobra.Command, args []string, app *ddevapp.DdevApp, prompt bool, confirm func(*ddevapp.DdevApp) error) {
 	err := ddevapp.HasAllowedLocation(app)
 	if err != nil {
 		util.Failed("Unable to run `ddev config`: %v", err)
@@ -165,8 +181,17 @@ func handleConfigRun(cmd *cobra.Command, args []string) {
 		util.Failed("Failed to process hook 'pre-config'")
 	}
 
-	// If no flags are provided, prompt for configuration
-	if cmd.Flags().NFlag() == 0 {
+	if !prompt {
+		err = handleMainConfigArgs(cmd, args, app, confirm)
+		if errors.Is(err, errCustomizeConfig) {
+			// Start the questions from a fresh app, not the one confirm was shown.
+			app, prompt = getConfigApp(), true
+		} else if err != nil {
+			util.Failed(err.Error())
+		}
+	}
+
+	if prompt {
 		err = app.PromptForConfig()
 		if err != nil {
 			util.Failed("There was a problem configuring your project: %v", err)
@@ -188,17 +213,6 @@ func handleConfigRun(cmd *cobra.Command, args []string) {
 		if err != nil {
 			util.Failed("Failed to write config: %v", err)
 		}
-	} else {
-		err = handleMainConfigArgs(cmd, args, app)
-		if err != nil {
-			util.Failed(err.Error())
-		}
-		if extraFlagsHandlingFunc != nil {
-			err = extraFlagsHandlingFunc(cmd, args, app)
-			if err != nil {
-				util.Failed("failed to handle per-provider extra flags: %v", err)
-			}
-		}
 	}
 
 	_, err = app.CreateSettingsFile()
@@ -210,11 +224,9 @@ func handleConfigRun(cmd *cobra.Command, args []string) {
 	if err != nil {
 		util.Failed("Failed to process hook 'post-config'")
 	}
-
-	util.Success("Configuration complete. You may now run 'ddev start'.")
 }
 
-func init() {
+func registerConfigCmd() {
 	validAppTypes := strings.Join(ddevapp.GetValidAppTypes(), ", ")
 	projectTypeUsage := fmt.Sprintf("Provide the project type (one of %s). This is autodetected and this flag is necessary only to override the detection.", validAppTypes)
 	projectNameUsage := "Provide the project name of project to configure (normally the same as the last part of directory name)"
@@ -247,6 +259,8 @@ func init() {
 	_ = ConfigCommand.RegisterFlagCompletionFunc("webserver-type", configCompletionFunc(nodeps.GetValidWebserverTypes()))
 	ConfigCommand.Flags().StringVar(&webImageArg, "web-image", "", "Set the web container image (for advanced use only)")
 	ConfigCommand.Flags().BoolVar(&webImageDefaultArg, "web-image-default", false, `Sets the default web container image, the same as --web-image=""`)
+	ConfigCommand.Flags().StringVar(&dbImageArg, "db-image", "", "Set the db container image (for advanced use only)")
+	ConfigCommand.Flags().BoolVar(&dbImageDefaultArg, "db-image-default", false, `Sets the default db container image, the same as --db-image=""`)
 	ConfigCommand.Flags().StringVar(&webWorkingDirArg, "web-working-dir", "", "Override the default working directory for the web service")
 	ConfigCommand.Flags().StringVar(&dbWorkingDirArg, "db-working-dir", "", "Override the default working directory for the db service")
 	ConfigCommand.Flags().BoolVar(&webWorkingDirDefaultArg, "web-working-dir-default", false, `Unset a web service working directory override, the same as --web-working-dir=""`)
@@ -284,20 +298,25 @@ func init() {
 	_ = ConfigCommand.RegisterFlagCompletionFunc("use-dns-when-possible", configCompletionFunc([]string{"true", "false"}))
 
 	ConfigCommand.Flags().StringVarP(&ngrokArgs, "ngrok-args", "", "", "Provide extra args to ngrok in ddev share")
+	_ = ConfigCommand.Flags().MarkDeprecated("ngrok-args", "please use --share-provider-args instead")
+	ConfigCommand.Flags().StringVar(&shareDefaultProvider, "share-default-provider", "", "Default share provider for the project (ngrok, cloudflared, or custom)")
+	_ = ConfigCommand.RegisterFlagCompletionFunc("share-default-provider", configCompletionFunc([]string{"ngrok", "cloudflared"}))
+	ConfigCommand.Flags().StringVar(&shareProviderArgs, "share-provider-args", "", "Provide extra args to share provider in ddev share")
 
 	ConfigCommand.Flags().String("timezone", "", "Specify timezone for containers and PHP, like Europe/London or America/Denver or GMT or UTC. If unset, DDEV will attempt to derive it from the host system timezone")
 
 	ConfigCommand.Flags().Bool("disable-settings-management", false, "Prevent DDEV from creating or updating CMS settings files")
 	_ = ConfigCommand.RegisterFlagCompletionFunc("disable-settings-management", configCompletionFunc([]string{"true", "false"}))
 
-	ConfigCommand.Flags().String("composer-version", nodeps.ComposerDefault, `Specify override for Composer version in web container. This may be "", "1", "2", "2.2", "stable", "preview", "snapshot" or a specific version`)
-	_ = ConfigCommand.RegisterFlagCompletionFunc("composer-version", configCompletionFunc([]string{"2", "2.2", "1", "stable", "preview", "snapshot"}))
+	ConfigCommand.Flags().String("composer-version", nodeps.ComposerDefault, `Specify override for Composer version in web container. This may be "", "2", "2.2", "stable", "preview", "snapshot" or a specific version`)
+	_ = ConfigCommand.RegisterFlagCompletionFunc("composer-version", configCompletionFunc([]string{"2", "2.2", "stable", "preview", "snapshot"}))
 
 	ConfigCommand.Flags().Bool("auto", false, `Automatically run config without prompting`)
 	ConfigCommand.Flags().Bool("bind-all-interfaces", false, `Bind host ports on all interfaces, not only on the localhost network interface`)
 	_ = ConfigCommand.RegisterFlagCompletionFunc("bind-all-interfaces", configCompletionFunc([]string{"true", "false"}))
 	ConfigCommand.Flags().String("database", nodeps.MariaDB+":"+nodeps.MariaDBDefaultVersion, "Specify the database type:version to use")
 	_ = ConfigCommand.RegisterFlagCompletionFunc("database", configCompletionFunc(nodeps.GetValidDatabaseVersions()))
+	ConfigCommand.Flags().String("nodejs-root", "", "The relative path, from the project root, to the directory containing the Node.js version file (requires nodejs-version=auto or engine)")
 	ConfigCommand.Flags().String("nodejs-version", nodeps.NodeJSDefault, "Specify the Node.js version to use")
 	_ = ConfigCommand.RegisterFlagCompletionFunc("nodejs-version", configCompletionFunc([]string{nodeps.NodeJSDefault, "auto", "engine"}))
 	ConfigCommand.Flags().Int("default-container-timeout", 120, `Default time in seconds that DDEV waits for all containers to become ready on start`)
@@ -324,8 +343,8 @@ func init() {
 	RootCmd.AddCommand(ConfigCommand)
 }
 
-// getConfigApp() does the basic setup of the app (with provider) and returns it.
-func getConfigApp(_ string) *ddevapp.DdevApp {
+// getConfigApp does the basic setup of the app (with provider) and returns it.
+func getConfigApp() *ddevapp.DdevApp {
 	appRoot, err := os.Getwd()
 	if err != nil {
 		util.Failed("Could not determine the current working directory: %v", err)
@@ -350,8 +369,11 @@ func getConfigApp(_ string) *ddevapp.DdevApp {
 	return app
 }
 
+// errCustomizeConfig is returned by a runConfig confirm func to ask the 'ddev config' questions.
+var errCustomizeConfig = errors.New("customize the configuration")
+
 // handleMainConfigArgs() validates and processes the main config args (docroot, etc.)
-func handleMainConfigArgs(cmd *cobra.Command, _ []string, app *ddevapp.DdevApp) error {
+func handleMainConfigArgs(cmd *cobra.Command, _ []string, app *ddevapp.DdevApp, confirm func(*ddevapp.DdevApp) error) error {
 	var err error
 
 	// Support the show-config-location flag.
@@ -366,7 +388,7 @@ func handleMainConfigArgs(cmd *cobra.Command, _ []string, app *ddevapp.DdevApp) 
 		}
 
 		if activeApp != nil && activeApp.ConfigPath != "" && activeApp.ConfigExists() {
-			rawResult := make(map[string]interface{})
+			rawResult := make(map[string]any)
 			rawResult["configpath"] = activeApp.ConfigPath
 			rawResult["approot"] = activeApp.AppRoot
 
@@ -377,7 +399,9 @@ func handleMainConfigArgs(cmd *cobra.Command, _ []string, app *ddevapp.DdevApp) 
 	}
 
 	// Let them know if we're replacing the config.yaml
-	app.WarnIfConfigReplace()
+	if confirm == nil {
+		app.WarnIfConfigReplace()
+	}
 
 	// app.Name gets set to basename if not provided, or set to siteNameArg if provided
 	// nolint:revive
@@ -434,7 +458,7 @@ func handleMainConfigArgs(cmd *cobra.Command, _ []string, app *ddevapp.DdevApp) 
 		}
 
 		app.Type = projectTypeArg
-		util.Success("Auto-updating project configuration because update is requested.\nConfiguring a '%s' project with docroot '%s' at '%s'", app.Type, app.Docroot, fullPath)
+		util.Success("Auto-updating project configuration because update is requested.\nConfiguring a '%s' project with docroot '%s' at '%s'", app.Type, app.Docroot, output.Hyperlink(output.FileURL(fullPath), fullPath))
 		err = app.ConfigFileOverrideAction(true)
 		if err != nil {
 			util.Warning("ConfigOverrideAction failed: %v")
@@ -447,7 +471,9 @@ func handleMainConfigArgs(cmd *cobra.Command, _ []string, app *ddevapp.DdevApp) 
 		}
 
 		app.Type = projectTypeArg
-		util.Success("Configuring a '%s' project named '%s' with docroot '%s' at '%s'.\nFor full details use 'ddev describe'.", app.Type, app.Name, app.Docroot, fullPath)
+		if confirm == nil {
+			util.Success("Configuring a '%s' project named '%s' with docroot '%s' at '%s'.\nFor full details use 'ddev describe'.", app.Type, app.Name, app.Docroot, output.Hyperlink(output.FileURL(fullPath), fullPath))
+		}
 	}
 
 	// App overrides are done after app type is detected, but
@@ -562,7 +588,7 @@ func handleMainConfigArgs(cmd *cobra.Command, _ []string, app *ddevapp.DdevApp) 
 			conc := append(app.WebEnvironment, envspl...)
 			// Convert to a hashmap to remove duplicate values.
 			hashmap := make(map[string]string)
-			for i := 0; i < len(conc); i++ {
+			for i := range conc {
 				hashmap[conc[i]] = conc[i]
 			}
 			keys := []string{}
@@ -600,6 +626,14 @@ func handleMainConfigArgs(cmd *cobra.Command, _ []string, app *ddevapp.DdevApp) 
 		app.NgrokArgs = ngrokArgs
 	}
 
+	if cmd.Flag("share-default-provider").Changed {
+		app.ShareDefaultProvider = shareDefaultProvider
+	}
+
+	if cmd.Flag("share-provider-args").Changed {
+		app.ShareProviderArgs = shareProviderArgs
+	}
+
 	if cmd.Flag("project-tld").Changed {
 		app.ProjectTLD = projectTLDArg
 	}
@@ -615,6 +649,13 @@ func handleMainConfigArgs(cmd *cobra.Command, _ []string, app *ddevapp.DdevApp) 
 		app.ComposerVersion, err = cmd.Flags().GetString("composer-version")
 		if err != nil {
 			util.Failed("Incorrect composer-version: %v", err)
+		}
+	}
+
+	if cmd.Flag("nodejs-root").Changed {
+		app.NodeJSRoot, err = cmd.Flags().GetString("nodejs-root")
+		if err != nil {
+			util.Failed("Incorrect nodejs-root: %v", err)
 		}
 	}
 
@@ -678,6 +719,14 @@ func handleMainConfigArgs(cmd *cobra.Command, _ []string, app *ddevapp.DdevApp) 
 		app.WebImage = ""
 	}
 
+	if cmd.Flag("db-image").Changed {
+		app.DBImage = dbImageArg
+	}
+
+	if dbImageDefaultArg {
+		app.DBImage = ""
+	}
+
 	if app.WorkingDir == nil {
 		app.WorkingDir = map[string]string{}
 	}
@@ -709,15 +758,28 @@ func handleMainConfigArgs(cmd *cobra.Command, _ []string, app *ddevapp.DdevApp) 
 		app.DdevVersionConstraint = ddevVersionConstraint
 	}
 
+	// Before validation, so a name that fails it can still be fixed by customizing.
+	if confirm != nil {
+		if err := confirm(app); err != nil {
+			return err
+		}
+	}
+
 	// Ensure the configuration passes validation before writing config file.
 	if err := app.ValidateConfig(); err != nil {
 		return fmt.Errorf("failed to validate config: %v", err)
 	}
 
-	// If the database already exists in volume and is not of this type, then throw an error
+	// Configuring a database the existing volume doesn't hold is allowed, since
+	// writing config.yaml destroys nothing, but `ddev start` will refuse until
+	// it's resolved one way or the other.
 	if !nodeps.ArrayContainsString(app.GetOmittedContainers(), "db") {
-		if dbType, err := app.GetExistingDBType(); err != nil || (dbType != "" && dbType != app.Database.Type+":"+app.Database.Version) {
-			return fmt.Errorf("unable to configure project %s with database type %s because that database type does not match the current actual database. Please change your database type back to %s and start again, export, delete, and then change configuration and start. To get back to existing type use 'ddev config --database=%s', and you can try a migration with 'ddev utility migrate-database %s' see docs at %s", app.Name, app.Database.Type+":"+app.Database.Version, dbType, dbType, app.Database.Type+":"+app.Database.Version, "https://docs.ddev.com/en/stable/users/extend/database-types/")
+		dbType, err := app.GetExistingDBType()
+		if err != nil {
+			return err
+		}
+		if dbType != "" && dbType != app.Database.Type+":"+app.Database.Version {
+			util.Warning("This %s", app.DatabaseMismatchMessage(dbType))
 		}
 	}
 

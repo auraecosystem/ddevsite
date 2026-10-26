@@ -12,15 +12,14 @@ on:
         default: ddev-webserver
         type: choice
         options:
-          - ddev-php-base
           - ddev-webserver
           - ddev-ssh-agent
           - ddev-traefik-router
           - ddev-xhgui
           - test-ssh-server
       tag:
-        description: Tag for pushed image (v1.25.0 for example)
-        required: true
+        description: 'Tag to push (v1.25.0 for a release). Leave empty to use the tag this branch needs.'
+        required: false
         default: ""
       debug_enabled:
         description: 'Enable debug mode'
@@ -29,20 +28,66 @@ on:
         default: false
 env:
   REGISTRY: docker.io
-  DOCKER_ORG: "${{ vars.DOCKER_ORG }}"
-  TAG: "${{ github.event.inputs.tag }}"
+  DOCKER_ORG: "${{ vars.DOCKER_ORG || (github.repository_owner == 'ddev-test' && 'ddevhq' || 'ddev') }}"
 
 permissions:
   contents: read
 
 jobs:
+  # An empty tag input means "publish what this checkout needs", which is
+  # derivable; retyping the content hash by hand is how it ends up not
+  # matching versionconstants.go.
+  resolve-tag:
+    name: Resolve the tag to push
+    runs-on: ubuntu-26.04
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      alias: ${{ steps.tag.outputs.alias }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: tag
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          IMAGE: ${{ github.event.inputs.image }}
+          ALIAS_BRANCH: ${{ github.ref_name }}
+        run: |
+          set -eu -o pipefail
+          HASH_LEN="${HASH_LEN:-10}"
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+            echo "Using the tag supplied on the workflow input: ${TAG}"
+          else
+            TAG="$(containers/image-tag-for.sh "$IMAGE")"
+            echo "No tag supplied; using the tag this checkout needs: ${TAG}"
+          fi
+          containers/validate-image-tag.sh "$TAG" || [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+          # A readable neighbour for a bare hash, so the registry tag list
+          # still says which branch produced it. A release tag is already
+          # readable and gets none.
+          ALIAS=""
+          if [[ "$TAG" =~ ^[0-9a-f]{${HASH_LEN}}$ ]]; then
+            ALIAS="$(echo "$ALIAS_BRANCH" | sed -E 's/[^A-Za-z0-9_.-]+/-/g')-${TAG}"
+            if containers/validate-image-tag.sh "$ALIAS"; then
+              echo "Publishing the alias ${ALIAS} alongside ${TAG}"
+            else
+              echo "Alias '${ALIAS}' rejected; publishing only ${TAG}" >&2
+              ALIAS=""
+            fi
+          fi
+          echo "alias=${ALIAS}" >> "$GITHUB_OUTPUT"
+
   build-and-push:
     name: build ${{ matrix.arch }} ${{ github.event.inputs.image }}
+    needs: resolve-tag
+    env:
+      TAG: ${{ needs.resolve-tag.outputs.tag }}
     strategy:
       matrix:
         arch: [amd64, arm64]
         image: ['${{ github.event.inputs.image }}']
-    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-26.04-arm' || 'ubuntu-26.04' }}
     outputs:
       multi_arch: ${{ steps.meta.outputs.multi_arch }}
     steps:
@@ -53,18 +98,18 @@ jobs:
           # for now, all images are multi-arch
           echo "multi_arch=true" >> $GITHUB_OUTPUT
       - name: Load 1password secret(s)
-        uses: 1password/load-secrets-action@v3
+        uses: 1password/load-secrets-action@v5
         if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.owner.login == github.repository_owner }}
         with:
           export-env: true
         env:
           OP_SERVICE_ACCOUNT_TOKEN: "${{ secrets.PUSH_SERVICE_ACCOUNT_TOKEN }}"
           DOCKERHUB_TOKEN: "op://push-secrets/DOCKERHUB_TOKEN/credential"
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
       - name: Login to DockerHub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ env.DOCKERHUB_TOKEN }}
@@ -74,11 +119,10 @@ jobs:
           ORG_IMAGE=${DOCKER_ORG}/${{ matrix.image }}
           echo "Cleaning up stale tag for ${ORG_IMAGE}:${TAG}-${{ matrix.arch }}"
           curl -s -X DELETE -H "Authorization: JWT $TOKEN" "https://hub.docker.com/v2/repositories/${ORG_IMAGE}/tags/${TAG}-${{ matrix.arch }}/" >/dev/null || true
-      - name: Setup tmate session
-        uses: mxschmitt/action-tmate@v3
+      - name: Setup upterm session
+        uses: owenthereal/action-upterm@v1
         with:
           limit-access-to-actor: true
-          github-token: ${{ secrets.GITHUB_TOKEN }}
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
       - name: Build and push ${{ env.DOCKER_ORG }}/${{ matrix.image }}:${{ env.TAG }} ${{ matrix.arch }} image
         run: |
@@ -89,7 +133,7 @@ jobs:
           if [ "${{ steps.meta.outputs.multi_arch }}" = "true" ]; then
             version="${version}-${{ matrix.arch }}"
           fi
-          make push VERSION="${version}"
+          make push VERSION="${version}" DDEV_IMAGE_TAG="${TAG}"
       - name: Record image information
         id: image-info
         run: |
@@ -101,9 +145,7 @@ jobs:
             IMAGES_TO_INSPECT=${IMAGES_TO_INSPECT}-${{ matrix.arch }}
           fi
 
-          if [ "${{ matrix.image }}" = "ddev-php-base" ]; then
-            IMAGES_TO_INSPECT="${IMAGES_TO_INSPECT} ${DOCKER_ORG}/ddev-php-prod:${TAG}-${{ matrix.arch }}"
-          elif [ "${{ matrix.image }}" = "ddev-webserver" ]; then
+          if [ "${{ matrix.image }}" = "ddev-webserver" ]; then
             IMAGES_TO_INSPECT="${IMAGES_TO_INSPECT} ${DOCKER_ORG}/ddev-webserver-prod:${TAG}-${{ matrix.arch }}"
           fi
 
@@ -127,26 +169,31 @@ jobs:
             echo "$INSPECT_OUTPUT" >> image-info.txt
           done
       - name: Upload image info artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: image-info-${{ matrix.image }}-${{ matrix.arch }}
           path: image-info.txt
           retention-days: 1
   create-manifests:
     name: create multi-arch manifest
-    needs: build-and-push
-    runs-on: ubuntu-24.04
+    needs: [resolve-tag, build-and-push]
+    runs-on: ubuntu-26.04
     if: ${{ needs.build-and-push.outputs.multi_arch == 'true' }}
+    env:
+      TAG: ${{ needs.resolve-tag.outputs.tag }}
+      ALIAS: ${{ needs.resolve-tag.outputs.alias }}
     steps:
+      # Needed for containers/image-metadata.sh below.
+      - uses: actions/checkout@v7
       - name: Load 1password secret(s)
-        uses: 1password/load-secrets-action@v3
+        uses: 1password/load-secrets-action@v5
         with:
           export-env: true
         env:
           OP_SERVICE_ACCOUNT_TOKEN: "${{ secrets.PUSH_SERVICE_ACCOUNT_TOKEN }}"
           DOCKERHUB_TOKEN: "op://push-secrets/DOCKERHUB_TOKEN/credential"
       - name: Login to DockerHub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ env.DOCKERHUB_TOKEN }}
@@ -158,15 +205,17 @@ jobs:
 
           MULTI_ARCH_IMAGES="${DOCKER_ORG}/${{ github.event.inputs.image }}"
 
-          if [ "${{ github.event.inputs.image }}" = "ddev-php-base" ]; then
-            MULTI_ARCH_IMAGES="${MULTI_ARCH_IMAGES} ${DOCKER_ORG}/ddev-php-prod"
-          elif [ "${{ github.event.inputs.image }}" = "ddev-webserver" ]; then
+          if [ "${{ github.event.inputs.image }}" = "ddev-webserver" ]; then
             MULTI_ARCH_IMAGES="${MULTI_ARCH_IMAGES} ${DOCKER_ORG}/ddev-webserver-prod"
           fi
 
-          # Create and push multi-arch manifests
+          # Create and push multi-arch manifests. ALIAS, when set, is a second
+          # name on the same manifest - see the resolve-tag job.
           for ORG_IMAGE in ${MULTI_ARCH_IMAGES}; do
-            docker buildx imagetools create -t ${ORG_IMAGE}:${TAG} ${ORG_IMAGE}:${TAG}-amd64 ${ORG_IMAGE}:${TAG}-arm64
+            NAMES=(-t "${ORG_IMAGE}:${TAG}")
+            [ -n "${ALIAS}" ] && NAMES+=(-t "${ORG_IMAGE}:${ALIAS}")
+            read -r -a ANNOTATIONS <<< "$(containers/image-metadata.sh annotations "${TAG}" "${ORG_IMAGE##*/}")"
+            docker buildx imagetools create "${ANNOTATIONS[@]}" "${NAMES[@]}" ${ORG_IMAGE}:${TAG}-amd64 ${ORG_IMAGE}:${TAG}-arm64
             if [[ "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
               docker buildx imagetools create -t ${ORG_IMAGE}:latest ${ORG_IMAGE}:${TAG}
             fi

@@ -3,8 +3,6 @@ on:
   workflow_run:
     workflows: ['PR Build']
     types: [completed]
-env:
-  HOMEBREW_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 permissions:
   actions: write
@@ -13,9 +11,9 @@ permissions:
 jobs:
   pr_comment:
     if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/github-script@v8
+      - uses: actions/github-script@v9
         with:
           # This snippet is public-domain, combined from
           # https://github.com/oprypin/nightly.link/blob/master/.github/workflows/pr-comment.yml
@@ -140,13 +138,15 @@ jobs:
             }
 
             // Construct the comment body
-            let body = allArtifacts.reduce((acc, item) => {
+            let body = `Download this PR's build for your OS and architecture with:\n\n\`\`\`bash\nddev utility download-ddev --pr ${prNumber}\n\`\`\``;
+
+            body += allArtifacts.reduce((acc, item) => {
               if (item.name === "assets") return acc;
               acc += `\n* [${item.name}.zip](https://nightly.link/${context.repo.owner}/${context.repo.repo}/actions/artifacts/${item.id}.zip)`;
               return acc;
-            }, 'Download the artifacts for this pull request:\n');
+            }, '\n\nOr download the artifact for your OS and architecture directly:\n');
 
-            body += `\n\nSee [Testing a PR](https://docs.ddev.com/en/latest/developers/building-contributing/#testing-a-pr).`;
+            body += `\n\nSee [Testing a PR](https://docs.ddev.com/en/stable/developers/building-contributing/#testing-a-pr).`;
             const codespacesLink = prRef && prRepoId
               ? `https://github.com/codespaces/new?ref=${prRef}&repo=${prRepoId}`
               : `https://github.com/codespaces/new/${context.repo.owner}/${context.repo.repo}`;

@@ -7,10 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/ddev/ddev/pkg/exec"
 	"github.com/ddev/ddev/pkg/fileutil"
 	"github.com/ddev/ddev/pkg/output"
 	"github.com/ddev/ddev/pkg/util"
-	"go.yaml.in/yaml/v3"
+	"go.yaml.in/yaml/v4"
 )
 
 // ProviderCommand defines the shell command to be run for one of the commands (db pull, etc.)
@@ -22,6 +23,7 @@ type ProviderCommand struct {
 // ProviderInfo defines the provider
 type ProviderInfo struct {
 	EnvironmentVariables map[string]string `yaml:"environment_variables"`
+	InfoCommand          ProviderCommand   `yaml:"info_command,omitempty"`
 	AuthCommand          ProviderCommand   `yaml:"auth_command"`
 	DBPullCommand        ProviderCommand   `yaml:"db_pull_command"`
 	DBImportCommand      ProviderCommand   `yaml:"db_import_command"`
@@ -105,7 +107,11 @@ func (app *DdevApp) Pull(provider *Provider, skipDBArg bool, skipFilesArg bool, 
 			if err != nil {
 				return err
 			}
-			output.UserOut.Printf("Importing databases %v", fileLocation)
+			// With a db_import_command and no db_pull_command there's nothing downloaded to name here,
+			// and importDatabaseBackup() announces itself.
+			if len(fileLocation) > 0 {
+				output.UserOut.Printf("Importing databases %v", fileLocation)
+			}
 			err = provider.importDatabaseBackup(fileLocation, importPath)
 			if err != nil {
 				return err
@@ -309,7 +315,9 @@ func (p *Provider) doFilesPullCommand() ([]string, error) {
 	_ = os.MkdirAll(destDir, 0755)
 
 	if p.FilesPullCommand.Command == "" {
-		util.Warning("No files_pull_command provided, so skipping files pull")
+		if p.FilesImportCommand.Command == "" {
+			util.Warning("No files_pull_command provided, so skipping files pull")
+		}
 		return nil, nil
 	}
 	s := p.FilesPullCommand.Service
@@ -343,7 +351,10 @@ func (p *Provider) getDatabaseBackups() ([]string, error) {
 	}
 
 	if p.DBPullCommand.Command == "" {
-		util.Warning("No db_pull_command provided, so skipping database pull")
+		// A db_import_command may do the downloading itself, so there's nothing to warn about.
+		if p.DBImportCommand.Command == "" {
+			util.Warning("No db_pull_command provided, so skipping database pull")
+		}
 		return nil, nil
 	}
 
@@ -392,7 +403,17 @@ func (p *Provider) importDatabaseBackup(fileLocation []string, importPath []stri
 			s = "web"
 		}
 		output.UserOut.Printf("Importing database via custom db_import_command")
+		// app.ImportDB() runs these itself, so the custom command has to do it here.
+		if err := p.app.ProcessHooks("pre-import-db"); err != nil {
+			return err
+		}
 		err = p.app.ExecOnHostOrService(s, p.injectedEnvironment()+"; "+p.DBImportCommand.Command)
+		if err != nil {
+			return err
+		}
+		if err := p.app.ProcessHooks("post-import-db"); err != nil {
+			return err
+		}
 	}
 	return err
 }
@@ -414,7 +435,17 @@ func (p *Provider) doFilesImport(fileLocation string, importPath string) error {
 			s = "web"
 		}
 		output.UserOut.Printf("Importing files via custom files_import_command...")
+		// See the db_import_command note in importDatabaseBackup().
+		if err := p.app.ProcessHooks("pre-import-files"); err != nil {
+			return err
+		}
 		err = p.app.ExecOnHostOrService(s, p.injectedEnvironment()+"; "+p.FilesImportCommand.Command)
+		if err != nil {
+			return err
+		}
+		if err := p.app.ProcessHooks("post-import-files"); err != nil {
+			return err
+		}
 	}
 	return err
 }
@@ -452,4 +483,41 @@ func (p *Provider) injectedEnvironment() string {
 		}
 	}
 	return s
+}
+
+// GetInfo returns a human-readable description of the provider's target environment.
+// It executes the info_command defined in the provider YAML if available,
+// otherwise returns an empty string (which triggers the default warning message).
+func (p *Provider) GetInfo() string {
+	if p.InfoCommand.Command == "" {
+		return ""
+	}
+
+	cmd := p.injectedEnvironment() + "; " + p.InfoCommand.Command
+	service := p.InfoCommand.Service
+
+	var out string
+	var err error
+
+	// Note: We use exec.RunCommand and app.Exec directly instead of
+	// ExecOnHostOrService because ExecOnHostOrService only returns an error,
+	// not the command output that we need for the warning message.
+	if service == "host" {
+		out, err = exec.RunCommand("bash", []string{"-c", cmd})
+	} else {
+		if service == "" {
+			service = "web"
+		}
+		var stdout string
+		stdout, _, err = p.app.Exec(&ExecOpts{
+			Service: service,
+			Cmd:     cmd,
+		})
+		out = stdout
+	}
+
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
 }

@@ -4,16 +4,32 @@ set -eu
 set -o pipefail
 
 export DATADIR=/var/lib/mysql
-echo BITNAMI_VOLUME_DIR=${BITNAMI_VOLUME_DIR:-notset}
 
 SOCKET=/var/tmp/mysql.sock
-if [ "${BITNAMI_APP_NAME:-}" = "mysql" ]; then ln -sf /opt/bitnami/mysql/tmp/mysql.sock ${SOCKET}; fi
+DEFAULTS_FILE=/tmp/my.cnf
 rm -f /tmp/healthy
+
+# GitHub Actions' AppArmor blocks mysqld from reading /etc/my.cnf, so it
+# silently runs with zero config instead of erroring; create_base_db.sh
+# works around the same thing at build time. /tmp not /var/tmp: mysqld
+# refuses a world-writable config, and a rootless UID can't replace the
+# root-owned copy already baked into /var/tmp.
+cp -f /etc/my.cnf $DEFAULTS_FILE
+
+# Fallback only - once --defaults-file loads, mysqld shouldn't need
+# /run/mysqld at all. chmod fails harmlessly if the dir already exists
+# and this process isn't its owner (only owner/root can chmod a path).
+mkdir -p /run/mysqld
+chmod ugo+rwx /run/mysqld 2>/dev/null || true
 
 # We can't just switch on database type here, because early versions
 # of mariadb used xtrabackup
 export BACKUPTOOL=mariabackup
 export STREAMTOOL=mbstream
+# mariabackup was renamed mariadb-backup; older MariaDB (<10.4) only has the old name.
+if command -v mariadb-backup >/dev/null 2>&1 ; then
+  BACKUPTOOL="mariadb-backup"
+fi
 if command -v xtrabackup >/dev/null 2>&1 ; then
   BACKUPTOOL="xtrabackup"
   STREAMTOOL="xbstream"
@@ -46,7 +62,14 @@ fi
 # otherwise, fail and abort startup
 if [ $# = "2" ] && [ "${1:-}" = "restore_snapshot" ] ; then
   snapshot_basename=${2:-nothingthere}
-  snapshot="/mnt/snapshots/${snapshot_basename}"
+  # An absolute path lets ddev point at a snapshot mounted somewhere other than
+  # /mnt/snapshots, as `ddev start --seed-snapshot` does with a file outside the
+  # project.
+  case "${snapshot_basename}" in
+    /*) snapshot="${snapshot_basename}" ;;
+    *)  snapshot="/mnt/snapshots/${snapshot_basename}" ;;
+  esac
+  snapshot_basename=$(basename "${snapshot_basename}")
   # If a compressed snapshot file is passed in, decompress and extract stream
   if [ -f "$snapshot" ]; then
     echo "Restoring from snapshot file $snapshot"
@@ -61,6 +84,10 @@ if [ $# = "2" ] && [ "${1:-}" = "restore_snapshot" ] ; then
         ;;
       gz)
         gunzip -c "${snapshot}" | ${STREAMTOOL} -x
+        ;;
+      mbstream|xbstream)
+        # Uncompressed raw backup-tool stream, no decompressor needed.
+        ${STREAMTOOL} -x < "${snapshot}"
         ;;
       *)
         echo "Unknown snapshot compression: .$ext"
@@ -131,16 +158,29 @@ fi
 
 # Link the best match configuration
 if [ -n "${BEST_MATCH}" ]; then
-    ln -sf "${BEST_MATCH}" "${BEST_MATCH%%.txt}"
-    echo "Linked ${BEST_MATCH} -> ${BEST_MATCH%%.txt}"
+    # MySQL 5.5 !includedir skips names with more than one dot, like mysql_5.5.cnf
+    LINK_NAME="$(basename "${BEST_MATCH}" .cnf.txt)"
+    LINK_NAME="${CONFIG_DIR}/${LINK_NAME//./_}.cnf"
+    ln -sf "${BEST_MATCH}" "${LINK_NAME}"
+    echo "Linked ${BEST_MATCH} -> ${LINK_NAME}"
 else
     echo "No matching special configuration found for $server_db_version. Skipping."
 fi
 # chmod -f ugo-w /etc/mysql/version-conf.d/*.cnf
 
 
-# If mariadb has not been initialized, copy in the base image from either the default starter image (/mysqlbase/base_db.gz)
-# or from a provided $snapshot_dir.
+# If mariadb has not been initialized, copy in the base image from a base_db
+# seed or from a provided $snapshot_dir. The base_db seed is looked up in
+# priority order:
+#   1. /mysqlbase/custom/base_db.*  - baked into a derived image
+#   2. /mysqlbase/base_db.*         - the stock DDEV starter database
+# At each location, a .zst seed is preferred over .gz; .gz only exists at all
+# for db versions (e.g. MariaDB 5.5) whose base image lacks zstd. .mbstream/
+# .xbstream are uncompressed raw backup-tool streams, checked last so an
+# existing compressed seed still wins if one happens to also be present.
+
+# A project-level seed snapshot doesn't appear here: ddev hands it over as a
+# restore_snapshot argument, which works the same way on an empty datadir.
 if [ ! -f "${DATADIR}/db_mariadb_version.txt" ]; then
     # If snapshot_dir is not set, this is a normal startup, so
     # tell healthcheck to wait by touching /tmp/initializing
@@ -150,8 +190,40 @@ if [ ! -f "${DATADIR}/db_mariadb_version.txt" ]; then
     if [ "${target:-}" = "" ]; then
       target=${snapshot:-/var/tmp/base_db}
       mkdir -p ${target} && cd ${target}
-      snapshot=/mysqlbase/base_db.gz
-      gunzip -c ${snapshot} | ${STREAMTOOL} -x
+
+      snapshot=""
+      for candidate in \
+        "/mysqlbase/custom/base_db.zst" \
+        "/mysqlbase/custom/base_db.gz" \
+        "/mysqlbase/custom/base_db.mbstream" \
+        "/mysqlbase/custom/base_db.xbstream" \
+        "/mysqlbase/base_db.zst" \
+        "/mysqlbase/base_db.gz" \
+        "/mysqlbase/base_db.mbstream" \
+        "/mysqlbase/base_db.xbstream" \
+      ; do
+        if [ -f "${candidate}" ]; then
+          snapshot="${candidate}"
+          break
+        fi
+      done
+      if [ -z "${snapshot}" ]; then
+        echo "No base_db seed found in /mysqlbase/custom or /mysqlbase"
+        exit 102
+      fi
+      case "${snapshot}" in
+        *.zst)
+          # Only use zstdmt if multithreading is supported (zstd 1.2.0+).
+          "$(command -v zstdmt 2>/dev/null || echo zstd)" -dc --quiet "${snapshot}" | ${STREAMTOOL} -x
+          ;;
+        *.gz)
+          gunzip -c "${snapshot}" | ${STREAMTOOL} -x
+          ;;
+        *.mbstream|*.xbstream)
+          # Uncompressed raw backup-tool stream, no decompressor needed.
+          ${STREAMTOOL} -x < "${snapshot}"
+          ;;
+      esac
     fi
     name=$(basename $target)
 
@@ -174,7 +246,7 @@ if [ "${server_db_version}" != "${database_db_version}" ]; then
    echo "Starting with db server version=${server_db_version} but database was created with '${database_db_version}'."
    echo "Attempting upgrade, but it may not work, you may need to export your database, 'ddev delete --omit-snapshot', start, and reimport".
 
-    PATH=$PATH:/usr/sbin:/usr/local/bin:/usr/local/mysql/bin mysqld --skip-networking --skip-grant-tables --socket=$SOCKET >/tmp/mysqld_temp_startup.log 2>&1 &
+    PATH=$PATH:/usr/sbin:/usr/local/bin:/usr/local/mysql/bin mysqld --defaults-file=$DEFAULTS_FILE --skip-networking --skip-grant-tables --socket=$SOCKET >/tmp/mysqld_temp_startup.log 2>&1 &
     pid=$!
     set +x
     if ! serverwait ; then
@@ -192,13 +264,14 @@ echo ${server_db_version} >${DATADIR:-/var/lib/mysql}/db_mariadb_version.txt
 
 mkdir -p /mnt/ddev-global-cache/{bashhistory,mysqlhistory}/${HOSTNAME} || true
 
-# Zero out the error log at start
+# Zero out the error and slow query logs at start
 printf "" > ${DATADIR:-/var/lib/mysql}/mysqld.err
+printf "" > ${DATADIR:-/var/lib/mysql}/slow.log
 
 echo
 echo 'MySQL init process done. Ready for start up.'
 echo
 
 echo "Starting mysqld."
-tail -f /var/log/mysqld.log ${DATADIR:-/var/lib/mysql}/mysqld.err &
-exec mysqld
+tail -f /var/log/mysqld.log ${DATADIR:-/var/lib/mysql}/mysqld.err ${DATADIR:-/var/lib/mysql}/slow.log &
+exec mysqld --defaults-file=$DEFAULTS_FILE

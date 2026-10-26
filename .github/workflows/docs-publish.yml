@@ -1,0 +1,182 @@
+name: docspublish
+on:
+  push:
+    branches: [ main, stable ]
+
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        description: 'Run the build with upterm set "debug_enabled"'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  docs-deploy:
+    runs-on: ubuntu-26.04
+    steps:
+      - name: Setup Pages
+        id: pages
+        uses: actions/configure-pages@v6
+
+      - name: Checkout main branch
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          path: checkout-main
+          fetch-depth: 0
+
+      - name: Checkout stable branch
+        id: checkout-stable
+        continue-on-error: true
+        uses: actions/checkout@v7
+        with:
+          ref: stable
+          path: checkout-stable
+          fetch-depth: 0
+
+      # Perf dashboard data, updated nightly by perf-collect.yml. continue-on-error
+      # because the branch doesn't exist until perf-collect.yml has run once.
+      - name: Checkout performance-data branch
+        continue-on-error: true
+        uses: actions/checkout@v7
+        with:
+          ref: performance-data
+          path: checkout-perf-data
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: 3.x
+
+      - name: Setup upterm session
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
+        uses: owenthereal/action-upterm@v1
+        with:
+          limit-access-to-actor: true
+
+      - name: Install dependencies
+        run: |
+          pip install -r checkout-main/docs/requirements.txt
+          if [ -f checkout-stable/docs/requirements.txt ]; then
+            pip install -r checkout-stable/docs/requirements.txt
+          fi
+
+      - name: Build latest docs
+        working-directory: checkout-main
+        run: |
+          if [ "${{ steps.checkout-stable.outcome }}" = "success" ]; then
+            site_url="${{ steps.pages.outputs.base_url }}/en/latest/"
+          else
+            site_url="${{ steps.pages.outputs.base_url }}/"
+          fi
+          sed -i "s|site_url:.*|site_url: ${site_url}|" mkdocs.yml
+          grep site_url mkdocs.yml
+          if [ "${{ steps.checkout-stable.outcome }}" = "success" ]; then
+            READTHEDOCS_VERSION_NAME=latest zensical build --clean --strict
+          else
+            zensical build --clean --strict
+          fi
+
+      - name: Build stable docs
+        if: steps.checkout-stable.outcome == 'success'
+        working-directory: checkout-stable
+        run: |
+          sed -i "s|site_url:.*|site_url: ${{ steps.pages.outputs.base_url }}/en/stable/|" mkdocs.yml
+          grep site_url mkdocs.yml
+          zensical build --clean --strict
+
+      - name: Assemble combined site
+        run: |
+          if [ -d checkout-stable/site ]; then
+            mkdir -p combined-site/en
+            mv -v checkout-main/site combined-site/en/latest
+            mv -v checkout-stable/site combined-site/en/stable
+            cp -v combined-site/en/stable/404.html combined-site/404.html
+            cat > combined-site/index.html <<'EOF'
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta http-equiv="refresh" content="0; url=en/stable/">
+            <link rel="canonical" href="en/stable/">
+          </head>
+          <body>
+            <a href="en/stable/">Redirecting to stable docs...</a>
+          </body>
+          </html>
+          EOF
+          else
+            mv -v checkout-main/site combined-site
+          fi
+
+          # Perf dashboard, one repo-relative Pages site can only have one deploy
+          # per push, so it rides along under /perf/ instead of its own deploy --
+          # see perf-collect.yml.
+          #
+          # Guarded per file, not on the directory: actions/checkout creates its
+          # `path:` directory before it fails on a missing ref, so an empty
+          # checkout-perf-data/ exists whenever the performance-data branch
+          # doesn't. Testing the directory would let `cp` fail and take the whole
+          # docs deploy with it. Same reason the checkout-stable guards above test
+          # inner paths rather than the checkout dir.
+          if [ -f checkout-perf-data/index.html ]; then
+            mkdir -p combined-site/perf
+            cp -v checkout-perf-data/index.html combined-site/perf/index.html
+            if [ -f checkout-perf-data/dashboard-common.js ]; then
+              cp -v checkout-perf-data/dashboard-common.js combined-site/perf/dashboard-common.js
+            fi
+            if [ -f checkout-perf-data/dashboard-common.css ]; then
+              cp -v checkout-perf-data/dashboard-common.css combined-site/perf/dashboard-common.css
+            fi
+            if [ -f checkout-perf-data/history.ndjson ]; then
+              cp -v checkout-perf-data/history.ndjson combined-site/perf/history.ndjson
+            fi
+          fi
+
+          # CI test-runtime dashboard: a separate page under /perf/ci/, not a
+          # mode of the /perf/ page above -- unrelated dataset, unrelated
+          # (internal-only) audience. See HANDOFF.md. Same per-file guard
+          # reasoning as the block above.
+          if [ -f checkout-perf-data/ci/index.html ]; then
+            mkdir -p combined-site/perf/ci
+            cp -v checkout-perf-data/ci/index.html combined-site/perf/ci/index.html
+            if [ -f checkout-perf-data/ci/test-runtime-history.ndjson ]; then
+              cp -v checkout-perf-data/ci/test-runtime-history.ndjson combined-site/perf/ci/test-runtime-history.ndjson
+            fi
+          fi
+
+          # Per-test trend dashboard: a third page under /perf/ci/tests/,
+          # same reasoning as the block above -- aggregated from gotestsum's
+          # per-test JSON rather than per-run totals. See collect-per-test.js.
+          if [ -f checkout-perf-data/ci/tests/index.html ]; then
+            mkdir -p combined-site/perf/ci/tests
+            cp -v checkout-perf-data/ci/tests/index.html combined-site/perf/ci/tests/index.html
+            if [ -f checkout-perf-data/ci/tests/per-test-history.ndjson ]; then
+              cp -v checkout-perf-data/ci/tests/per-test-history.ndjson combined-site/perf/ci/tests/per-test-history.ndjson
+            fi
+          fi
+
+      - name: Upload pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: combined-site
+
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v5
+        id: deployment
+
+      - name: Report deployed URLs
+        run: |
+          {
+            echo "### Deployed"
+            echo "- Docs: ${{ steps.deployment.outputs.page_url }}"
+            echo "- Perf dashboard: ${{ steps.deployment.outputs.page_url }}perf/"
+            echo "- CI test runtime: ${{ steps.deployment.outputs.page_url }}perf/ci/"
+            echo "- Per-test CI timing: ${{ steps.deployment.outputs.page_url }}perf/ci/tests/"
+          } | tee -a "$GITHUB_STEP_SUMMARY"

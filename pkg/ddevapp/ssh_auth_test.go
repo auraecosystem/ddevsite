@@ -2,9 +2,11 @@ package ddevapp_test
 
 import (
 	"os"
+	osexec "os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ddev/ddev/cmd/ddev/cmd"
 	"github.com/ddev/ddev/pkg/ddevapp"
@@ -13,6 +15,7 @@ import (
 	"github.com/ddev/ddev/pkg/exec"
 	"github.com/ddev/ddev/pkg/fileutil"
 	"github.com/ddev/ddev/pkg/globalconfig"
+	"github.com/ddev/ddev/pkg/nodeps"
 	"github.com/ddev/ddev/pkg/testcommon"
 	"github.com/ddev/ddev/pkg/util"
 	asrt "github.com/stretchr/testify/assert"
@@ -87,25 +90,50 @@ func TestSSHAuth(t *testing.T) {
 	assert.Error(err)
 	assert.Contains(stderr, "Permission denied")
 
-	// Add password/key to auth. This is an unfortunate perversion of using docker run directly, copied from
-	// ddev auth ssh command, and with an expect script to provide the passphrase.
-	uid, _, _ := dockerutil.GetContainerUser()
+	// Add the passphrase-protected key the same way `ddev auth ssh` does, driving the
+	// prompt with expect. The key is added by explicit path because bare `ssh-add` would
+	// abort with "No user found with uid" - the host user has no account in the image.
+	expectScript := `
+set timeout 10
+spawn ssh-add id_rsa
+expect {
+    "Enter passphrase" { send "testkey\n" }
+    eof { puts "FAIL: ssh-add exited before prompting for a passphrase"; exit 2 }
+    timeout { puts "FAIL: timed out waiting for passphrase prompt"; exit 2 }
+}
+expect {
+    "Identity added" {}
+    eof { puts "FAIL: ssh-add exited without adding the key"; exit 3 }
+    timeout { puts "FAIL: timed out waiting for the key to be added"; exit 3 }
+}
+expect eof
+`
+	expectCmd := "expect -c '" + expectScript + "'"
+	uid, gid, _ := dockerutil.GetContainerUser()
 	if dockerutil.IsDockerRootless() {
-		uid = "0"
+		uid, gid = "0", "0"
 	}
 	sshKeyPath := app.GetConfigPath(".ssh")
 
-	args := []string{"run", "-t", "--rm", "--volumes-from=" + ddevapp.SSHAuthName, "-v", sshKeyPath + ":/tmp/sshtmp", "-u", uid}
+	// No `-t`: expect drives the passphrase prompt over its own pty, so we don't need
+	// a TTY on the container and can capture the output to assert on it.
+	args := []string{"run", "--rm", "--volumes-from=" + ddevapp.SSHAuthName, "-v", sshKeyPath + ":/tmp/sshtmp", "-u", uid + ":" + gid}
 	containerCmd := "docker"
-	// Add --userns=keep-id for Podman rootless to maintain user namespace mapping
 	if dockerutil.IsPodmanRootless() {
 		containerCmd = "podman"
+	}
+	// keep-id is only correct on Linux Podman rootless; on macOS the VM's
+	// subuid/subgid range cannot map host GIDs so keep-id must not be used.
+	// Using it here would mismatch the userns of the ddev-ssh-agent container
+	// (which also omits keep-id on macOS), causing "Permission denied" on the socket.
+	if dockerutil.UseKeepID() {
 		args = append(args, "--userns=keep-id")
 	}
-	args = append(args, "--entrypoint", "bash", ddevImages.GetSSHAuthImage()+"-built", "-c", cmd.GetAuthSSHCmd("//test.expect.passphrase"))
+	args = append(args, "--entrypoint", "bash", ddevImages.GetSSHAuthImage(), "-c", cmd.GetAuthSSHCmd(expectCmd))
 
-	err = exec.RunInteractiveCommand(containerCmd, args)
-	require.NoError(t, err)
+	out, err := exec.RunHostCommand(containerCmd, args...)
+	require.NoError(t, err, "ssh-add via expect failed; output:\n%s", out)
+	require.Contains(t, out, "Identity added", "ssh-add did not report success; output:\n%s", out)
 
 	// Try SSH, should succeed
 	stdout, _, err := app.Exec(&ddevapp.ExecOpts{
@@ -113,7 +141,7 @@ func TestSSHAuth(t *testing.T) {
 		Cmd:     "rm -f /home/.ssh-agent/known_hosts; ssh root@test-ssh-server pwd",
 	})
 	stdout = strings.Trim(stdout, "\r\n")
-	assert.Equal(stdout, "/root")
+	assert.Equal("/root", stdout)
 	assert.NoError(err)
 
 	err = app.Stop(true, false)
@@ -129,7 +157,7 @@ func TestSSHAuth(t *testing.T) {
 		Cmd:     "rm -f /home/.ssh-agent/known_hosts; ssh root@test-ssh-server pwd",
 	})
 	stdout = strings.Trim(stdout, "\r\n")
-	assert.Equal(stdout, "/root")
+	assert.Equal("/root", stdout)
 	assert.NoError(err)
 
 	err = app.Stop(true, false)
@@ -178,4 +206,194 @@ func TestSshAuthConfigOverride(t *testing.T) {
 
 	stdout, _, err := dockerutil.Exec("ddev-ssh-agent", "bash -c 'echo $ANSWER'", "")
 	assert.Equal(answer+"\n", stdout)
+}
+
+// TestSSHAgentUpstream checks that ssh_agent_upstream turns ddev-ssh-agent
+// into a relay to an existing agent, and that clearing it restores the default.
+func TestSSHAgentUpstream(t *testing.T) {
+	origUpstream := globalconfig.DdevGlobalConfig.SSHAgentUpstream
+	// Code under test can write the global config, so restore the file too.
+	t.Cleanup(func() {
+		globalconfig.DdevGlobalConfig.SSHAgentUpstream = origUpstream
+		_ = globalconfig.WriteGlobalConfig(globalconfig.DdevGlobalConfig)
+		_ = dockerutil.RemoveContainer(ddevapp.SSHAuthName)
+	})
+	app := &ddevapp.DdevApp{}
+
+	globalconfig.DdevGlobalConfig.SSHAgentUpstream = "relative/agent.sock"
+	_, err := ddevapp.SSHAgentUpstreamSocket()
+	require.Error(t, err)
+	_ = dockerutil.RemoveContainer(ddevapp.SSHAuthName)
+	err = app.EnsureSSHAgentContainer()
+	require.NoError(t, err)
+	stdout, _, err := dockerutil.Exec(ddevapp.SSHAuthName, "killall -0 ssh-agent", "")
+	require.NoError(t, err, stdout)
+
+	// Windows refuses every upstream, so the project must still start with
+	// DDEV's own agent rather than a relay.
+	if nodeps.IsWindows() {
+		for _, value := range []string{"host", `C:\Users\me\agent.sock`} {
+			globalconfig.DdevGlobalConfig.SSHAgentUpstream = value
+			_, err = ddevapp.SSHAgentUpstreamSocket()
+			require.ErrorContains(t, err, "doesn't work on Windows", value)
+			require.NoError(t, app.EnsureSSHAgentContainer(), value)
+			stdout, _, err = dockerutil.Exec(ddevapp.SSHAuthName, "killall -0 ssh-agent", "")
+			require.NoError(t, err, stdout)
+		}
+		return
+	}
+
+	upstreamDir := testcommon.CreateTmpDir(t.Name())
+	t.Cleanup(func() {
+		_ = os.RemoveAll(upstreamDir)
+	})
+	upstreamSock := filepath.Join(upstreamDir, "agent.sock")
+	globalconfig.DdevGlobalConfig.SSHAgentUpstream = upstreamSock
+	sock, err := ddevapp.SSHAgentUpstreamSocket()
+	require.NoError(t, err)
+	require.Equal(t, upstreamSock, sock)
+
+	_, err = app.CreateSSHAuthComposeFile()
+	require.NoError(t, err)
+	rendered, err := fileutil.ReadFileIntoString(ddevapp.SSHAuthComposeYAMLPath())
+	require.NoError(t, err)
+	require.Contains(t, rendered, upstreamDir+":/upstream")
+	require.Contains(t, rendered, "UNIX-CONNECT:/upstream/agent.sock")
+	require.Contains(t, rendered, "killall -0 socat")
+
+	// A socket in a host directory reaches containers only when Docker runs
+	// on the host itself, or is Docker Desktop mounting from a WSL2 distro,
+	// not through a macOS VM file share.
+	sshAgentPath, lookErr := osexec.LookPath("ssh-agent")
+	if !nodeps.IsLinux() || (dockerutil.IsDockerDesktop() && !nodeps.IsWSL2()) || lookErr != nil {
+		t.Log("Skipping live relay check: needs Linux with native Docker and ssh-agent")
+		return
+	}
+	keyFile := filepath.Join(upstreamDir, "id_ed25519")
+	out, err := exec.RunHostCommand("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "ddev-upstream-test", "-f", keyFile)
+	require.NoError(t, err, out)
+	// Beside ssh-agent, because WSL2 users may put Windows ssh-add.exe first on PATH.
+	sshAddPath := filepath.Join(filepath.Dir(sshAgentPath), "ssh-add")
+	startAgent := func() {
+		_ = os.Remove(upstreamSock)
+		out, err := exec.RunHostCommand(sshAgentPath, "-a", upstreamSock)
+		require.NoError(t, err, out)
+		out, err = exec.RunHostCommand("bash", "-c", "SSH_AUTH_SOCK="+upstreamSock+" "+sshAddPath+" "+keyFile)
+		require.NoError(t, err, out)
+	}
+	stopAgent := func() {
+		_, _ = exec.RunHostCommand("pkill", "-f", "ssh-agent -a "+upstreamSock)
+	}
+	t.Cleanup(stopAgent)
+	startAgent()
+
+	err = app.EnsureSSHAgentContainer()
+	require.NoError(t, err)
+	stdout, stderr, err := dockerutil.Exec(ddevapp.SSHAuthName, "ssh-add -l", "")
+	require.NoError(t, err, stderr)
+	require.Contains(t, stdout, "ddev-upstream-test")
+	relay, err := dockerutil.FindContainerByName(ddevapp.SSHAuthName)
+	require.NoError(t, err)
+	require.NotNil(t, relay)
+
+	// The relay mounts the socket's directory, so a restarted agent is picked
+	// up without recreating ddev-ssh-agent.
+	stopAgent()
+	require.Eventually(t, func() bool {
+		_, _, err := dockerutil.Exec(ddevapp.SSHAuthName, "ssh-add -l", "")
+		return err != nil
+	}, 10*time.Second, 500*time.Millisecond)
+	startAgent()
+	stdout, stderr, err = dockerutil.Exec(ddevapp.SSHAuthName, "ssh-add -l", "")
+	require.NoError(t, err, stderr)
+	require.Contains(t, stdout, "ddev-upstream-test")
+	restarted, err := dockerutil.FindContainerByName(ddevapp.SSHAuthName)
+	require.NoError(t, err)
+	require.Equal(t, relay.ID, restarted.ID)
+
+	// VS Code Remote sets SSH_AUTH_SOCK to a symlink in another directory.
+	linkDir := testcommon.CreateTmpDir(t.Name() + "-link")
+	t.Cleanup(func() {
+		_ = os.RemoveAll(linkDir)
+	})
+	link := filepath.Join(linkDir, "vscode-ssh-auth-sock")
+	require.NoError(t, os.Symlink(upstreamSock, link))
+	globalconfig.DdevGlobalConfig.SSHAgentUpstream = "host"
+	t.Setenv("SSH_AUTH_SOCK", link)
+	sock, err = ddevapp.SSHAgentUpstreamSocket()
+	require.NoError(t, err)
+	require.Equal(t, upstreamSock, sock)
+	err = app.EnsureSSHAgentContainer()
+	require.NoError(t, err)
+	stdout, stderr, err = dockerutil.Exec(ddevapp.SSHAuthName, "ssh-add -l", "")
+	require.NoError(t, err, stderr)
+	require.Contains(t, stdout, "ddev-upstream-test")
+
+	globalconfig.DdevGlobalConfig.SSHAgentUpstream = ""
+	err = app.EnsureSSHAgentContainer()
+	require.NoError(t, err)
+	stdout, _, _ = dockerutil.Exec(ddevapp.SSHAuthName, "ssh-add -l", "")
+	require.NotContains(t, stdout, "ddev-upstream-test")
+}
+
+// TestSSHAgentUpstreamHost checks ssh_agent_upstream=host against the macOS
+// agent that Docker providers forward, and the fallback where none is forwarded.
+func TestSSHAgentUpstreamHost(t *testing.T) {
+	if !nodeps.IsMacOS() {
+		t.Skip("Skipping: macOS Docker providers only")
+	}
+	var err error
+	if !dockerutil.IsOrbStack() {
+		hostSock := os.Getenv("SSH_AUTH_SOCK")
+		if out, err := exec.RunHostCommand("ssh-add", "-l"); hostSock == "" || (err != nil && !strings.Contains(out, "no identities")) {
+			t.Skipf("Skipping: no usable macOS SSH agent (SSH_AUTH_SOCK=%q): %s", hostSock, out)
+		}
+	}
+
+	origUpstream := globalconfig.DdevGlobalConfig.SSHAgentUpstream
+	// Code under test can write the global config, so restore the file too.
+	t.Cleanup(func() {
+		globalconfig.DdevGlobalConfig.SSHAgentUpstream = origUpstream
+		_ = globalconfig.WriteGlobalConfig(globalconfig.DdevGlobalConfig)
+		_ = dockerutil.RemoveContainer(ddevapp.SSHAuthName)
+	})
+	if !dockerutil.IsOrbStack() {
+		keyDir := testcommon.CreateTmpDir(t.Name())
+		keyFile := filepath.Join(keyDir, "id_ed25519")
+		out, err := exec.RunHostCommand("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "ddev-upstream-host-test", "-f", keyFile)
+		require.NoError(t, err, out)
+		out, err = exec.RunHostCommand("ssh-add", keyFile)
+		require.NoError(t, err, out)
+		t.Cleanup(func() {
+			_, _ = exec.RunHostCommand("ssh-add", "-d", keyFile)
+			_ = os.RemoveAll(keyDir)
+		})
+	}
+
+	globalconfig.DdevGlobalConfig.SSHAgentUpstream = "host"
+	_ = dockerutil.RemoveContainer(ddevapp.SSHAuthName)
+	_, sockErr := ddevapp.SSHAgentUpstreamSocket()
+	app := &ddevapp.DdevApp{}
+	err = app.EnsureSSHAgentContainer()
+	require.NoError(t, err)
+
+	// Rancher Desktop, Podman, and Lima without ssh.forwardAgent fall back to DDEV's own agent.
+	if sockErr != nil {
+		t.Logf("No forwarded agent, expecting fallback: %v", sockErr)
+		out, _, err := dockerutil.Exec(ddevapp.SSHAuthName, "killall -0 ssh-agent", "")
+		require.NoError(t, err, out)
+		return
+	}
+	// OrbStack's host-services socket cannot receive a temporary shell-agent key.
+	if dockerutil.IsOrbStack() {
+		_, stderr, err := dockerutil.Exec(ddevapp.SSHAuthName, "ssh-add -l; status=$?; test $status -le 1", "")
+		require.NoError(t, err, stderr)
+		return
+	}
+	stdout, stderr, err := dockerutil.Exec(ddevapp.SSHAuthName, "ssh-add -l", "")
+	if dockerutil.IsColima() && !strings.Contains(stdout, "ddev-upstream-host-test") {
+		t.Skipf("Skipping: Colima was not started with --ssh-agent: %s%s", stdout, stderr)
+	}
+	require.NoError(t, err, stderr)
+	require.Contains(t, stdout, "ddev-upstream-host-test")
 }

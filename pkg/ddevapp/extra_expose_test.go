@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ddev/ddev/pkg/ddevapp"
 	"github.com/ddev/ddev/pkg/dockerutil"
 	"github.com/ddev/ddev/pkg/exec"
 	"github.com/ddev/ddev/pkg/netutil"
+	"github.com/ddev/ddev/pkg/nodeps"
 	"github.com/ddev/ddev/pkg/testcommon"
 	asrt "github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -18,8 +20,11 @@ import (
 // TestExtraPortExpose tests exposing additional ports with web_extra_exposed_ports.
 // It also tests web_extra_daemons
 func TestExtraPortExpose(t *testing.T) {
-	if os.Getenv("DDEV_RUN_TEST_ANYWAY") != "true" && (dockerutil.IsColima() || dockerutil.IsLima() || dockerutil.IsRancherDesktop()) {
+	if nodeps.IsEnvFalse("DDEV_RUN_TEST_ANYWAY") && (dockerutil.IsColima() || dockerutil.IsLima() || dockerutil.IsRancherDesktop()) {
 		t.Skip("skipping on Lima/Colima because of unpredictable behavior, unable to connect")
+	}
+	if nodeps.IsAppleSilicon() && dockerutil.IsDockerDesktop() && nodeps.IsEnvFalse("DDEV_RUN_TEST_ANYWAY") {
+		t.Skip("Skipping on Docker Desktop/Apple Silicon to ignore problems with 'connection reset by peer'")
 	}
 	assert := asrt.New(t)
 
@@ -51,11 +56,21 @@ func TestExtraPortExpose(t *testing.T) {
 		{Name: "FirstDaemon", Command: "php -S 0.0.0.0:3000", Directory: "/var/www/html"},
 		{Name: "SecondDaemon", Command: "php -S 0.0.0.0:4000", Directory: "/var/www/html/sub"},
 	}
+	// The daemons must not depend on whether an AI agent ran `ddev start`.
+	t.Setenv("AI_AGENT", "test-agent")
 	err = app.Start()
 	if err != nil {
 		logs, logErr := exec.RunCommand("docker", []string{"logs", "ddev-" + app.Name + "-web"})
 		t.Fatalf("app failed to start: %v, logErr=%v logs=%v", err, logErr, logs)
 	}
+
+	stdout, _, err := app.Exec(&ddevapp.ExecOpts{Cmd: `echo "$AI_AGENT"`})
+	require.NoError(t, err)
+	require.Equal(t, "test-agent", strings.TrimSpace(stdout))
+	// Print only AI_AGENT, the rest of the environment can hold secrets.
+	stdout, _, err = app.Exec(&ddevapp.ExecOpts{Cmd: `set -o pipefail; tr '\0' '\n' </proc/$(pgrep -x supervisord)/environ | { grep '^AI_AGENT=' || true; }`})
+	require.NoError(t, err)
+	require.Empty(t, stdout, "supervisord should not inherit AI_AGENT")
 
 	// Careful with portsToTest because https ports won't work on GitHub Actions Colima tests (although they work fine on normal Mac)
 	portsToTest := []string{"3000", "4000"}
@@ -66,8 +81,7 @@ func TestExtraPortExpose(t *testing.T) {
 	for i, p := range portsToTest {
 		baseURL := netutil.BaseURLFromFullURL(app.GetPrimaryURL())
 		url := fmt.Sprintf("%s:%s/testfile.html", baseURL, p)
-		out, resp, err := testcommon.GetLocalHTTPResponse(t, url)
-		require.NoError(t, err, "failed to get hit url %s, out=%s, resp=%v err=%v", url, out, resp, err)
-		require.Contains(t, out, fmt.Sprintf("this is test%d", i+1))
+		testcommon.RequireLocalHTTPContent(t, url, fmt.Sprintf("this is test%d", i+1),
+			testcommon.WithMessagef("exposed port %s should serve testfile.html", p))
 	}
 }

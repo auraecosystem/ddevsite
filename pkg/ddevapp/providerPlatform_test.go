@@ -61,7 +61,7 @@ func TestPlatformPull(t *testing.T) {
 	t.Run("local-config", func(t *testing.T) {
 		err = writePlatformLocalConfig(t, app, token)
 		require.NoError(t, err)
-		startAndCheckPlatformPull(t, app, provider)
+		startAndCheckPlatformPull(t, app, provider, "")
 	})
 
 	// variant using environment variables
@@ -70,7 +70,7 @@ func TestPlatformPull(t *testing.T) {
 		provider.EnvironmentVariables["PLATFORM_ENVIRONMENT"] = platformPullTestSiteEnvironment
 		provider.EnvironmentVariables["PLATFORMSH_CLI_TOKEN"] = token
 		_ = os.RemoveAll(filepath.Join(app.AppRoot, ".platform/local/"))
-		startAndCheckPlatformPull(t, app, provider)
+		startAndCheckPlatformPull(t, app, provider, platformTestSiteID+"."+platformPullTestSiteEnvironment)
 	})
 }
 
@@ -95,7 +95,7 @@ func TestPlatformPush(t *testing.T) {
 	t.Run("local-config", func(t *testing.T) {
 		err = writePlatformLocalConfig(t, app, token)
 		require.NoError(t, err)
-		startAndCheckPlatformPush(t, app, provider, token)
+		startAndCheckPlatformPush(t, app, provider, token, "")
 	})
 
 	t.Run("environment-based-config", func(t *testing.T) {
@@ -103,7 +103,7 @@ func TestPlatformPush(t *testing.T) {
 		provider.EnvironmentVariables["PLATFORM_ENVIRONMENT"] = platformPushTestSiteEnvironment
 		provider.EnvironmentVariables["PLATFORMSH_CLI_TOKEN"] = token
 		_ = os.RemoveAll(filepath.Join(app.AppRoot, ".platform/local/"))
-		startAndCheckPlatformPush(t, app, provider, token)
+		startAndCheckPlatformPush(t, app, provider, token, platformTestSiteID+"."+platformPushTestSiteEnvironment)
 	})
 }
 
@@ -113,7 +113,7 @@ func writePlatformLocalConfig(t *testing.T, app *ddevapp.DdevApp, token string) 
 	err := os.MkdirAll(filepath.Join(app.AppRoot, ".platform/local"), 0755)
 	require.NoError(t, err)
 	// Provide a project.yaml to
-	err = os.WriteFile(filepath.Join(app.AppRoot, ".platform/local/project.yaml"), []byte(fmt.Sprintf("id: %s\nhost: api.platform.sh", platformTestSiteID)), 0644)
+	err = os.WriteFile(filepath.Join(app.AppRoot, ".platform/local/project.yaml"), fmt.Appendf(nil, "id: %s\nhost: api.platform.sh", platformTestSiteID), 0644)
 	require.NoError(t, err)
 
 	app.ProviderInstance.EnvironmentVariables["PLATFORMSH_CLI_TOKEN"] = token
@@ -122,7 +122,7 @@ func writePlatformLocalConfig(t *testing.T, app *ddevapp.DdevApp, token string) 
 
 // setupPlatformProject does basic setup, creating project, etc.
 func setupPlatformProject(t *testing.T, environment string) (*ddevapp.DdevApp, *ddevapp.Provider, error) {
-	testName := strings.Split(t.Name(), "/")[0]
+	testName, _, _ := strings.Cut(t.Name(), "/")
 	siteDir := testcommon.CreateTmpDir(testName)
 
 	err := globalconfig.RemoveProjectInfo(testName)
@@ -161,9 +161,12 @@ func setupPlatformProject(t *testing.T, environment string) (*ddevapp.DdevApp, *
 }
 
 // startAndCheckPlatformPull starts the app and does platform pull, then checks for the expected file and database entry.
-func startAndCheckPlatformPull(t *testing.T, app *ddevapp.DdevApp, provider *ddevapp.Provider) {
+func startAndCheckPlatformPull(t *testing.T, app *ddevapp.DdevApp, provider *ddevapp.Provider, expectedInfo string) {
 	err := app.Start()
 	require.NoError(t, err)
+	if expectedInfo != "" {
+		require.Equal(t, expectedInfo, provider.GetInfo())
+	}
 	err = app.Pull(provider, false, false, false)
 	require.NoError(t, err)
 
@@ -174,11 +177,14 @@ func startAndCheckPlatformPull(t *testing.T, app *ddevapp.DdevApp, provider *dde
 }
 
 // startAndCheckPlatformPush starts the app and does platform push, then checks for the expected file and database entry.
-func startAndCheckPlatformPush(t *testing.T, app *ddevapp.DdevApp, provider *ddevapp.Provider, token string) {
+func startAndCheckPlatformPush(t *testing.T, app *ddevapp.DdevApp, provider *ddevapp.Provider, token string, expectedInfo string) {
 	err := app.Start()
 	require.NoError(t, err)
+	if expectedInfo != "" {
+		require.Equal(t, expectedInfo, provider.GetInfo())
+	}
 
-	testName := strings.Split(t.Name(), "/")[0]
+	testName, _, _ := strings.Cut(t.Name(), "/")
 
 	// Create database and files entries that we can verify after push
 	tval := nodeps.RandomString(10)

@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"os"
 	"sort"
+	"strings"
 
 	"github.com/ddev/ddev/pkg/amplitude"
+	"github.com/ddev/ddev/pkg/ddevapp"
 	"github.com/ddev/ddev/pkg/dockerutil"
 	"github.com/ddev/ddev/pkg/output"
 	"github.com/ddev/ddev/pkg/styles"
@@ -17,9 +19,10 @@ import (
 
 // versionCmd represents the version command
 var versionCmd = &cobra.Command{
-	Use:   "version",
-	Short: "Print DDEV version and component versions",
-	Long:  `Display the version of this DDEV binary and its components.`,
+	Use:         "version",
+	Annotations: map[string]string{NoDockerCommand: "true"},
+	Short:       "Print DDEV version and component versions",
+	Long:        `Display the version of this DDEV binary and its components.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if len(args) > 0 {
 			err := cmd.Usage()
@@ -27,12 +30,19 @@ var versionCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		_, err := dockerutil.DownloadDockerComposeIfNeeded()
-		if err != nil {
-			util.Failed("Failed to check for and download docker-compose: %v", err)
-		}
+		_, buildxErr := dockerutil.DownloadDockerBuildxIfNeeded()
 
-		v := version.GetVersionInfo()
+		v, dockerErr := version.GetVersionInfo()
+
+		// If in a project context, show the project's actual web image instead of the default.
+		if app, err := ddevapp.GetActiveApp(""); err == nil {
+			if app.WebImage != "" {
+				v["web"] = app.WebImage
+			}
+			if app.DBImage != "" {
+				v["db"] = app.DBImage
+			}
+		}
 
 		var out bytes.Buffer
 		t := table.NewWriter()
@@ -40,6 +50,8 @@ var versionCmd = &cobra.Command{
 		styles.SetGlobalTableStyle(t, true)
 
 		t.AppendHeader(table.Row{"Item", "Value"})
+
+		imageTagBranches := version.ImageTagBranches()
 
 		keys := make([]string, 0, len(v))
 		for k := range v {
@@ -49,17 +61,32 @@ var versionCmd = &cobra.Command{
 
 		for _, label := range keys {
 			if label != "build info" {
+				value := v[label]
+				// Once release-prep.sh stamps an image's branch to its
+				// release tag, that tag is already what resolveImageTag
+				// put in value, so the hint would just repeat it.
+				if branch, ok := imageTagBranches[label]; ok && branch != "" && !strings.HasSuffix(value, ":"+branch) {
+					value = value + " (" + branch + ")"
+				}
 				t.AppendRow(table.Row{
-					label, v[label],
+					label, value,
 				})
 			}
 		}
 		t.Render()
 		output.UserOut.WithField("raw", v).Println(out.String())
+
+		util.WarnAboutMultipleGlobalDdevDirs()
 		amplitude.CheckSetUp()
+
+		if dockerErr != nil {
+			util.Failed("Docker error: %v\nFor help go to: https://docs.ddev.com/en/stable/users/install/docker-installation/#troubleshooting-docker", dockerErr)
+		} else if buildxErr != nil {
+			util.Failed("Docker buildx error: %v", buildxErr)
+		}
 	},
 }
 
-func init() {
+func registerCmdVersionCmd() {
 	RootCmd.AddCommand(versionCmd)
 }

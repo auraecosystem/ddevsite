@@ -27,7 +27,7 @@ if [[ ${PIPESTATUS[0]} -ne 4 ]]; then
 fi
 
 OPTS=-h,-v:,-d:
-LONGOPTS=archs:,db-type:,db-major-version:,db-pinned-version:,docker-args:,docker-org:,tag:,push,help
+LONGOPTS=archs:,db-type:,db-major-version:,db-pinned-version:,ddev-image-tag:,docker-args:,docker-org:,tag:,push,help
 
 ! PARSED=$(getopt --options=$OPTS --longoptions=$LONGOPTS --name "$0" -- "$@")
 if [[ ${PIPESTATUS[0]} -ne 0 ]]; then
@@ -83,6 +83,10 @@ while true; do
     IMAGE_TAG=$2
     shift 2
     ;;
+  --ddev-image-tag)
+    DDEV_IMAGE_TAG=$2
+    shift 2
+    ;;
   --docker-org)
     DOCKER_ORG=$2
     shift 2
@@ -101,6 +105,10 @@ done
 
 set -o nounset
 
+# Defaults to IMAGE_TAG, and differs only for a multi-arch push, where
+# IMAGE_TAG carries an intermediate -<arch> suffix that must not reach the label.
+DDEV_IMAGE_TAG=${DDEV_IMAGE_TAG:-${IMAGE_TAG}}
+
 if [ -z ${DB_PINNED_VERSION:-} ]; then
   DB_PINNED_VERSION=${DB_MAJOR_VERSION}
 fi
@@ -113,8 +121,16 @@ if [ ${DB_TYPE} = "mysql" ]; then
     # For mysql 5.7, we have to use our own base images at ddev/mysql (due to arm64)
     if [ ${DB_MAJOR_VERSION} = "5.7" ]; then
       BASE_IMAGE=ddev/mysql
-    elif [ "${DB_MAJOR_VERSION:-}" = "8.0" ] || [ "${DB_MAJOR_VERSION}" = "8.4" ]; then
-      BASE_IMAGE=bitnamilegacy/mysql
+    elif [ "${DB_MAJOR_VERSION:-}" = "8.0" ] || [ "${DB_MAJOR_VERSION}" = "8.4" ] || [ "${DB_MAJOR_VERSION}" = "9.7" ]; then
+      # MySQL 8.0/8.4/9.7 use Docker Hardened Images (dhi.io/mysql), since bitnami
+      # abandoned its mysql images. We build FROM the `-dev` variant because it
+      # is Debian-based, runs as root, and includes apt + bash, all of which the
+      # build and the bash-based runtime scripts require. See ddev/ddev#7962.
+      BASE_IMAGE=dhi.io/mysql
+      case "${DB_PINNED_VERSION}" in
+        *-dev) ;;
+        *) DB_PINNED_VERSION="${DB_PINNED_VERSION}-dev" ;;
+      esac
     fi
 fi
 printf "\n\n========== Building ddev/ddev-dbserver-${DB_TYPE}-${DB_MAJOR_VERSION}:${IMAGE_TAG} from ${BASE_IMAGE} for ${ARCHS} with pinned version ${DB_PINNED_VERSION} ==========\n"
@@ -124,16 +140,26 @@ tag_directive="-t ${DOCKER_ORG}/ddev-dbserver-${DB_TYPE}-${DB_MAJOR_VERSION}:${I
 if [[ ${IMAGE_TAG} =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   tag_directive="$tag_directive -t ${DOCKER_ORG}/ddev-dbserver-${DB_TYPE}-${DB_MAJOR_VERSION}:latest"
 fi
+
+# Same OCI metadata every other image carries; this directory deliberately does
+# not include containers_shared.mk, so it calls the generator itself.
+label_directive="$("$(dirname "$0")/../image-metadata.sh" labels "${DDEV_IMAGE_TAG}" "ddev-dbserver-${DB_TYPE}-${DB_MAJOR_VERSION}")"
+
 if [ ! -z ${PUSH:-} ]; then
   echo "building/pushing ddev/ddev-dbserver-${DB_TYPE}-${DB_MAJOR_VERSION}:${IMAGE_TAG}"
   set -x
-  docker buildx build --push --platform ${ARCHS} ${DOCKER_ARGS} --build-arg="BASE_IMAGE=${BASE_IMAGE}" --build-arg="DB_PINNED_VERSION=${DB_PINNED_VERSION}" --build-arg="DB_MAJOR_VERSION=${DB_MAJOR_VERSION}" ${tag_directive}  .
+  docker buildx build --push --platform ${ARCHS} ${DOCKER_ARGS} --build-arg="BASE_IMAGE=${BASE_IMAGE}" --build-arg="DB_PINNED_VERSION=${DB_PINNED_VERSION}" --build-arg="DB_MAJOR_VERSION=${DB_MAJOR_VERSION}" --build-arg="DDEV_IMAGE_TAG=${DDEV_IMAGE_TAG}" ${label_directive} ${tag_directive}  .
   set +x
 fi
 
-# By default, load/import into local docker
+# By default, load/import into local docker. Podman needs Docker media types to
+# keep the healthcheck; see LOCAL_OUTPUT_ARGS in containers/containers_shared.mk.
+load_directive="--load"
+if docker version --format '{{range .Server.Components}}{{.Name}};{{end}}' 2>/dev/null | grep -q 'Podman Engine'; then
+  load_directive="--output=type=docker,oci-mediatypes=false"
+fi
 set -x
 if [ -z "${PUSH:-}" ]; then
     echo "Loading to local docker ddev/ddev-dbserver-${DB_TYPE}-${DB_MAJOR_VERSION}:${IMAGE_TAG}"
-    docker buildx build --load ${DOCKER_ARGS} --build-arg="DB_TYPE=${DB_TYPE}" --build-arg="DB_MAJOR_VERSION=${DB_MAJOR_VERSION}" --build-arg="BASE_IMAGE=${BASE_IMAGE}" --build-arg="DB_PINNED_VERSION=${DB_PINNED_VERSION}" ${tag_directive} .
+    docker buildx build ${load_directive} ${DOCKER_ARGS} --build-arg="DB_TYPE=${DB_TYPE}" --build-arg="DB_MAJOR_VERSION=${DB_MAJOR_VERSION}" --build-arg="BASE_IMAGE=${BASE_IMAGE}" --build-arg="DB_PINNED_VERSION=${DB_PINNED_VERSION}" --build-arg="DDEV_IMAGE_TAG=${DDEV_IMAGE_TAG}" ${label_directive} ${tag_directive} .
 fi

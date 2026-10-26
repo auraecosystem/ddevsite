@@ -10,8 +10,11 @@ import (
 	"github.com/ddev/ddev/pkg/ddevapp"
 	"github.com/ddev/ddev/pkg/exec"
 	"github.com/ddev/ddev/pkg/fileutil"
+	"github.com/ddev/ddev/pkg/globalconfig"
 	"github.com/ddev/ddev/pkg/nodeps"
+	"github.com/ddev/ddev/pkg/testcommon"
 	"github.com/ddev/ddev/pkg/util"
+	"github.com/ddev/ddev/pkg/versionconstants"
 	asrt "github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -33,25 +36,50 @@ func TestCmdExec(t *testing.T) {
 	assert := asrt.New(t)
 	origDir, err := os.Getwd()
 	require.NoError(t, err)
-	origDdevDebug := os.Getenv("DDEV_DEBUG")
-	_ = os.Unsetenv("DDEV_DEBUG")
+	t.Setenv("DDEV_DEBUG", "")
 
 	site := TestSites[0]
+
+	// Configure and start a different project
+	projectFlagAppName := "TestCmdProjectFlag" + t.Name()
+	// If it already existed we need to delete it first from the global list.
+	_ = globalconfig.RemoveProjectInfo(projectFlagAppName)
+	testDir := testcommon.CreateTmpDir(projectFlagAppName)
+	projectFlagApp, err := ddevapp.NewApp(testDir, false)
+	require.NoError(t, err)
+	err = projectFlagApp.WriteConfig()
+	require.NoError(t, err)
+	_, err = os.Create(filepath.Join(testDir, "my-new-project-file.txt"))
+	require.NoError(t, err)
+	err = os.Chdir(testDir)
+	require.NoError(t, err)
+	out, err := exec.RunHostCommand(DdevBin, "start", "-y")
+	require.NoError(t, err, "failed to start, out=%v, err=%v", out, err)
+
+	// Set current directory to the initial one.
 	err = os.Chdir(site.Dir)
 	require.NoError(t, err)
 
 	t.Cleanup(func() {
+		err = projectFlagApp.Stop(true, false)
+		require.NoError(t, err)
 		err = os.Chdir(origDir)
 		assert.NoError(err)
-		_ = os.Setenv("DDEV_DEBUG", origDdevDebug)
+		_ = os.RemoveAll(testDir)
 	})
 	app, err := ddevapp.GetActiveApp(site.Name)
 	assert.NoError(err)
 
 	// Test default invocation
-	out, err := exec.RunHostCommand(DdevBin, "exec", "pwd")
+	out, err = exec.RunHostCommand(DdevBin, "exec", "pwd")
 	assert.NoError(err)
 	assert.Contains(out, "/var/www/html")
+
+	// Test specifying project and service: instead of the project in the
+	// current folder, run this on our newly created project.
+	out, err = exec.RunHostCommand(DdevBin, "-p", projectFlagApp.Name, "-s", "web", "exec", "ls")
+	assert.NoError(err)
+	assert.Contains(out, "my-new-project-file.txt")
 
 	// Test specifying service
 	out, err = exec.RunHostCommand(DdevBin, "-s", "db", "exec", "pwd")
@@ -99,10 +127,12 @@ func TestCmdExec(t *testing.T) {
 	assert.NoError(err)
 	assert.Contains(out, "root")
 
-	// Test that an nonexistent working directory generates an error
+	// Test that an nonexistent working directory generates an error.
+	// runc (Docker) emits "no such file or directory" while crun (Podman)
+	// emits "No such file or directory", so compare case-insensitively.
 	out, err = exec.RunHostCommand(DdevBin, "exec", "-d", "/does/not/exist", "pwd")
 	assert.Error(err)
-	assert.Contains(out, "no such file or directory")
+	assert.Contains(strings.ToLower(out), "no such file or directory")
 
 	_, err = exec.RunHostCommand(DdevBin, "exec", "ls >/var/www/html/TestCmdExec-${OSTYPE}.txt")
 	assert.NoError(err)
@@ -180,6 +210,19 @@ func TestCmdExec(t *testing.T) {
 	assert.NoError(err)
 	assert.Equal("This file was piped into ddev exec", string(content))
 
+	// Regression check for \r injection when stdin is a TTY but stdout is piped.
+	// script(1) supplies the TTY stdin that `go test` doesn't.
+	if !nodeps.IsLinux() {
+		t.Log("Skipping TTY regression check: requires Linux")
+	} else if !util.IsCommandAvailable("script") {
+		t.Log("Skipping TTY regression check: script(1) not found in PATH")
+	} else {
+		t.Log("Running TTY regression check via script(1)")
+		out, err := exec.RunHostCommand("script", "-qec", fmt.Sprintf("%s exec echo hello | cat -A", DdevBin), "/dev/null")
+		assert.NoError(err)
+		assert.NotContains(out, "^M", "ddev exec must not inject \\r when stdout is piped, even if stdin is a terminal")
+	}
+
 	// Make sure that redirection of output from ddev exec works
 	f, err := os.CreateTemp("", "")
 	err = f.Close()
@@ -195,4 +238,61 @@ func TestCmdExec(t *testing.T) {
 	out, err = fileutil.ReadFileIntoString(f.Name())
 	assert.NoError(err)
 	assert.Contains(out, "/usr/local/bin/composer")
+}
+
+// TestCmdExecContainerUser verifies that `ddev exec -s <service>` defaults to
+// the service's configured x-ddev.container-user, matching
+// `ddev ssh -s <service>`, and that an explicit -u still overrides it.
+// See https://github.com/ddev/ddev/issues/8806.
+func TestCmdExecContainerUser(t *testing.T) {
+	testcommon.SkipUnlessDefaultEnvironment(t)
+	assert := asrt.New(t)
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+
+	testDir := testcommon.CreateTmpDir(t.Name())
+	err = os.Chdir(testDir)
+	require.NoError(t, err)
+
+	app, err := ddevapp.NewApp(testDir, true)
+	require.NoError(t, err)
+	app.Name = strings.ToLower(t.Name())
+	err = app.WriteConfig()
+	require.NoError(t, err)
+
+	composeContent := fmt.Sprintf(`
+services:
+  container-user-svc:
+    container_name: ddev-${DDEV_SITENAME}-container-user-svc
+    image: %s:%s
+    x-ddev:
+      container-user: www-data
+    init: true
+    command: ["sleep", "infinity"]
+    labels:
+      com.ddev.approot: ${DDEV_APPROOT}
+      com.ddev.site-name: ${DDEV_SITENAME}
+    restart: "no"
+    healthcheck:
+      test: "true"
+`, versionconstants.WebImg, versionconstants.WebTag)
+	err = os.WriteFile(app.GetConfigPath("docker-compose.container-user-svc.yaml"), []byte(composeContent), 0644)
+	require.NoError(t, err)
+
+	err = app.Start()
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		_ = app.Stop(true, false)
+		_ = os.Chdir(origDir)
+		_ = os.RemoveAll(testDir)
+	})
+
+	out, err := exec.RunHostCommand(DdevBin, "exec", "-s", "container-user-svc", "id", "-un")
+	require.NoError(t, err, "output: %s", out)
+	assert.Equal("www-data", strings.TrimSpace(out))
+
+	out, err = exec.RunHostCommand(DdevBin, "exec", "-s", "container-user-svc", "-u", "root", "id", "-un")
+	require.NoError(t, err, "output: %s", out)
+	assert.Equal("root", strings.TrimSpace(out))
 }

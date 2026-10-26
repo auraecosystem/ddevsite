@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/ddev/ddev/pkg/ddevapp"
@@ -53,7 +52,7 @@ func TestCmdAddon(t *testing.T) {
 	// Test with many input styles
 	for _, arg := range []string{
 		"ddev/ddev-memcached",
-		"https://github.com/ddev/ddev-memcached/archive/refs/tags/v1.1.1.tar.gz",
+		"https://github.com/ddev/ddev-memcached/archive/refs/tags/v1.1.8.tar.gz",
 		tarballFile} {
 		out, err := exec.RunHostCommand(DdevBin, "add-on", "get", arg)
 		assert.NoError(err, "failed ddev add-on get %s", arg)
@@ -92,8 +91,7 @@ func TestCmdAddonInstalled(t *testing.T) {
 	if !github.HasGitHubToken() {
 		t.Skip("Skipping because DDEV_GITHUB_TOKEN is not set")
 	}
-	origDdevDebug := os.Getenv("DDEV_DEBUG")
-	_ = os.Unsetenv("DDEV_DEBUG")
+	t.Setenv("DDEV_DEBUG", "")
 	assert := asrt.New(t)
 
 	origDir, _ := os.Getwd()
@@ -110,7 +108,6 @@ func TestCmdAddonInstalled(t *testing.T) {
 		err = os.Chdir(origDir)
 		assert.NoError(err)
 		_ = os.RemoveAll(filepath.Join(globalconfig.GetGlobalDdevDir(), "commands/web/global-touched"))
-		_ = os.Setenv("DDEV_DEBUG", origDdevDebug)
 	})
 
 	out, err := exec.RunHostCommand(DdevBin, "add-on", "get", "ddev/ddev-memcached", "--json-output")
@@ -147,51 +144,9 @@ func TestCmdAddonInstalled(t *testing.T) {
 	assert.NoError(err, "unable to ddev add-on get redis: %v, output='%s'", err, out)
 }
 
-// TestCmdAddonProjectFlag tests the `--project` flag in `ddev add-on` subcommands
-func TestCmdAddonProjectFlag(t *testing.T) {
-	if !github.HasGitHubToken() {
-		t.Skip("Skipping because DDEV_GITHUB_TOKEN is not set")
-	}
-	origDdevDebug := os.Getenv("DDEV_DEBUG")
-	_ = os.Unsetenv("DDEV_DEBUG")
-	assert := asrt.New(t)
-
-	site := TestSites[0]
-	// Explicitly don't chdir to the project
-
-	t.Cleanup(func() {
-		_, err := exec.RunHostCommand(DdevBin, "add-on", "remove", "redis", "--project", site.Name)
-		assert.NoError(err)
-		_ = os.RemoveAll(filepath.Join(globalconfig.GetGlobalDdevDir(), "commands/web/global-touched"))
-		_ = os.Setenv("DDEV_DEBUG", origDdevDebug)
-	})
-
-	// Install the add-on using the `--project` flag
-	out, err := exec.RunHostCommand(DdevBin, "add-on", "get", "ddev/ddev-redis", "--project", site.Name, "--json-output")
-	require.NoError(t, err, "failed ddev add-on get ddev/ddev-redis --project %s --json-output: %v (output='%s')", site.Name, err, out)
-
-	redisManifest := getManifestFromLogs(t, out)
-	require.NoError(t, err)
-
-	installedOutput, err := exec.RunHostCommand(DdevBin, "add-on", "list", "--installed", "--project", site.Name, "--json-output")
-	require.NoError(t, err, "failed ddev add-on list --installed --project %s --json-output: %v (output='%s')", site.Name, err, installedOutput)
-	installedManifests := getManifestMapFromLogs(t, installedOutput)
-
-	require.NotEmptyf(t, redisManifest["Version"], "redis manifest is empty: %v", redisManifest)
-	assert.Equal(redisManifest["Version"], installedManifests["redis"]["Version"])
-
-	// Remove the add-on using the `--project` flag
-	out, err = exec.RunHostCommand(DdevBin, "add-on", "remove", "ddev/ddev-redis", "--project", site.Name)
-	require.NoError(t, err, "unable to ddev add-on remove ddev/ddev-redis --project %s: %v, output='%s'", site.Name, err, out)
-
-	// Now make sure we put it back so it can be removed in cleanup
-	out, err = exec.RunHostCommand(DdevBin, "add-on", "get", "ddev/ddev-redis", "--project", site.Name)
-	assert.NoError(err, "unable to ddev add-on get ddev/ddev-redis --project %s: %v, output='%s'", site.Name, err, out)
-}
-
 // getManifestFromLogs returns the manifest built from 'raw' section of
 // ddev add-on get <project> -j output
-func getManifestFromLogs(t *testing.T, jsonOut string) map[string]interface{} {
+func getManifestFromLogs(t *testing.T, jsonOut string) map[string]any {
 	assert := asrt.New(t)
 
 	logItems, err := unmarshalJSONLogs(jsonOut)
@@ -199,14 +154,14 @@ func getManifestFromLogs(t *testing.T, jsonOut string) map[string]interface{} {
 	data := logItems[len(logItems)-1]
 	assert.EqualValues(data["level"], "info")
 
-	m, ok := data["raw"].(map[string]interface{})
+	m, ok := data["raw"].(map[string]any)
 	require.True(t, ok)
 	return m
 }
 
 // getManifestMapFromLogs returns the manifest array built from 'raw' section of
 // ddev add-on list --installed -j output
-func getManifestMapFromLogs(t *testing.T, jsonOut string) map[string]map[string]interface{} {
+func getManifestMapFromLogs(t *testing.T, jsonOut string) map[string]map[string]any {
 	assert := asrt.New(t)
 
 	logItems, err := unmarshalJSONLogs(jsonOut)
@@ -214,11 +169,11 @@ func getManifestMapFromLogs(t *testing.T, jsonOut string) map[string]map[string]
 	data := logItems[len(logItems)-1]
 	assert.EqualValues(data["level"], "info")
 
-	m, ok := data["raw"].([]interface{})
+	m, ok := data["raw"].([]any)
 	require.True(t, ok)
-	masterMap := map[string]map[string]interface{}{}
+	masterMap := map[string]map[string]any{}
 	for _, item := range m {
-		itemMap := item.(map[string]interface{})
+		itemMap := item.(map[string]any)
 		masterMap[itemMap["Name"].(string)] = itemMap
 	}
 	return masterMap
@@ -234,13 +189,12 @@ func TestCmdAddonPHP(t *testing.T) {
 	require.NoError(t, err)
 
 	t.Cleanup(func() {
-		addonList, err := exec.RunHostCommand("bash", "-c", fmt.Sprintf("%s add-on list --installed -j | docker run -i --rm ddev/ddev-utilities jq -r .raw.[].Name", DdevBin))
+		installedOutput, err := exec.RunHostCommand(DdevBin, "add-on", "list", "--installed", "--json-output")
 		require.NoError(t, err)
-		addonList = strings.TrimSpace(addonList)
-		addons := strings.Split(addonList, "\n")
-		for _, item := range addons {
-			_, err = exec.RunHostCommand(DdevBin, "add-on", "remove", item)
-			require.NoError(t, err)
+		installedManifests := getManifestMapFromLogs(t, installedOutput)
+		for name := range installedManifests {
+			out, err := exec.RunHostCommand(DdevBin, "add-on", "remove", name)
+			asrt.NoError(t, err, "failed to remove add-on %q: output=%s", name, out)
 		}
 
 		_ = os.Chdir(origDir)
@@ -458,6 +412,10 @@ services:
 	t.Run("EnvironmentVariablesAddon", func(t *testing.T) {
 		envVarsAddonDir := filepath.Join(origDir, "testdata", t.Name())
 
+		t.Cleanup(func() {
+			_ = os.Remove(app.GetConfigPath(".env.env-vars-test"))
+		})
+
 		// Set some custom environment variables to test
 		out, err := exec.RunHostCommand(DdevBin, "dotenv", "set", ".ddev/.env.env-vars-test", "--custom-variable", "show $ sign", "--extra-var", "One more extra variable")
 		require.NoError(t, err, "failed to set custom variable in .ddev/.env.env-vars-test file: %v, output: %s", err, out)
@@ -469,7 +427,7 @@ services:
 		require.Contains(t, out, "PHP: Testing environment variables...")
 
 		// Define expected environment variables with their expected values or patterns
-		expectedEnvVars := map[string]interface{}{
+		expectedEnvVars := map[string]any{
 			"DDEV_SITENAME":        app.Name,
 			"DDEV_PROJECT":         app.Name,
 			"DDEV_PROJECT_TYPE":    app.Type,
@@ -598,19 +556,19 @@ func TestCmdAddonSearch(t *testing.T) {
 	out, err := exec.RunHostCommand(DdevBin, "add-on", "search", "redis")
 	assert.NoError(err, "failed ddev add-on search redis: %v (%s)", err, out)
 	assert.Contains(out, "ddev/ddev-redis")
-	assert.Contains(out, "repositories found matching 'redis'")
+	assert.Contains(out, "add-ons found matching 'redis'")
 
 	// Test search with multiple keywords
 	out, err = exec.RunHostCommand(DdevBin, "add-on", "search", "redis", "cache")
 	assert.NoError(err, "failed ddev add-on search redis cache: %v (%s)", err, out)
 	assert.Contains(out, "ddev/ddev-redis")
-	assert.Contains(out, "repositories found matching 'redis cache'")
+	assert.Contains(out, "add-ons found matching 'redis cache'")
 
 	// Test search with quotes
 	out, err = exec.RunHostCommand(DdevBin, "add-on", "search", "redis insight")
 	assert.NoError(err, "failed ddev add-on search 'redis insight': %v (%s)", err, out)
 	assert.Contains(out, "ddev/ddev-redis-insight")
-	assert.Contains(out, "repositories found matching 'redis insight'")
+	assert.Contains(out, "add-ons found matching 'redis insight'")
 
 	// Test search with no results
 	out, err = exec.RunHostCommand(DdevBin, "add-on", "search", "nonexistentservice")
@@ -620,5 +578,5 @@ func TestCmdAddonSearch(t *testing.T) {
 	// Test search
 	out, err = exec.RunHostCommand(DdevBin, "add-on", "search", "redis")
 	assert.NoError(err, "failed ddev add-on search redis: %v (%s)", err, out)
-	assert.Contains(out, "repositories found matching 'redis'")
+	assert.Contains(out, "add-ons found matching 'redis'")
 }

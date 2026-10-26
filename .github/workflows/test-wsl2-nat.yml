@@ -1,0 +1,94 @@
+# mirrored doesn't work (yet?) on Windows server 2025
+# See https://github.com/microsoft/WSL/issues/11154
+name: Test WSL2 NAT (Docker CE)
+
+on:
+  pull_request:
+    paths:
+      - "go.*"
+      - "pkg/**"
+      - "cmd/**"
+      - "Makefile"
+      - "vendor/**"
+      - ".github/workflows/**"
+      - "!.github/workflows/docs**"
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        description: 'Run the build with upterm set "debug_enabled"'
+        type: boolean
+        required: false
+        default: false
+      testargs:
+        description: 'TESTARGS value'
+        type: string
+        required: false
+        default: ''
+      gotest_short:
+        description: 'GOTEST_SHORT value (16=drupal11 only)'
+        type: string
+        required: false
+        default: '16'
+      make_target:
+        description: 'Make target to run (custom job only)'
+        type: choice
+        required: false
+        default: 'test'
+        options:
+          - test
+          - testpkg
+          - testcmd
+          - testddevapp
+          - testnotddevapp
+          - testfullsitesetup
+          - testonepkg
+          - testonefile
+      makeargs:
+        description: 'Extra make arguments: TESTPKG=./pkg/util (for testonepkg) or TESTFILE=./pkg/util/utils_test.go (for testonefile)'
+        type: string
+        required: false
+        default: ''
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  determine-test-eligibility:
+    name: Determine test eligibility
+    uses: ./.github/workflows/test-skip-check.yml
+
+  wsl2-nat-testpkg:
+    needs: determine-test-eligibility
+    if: github.event_name != 'workflow_dispatch' && needs.determine-test-eligibility.outputs.should_skip != 'true'
+    uses: ./.github/workflows/test-wsl2-reusable.yml
+    with:
+      make_target: "testpkg"
+      networking: "nat"
+      debug_enabled: ${{ inputs.debug_enabled || false }}
+
+  wsl2-nat-testcmd:
+    needs: determine-test-eligibility
+    if: github.event_name != 'workflow_dispatch' && needs.determine-test-eligibility.outputs.should_skip != 'true'
+    uses: ./.github/workflows/test-wsl2-reusable.yml
+    with:
+      make_target: "testcmd"
+      networking: "nat"
+      debug_enabled: ${{ inputs.debug_enabled || false }}
+
+  wsl2-nat-custom:
+    needs: determine-test-eligibility
+    if: github.event_name == 'workflow_dispatch' && needs.determine-test-eligibility.outputs.should_skip != 'true'
+    uses: ./.github/workflows/test-wsl2-reusable.yml
+    with:
+      make_target: ${{ inputs.make_target }}
+      makeargs: ${{ inputs.makeargs }}
+      networking: "nat"
+      testargs: ${{ inputs.testargs }}
+      gotest_short: ${{ inputs.gotest_short }}
+      debug_enabled: ${{ inputs.debug_enabled || false }}

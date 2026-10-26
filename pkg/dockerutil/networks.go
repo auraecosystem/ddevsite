@@ -15,6 +15,14 @@ const NetName = "ddev_default"
 
 // EnsureNetwork will ensure the Docker network for DDEV is created.
 func EnsureNetwork(name string, netOptions client.NetworkCreateOptions) error {
+	// Most calls find the network already there, and need not wait on the lock.
+	if NetExists(name) {
+		RemoveNetworkDuplicates(name)
+		return nil
+	}
+	// Docker allows duplicate network names, so check-then-create must not interleave.
+	defer AcquireGlobalLock("Docker network setup")()
+
 	// Pre-check for network duplicates
 	RemoveNetworkDuplicates(name)
 
@@ -39,11 +47,11 @@ func EnsureDdevNetwork() {
 	netOptions := client.NetworkCreateOptions{
 		Driver:   "bridge",
 		Internal: false,
-		Labels:   map[string]string{"com.ddev.platform": "ddev"},
+		Labels:   GlobalDdevLabels(),
 	}
 	err := EnsureNetwork(NetName, netOptions)
 	if err != nil {
-		output.UserErr.Fatalf("Failed to ensure Docker network %s: %v", NetName, err)
+		util.Failed("Failed to ensure Docker network %s: %v", NetName, err)
 	}
 }
 

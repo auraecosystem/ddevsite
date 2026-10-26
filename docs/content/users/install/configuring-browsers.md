@@ -2,6 +2,12 @@
 
 **Most DDEV users can ignore this page. The standard instructions in DDEV Installation do everything that is needed. These instructions are for unusual browsers or OS environments.**
 
+## Firefox on Windows
+
+Modern Firefox on Windows supports using the Windows system certificate store automatically. If you use Firefox on Windows and see certificate errors on DDEV sites, go to Firefox Settings → Privacy & Security and check **"Allow Firefox to automatically trust third-party root certificates you install"**. This is often all that is needed.
+
+If that setting is already enabled and Firefox still shows errors, import the CA manually (see below).
+
 DDEV generates SSL certificates to enable local projects to use the HTTPS protocol. It uses a custom root Certificate Authority (CA) to generate SSL certificates for `*.ddev.site` domains.
 
 However, since this is a custom CA, web browsers display an ERR_CERT_AUTHORITY_INVALID warning when trying to access a local DDEV site over HTTPS.
@@ -22,10 +28,21 @@ The steps to install the root CA depend on the browser, but they generally follo
 1. Use `mkcert -CAROOT` to locate the directory with the generated root certificate. Inside, you should find a `rootCA.pem` file. If it's missing, run `mkcert -install` command.
 2. Open your browser and navigate to the preferences or settings.
 3. Find the Certificate Manager, typically located in the "Security" section of the preferences.
-4. Click the "View Certificates" button.
+4. Click the "Manage Certificates" button (labeled "View Certificates" in older Firefox versions).
 5. Go to the "Authorities" tab.
 6. Click the "Import" button to add a custom authority certificate.
 7. Import the `rootCA.pem` file to install the root certificate authority.
 
 !!!note "Still having issues?"
     Check out [this specific mkcert thread](https://github.com/FiloSottile/mkcert/issues/370) for additional troubleshooting.
+
+## Xcode iOS Simulator
+
+Testing any DDEV site via Safari through the iOS simulator will lead to TLS errors due to the mkcert CA certificate not being trusted. You will need to manually install the CA certificate into the simulator device.
+
+1. Run `mkcert -CAROOT` and open that directory in Finder. On macOS, the default location is typically `~/Library/Application Support/mkcert`.
+2. Drag the `rootCA.pem` file from that directory onto the iOS simulator session.
+3. In the iOS simulator, open **Settings** and install the downloaded certificate profile. Depending on the iOS version, use **Profile Downloaded** or go to **General > VPN & Device Management** (or **Profiles**) and install the mkcert/root CA profile.
+4. After the profile is installed, go to **Settings > General > About > Certificate Trust Settings** and enable full trust for the mkcert certificate.
+
+This should now allow valid TLS connections to any DDEV domain/site.

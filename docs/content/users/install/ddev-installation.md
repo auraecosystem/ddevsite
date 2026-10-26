@@ -50,24 +50,48 @@ Once you’ve [installed a Docker provider](docker-installation.md), you’re re
     DDEV’s Debian and RPM packages work with `apt` and `yum` repositories and most variants that use them, including Windows WSL2:
 
     ```bash
+    # Ensure sudo credentials are cached for copy/paste of this block
+    sudo true
+
     # Add DDEV’s GPG key to your keyring
-    sudo sh -c 'echo ""'
     sudo apt-get update && sudo apt-get install -y curl
     sudo install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL https://pkg.ddev.com/apt/gpg.key | gpg --dearmor | sudo tee /etc/apt/keyrings/ddev.gpg > /dev/null
-    sudo chmod a+r /etc/apt/keyrings/ddev.gpg
+    curl -fsSL https://packages.ddev.com/public/gpg.key | sudo tee /etc/apt/keyrings/ddev.asc > /dev/null
+    sudo chmod a+r /etc/apt/keyrings/ddev.asc
+
+    # Remove old repository files if present
+    sudo rm -f /etc/apt/keyrings/ddev.gpg /etc/apt/sources.list.d/ddev.list
 
     # Add DDEV releases to your package repository
-    sudo sh -c 'echo ""'
-    echo "deb [signed-by=/etc/apt/keyrings/ddev.gpg] https://pkg.ddev.com/apt/ * *" | sudo tee /etc/apt/sources.list.d/ddev.list >/dev/null
+    printf "Types: deb\nURIs: https://packages.ddev.com/public/deb/ubuntu\nSuites: stable\nComponents: main\nSigned-By: /etc/apt/keyrings/ddev.asc\n" | sudo tee /etc/apt/sources.list.d/ddev.sources >/dev/null
 
     # Update package information and install DDEV
-    sudo sh -c 'echo ""'
     sudo apt-get update && sudo apt-get install -y ddev
 
     # One-time initialization of mkcert
     mkcert -install
     ```
+
+    ??? tip "Prefer to run as a script?"
+        Create a script file, then run it:
+
+        ```bash
+        cat > /tmp/install-ddev.sh << 'SCRIPT'
+        #!/usr/bin/env bash
+        set -euo pipefail
+        sudo true
+        sudo apt-get update && sudo apt-get install -y curl
+        sudo install -m 0755 -d /etc/apt/keyrings
+        curl -fsSL https://packages.ddev.com/public/gpg.key | sudo tee /etc/apt/keyrings/ddev.asc > /dev/null
+        sudo chmod a+r /etc/apt/keyrings/ddev.asc
+        sudo rm -f /etc/apt/keyrings/ddev.gpg /etc/apt/sources.list.d/ddev.list
+        printf "Types: deb\nURIs: https://packages.ddev.com/public/deb/ubuntu\nSuites: stable\nComponents: main\nSigned-By: /etc/apt/keyrings/ddev.asc\n" | sudo tee /etc/apt/sources.list.d/ddev.sources >/dev/null
+        sudo apt-get update && sudo apt-get install -y ddev
+        mkcert -install
+        SCRIPT
+        ```
+
+        Review the script, then run it: `bash /tmp/install-ddev.sh`
 
     For unusual browsers and situations that don't automatically support the `mkcert` certificate authority, [configure your browser](configuring-browsers.md).
 
@@ -86,25 +110,42 @@ Once you’ve [installed a Docker provider](docker-installation.md), you’re re
     ### Fedora, Red Hat, etc.
 
     ```bash
+    # Ensure sudo credentials are cached for copy/paste of this block
+    sudo true
+
     # Add DDEV releases to your package repository
-    sudo sh -c 'echo ""'
     echo '[ddev]
     name=ddev
-    baseurl=https://pkg.ddev.com/yum/
-    gpgcheck=0
+    baseurl=https://packages.ddev.com/public/rpm/any-distro/any-version/$basearch
+    gpgkey=https://packages.ddev.com/public/gpg.key
+    gpgcheck=1
+    repo_gpgcheck=1
     enabled=1' | sed 's/^ \+//' | sudo tee /etc/yum.repos.d/ddev.repo >/dev/null
 
     # Install DDEV
-    sudo sh -c 'echo ""'
-    sudo dnf install --refresh ddev
+    sudo dnf install -y --refresh ddev
 
     # One-time initialization of mkcert
     mkcert -install
     ```
 
-    For unusual browsers and situations that don't automatically support the `mkcert` certificate authority, [configure your browser](configuring-browsers.md).
+    ??? tip "Prefer to run as a script?"
+        Create a script file, then run it:
 
-    Signed yum repository support will be added in the future.
+        ```bash
+        cat > /tmp/install-ddev.sh << 'SCRIPT'
+        #!/usr/bin/env bash
+        set -euo pipefail
+        sudo true
+        printf "[ddev]\nname=ddev\nbaseurl=https://packages.ddev.com/public/rpm/any-distro/any-version/\$basearch\ngpgkey=https://packages.ddev.com/public/gpg.key\ngpgcheck=1\nrepo_gpgcheck=1\nenabled=1\n" | sudo tee /etc/yum.repos.d/ddev.repo >/dev/null
+        sudo dnf install -y --refresh ddev
+        mkcert -install
+        SCRIPT
+        ```
+
+        Review the script, then run it: `bash /tmp/install-ddev.sh`
+
+    For unusual browsers and situations that don't automatically support the `mkcert` certificate authority, [configure your browser](configuring-browsers.md).
 
     ### Arch Linux
 
@@ -120,7 +161,7 @@ Once you’ve [installed a Docker provider](docker-installation.md), you’re re
 
     For unusual browsers and situations that don't automatically support the `mkcert` certificate authority, [configure your browser](configuring-browsers.md).
 
-    ### Homebrew (AMD64 only)
+    ### Homebrew
 
     ```bash
     # Install DDEV using Homebrew
@@ -159,69 +200,91 @@ Once you’ve [installed a Docker provider](docker-installation.md), you’re re
 
     ## Windows
 
-    You can install DDEV on Windows using the Windows installer or manual installation:
+    DDEV on Windows uses an installer that supports three configurations — pick the one that fits you:
 
-    ### Important Considerations for WSL2 and DDEV
+    | Mode | Best for | Requires |
+    |---|---|---|
+    | **Docker CE inside WSL2** (recommended) | Most users, best performance | WSL2 |
+    | **Docker Desktop / Rancher Desktop with WSL2** | Already have Docker Desktop or Rancher Desktop installed | WSL2 + Docker Desktop or Rancher Desktop |
+    | **Traditional Windows** | PowerShell/Git Bash workflow | Docker Desktop or Rancher Desktop (no separate WSL2 distro needed) |
 
-    * You **must** use WSL2, not WSL version 1.  
-      Use `wsl.exe -l -v` to see the versions of the distros you are using they should be v2.
-    * WSL2 offers a faster, smoother experience.  
-      It’s more performant, and you’re less likely to have obscure Windows problems.
-    * Execute DDEV commands inside WSL2.  
-      You’ll want to run DDEV commands inside Ubuntu, for example, and never on the Windows side in PowerShell or Git Bash.
-    * Projects should live under the home directory of the Linux filesystem.  
-      WSL2’s Linux filesystem (e.g. `/home/<your_username>`) is much faster and has proper permissions, so keep your projects there and **not** in the slower Windows filesystem (`/mnt/c`).
-    * Custom hostnames (non `ddev.site` hostnames) are managed via the Windows hosts file, not within WSL2.  
-      DDEV attempts to manage custom hostnames via the Windows-side hosts file—usually at `C:\Windows\System32\drivers\etc\hosts`.
+    ### Step 1: Install WSL2
 
-    The WSL2 install process involves:
+    In PowerShell, run:
 
-    * Installing WSL2 and installing an Ubuntu distro (or some other distro if you're installing manually).
-    * Optionally installing Docker Desktop or Rancher Desktop for Windows and enabling WSL2 integration with the distro (if you're using the Docker/Rancher Desktop approach).
-    * Running the DDEV installer and choosing the approach you have chosen.
+    ```powershell
+    # Install WSL2; reboot if prompted, then continue:
+    wsl --install --no-distribution
 
-    ### Install WSL2 and a Distro First
-    
-    Before you begin installing DDEV or Docker, make sure WSL2 works:
-    ```bash
-    wsl --install
-    # Reboot is often required after this command.
+    # Update WSL2 if previously installed:
     wsl --update
-    # Keeping WSL updated helps to ensure that DDEV installs successfully.
-    wsl --install Ubuntu --name DDEV # the name DDEV is just a suggestion.
-    # You'll be required to set up a default username and password for the distro.
     ```
 
-    ### Windows Installer
+    Create an Ubuntu or other Debian-based WSL2 distro (skip if you're using Traditional Windows). Ubuntu is recommended:
 
-    You must have WSL2 installed before you can install DDEV on Windows. If you're using DDEV's WSL2 options (recommended) then you also must have created a distro (like suggested "DDEV" distro above) before you can install DDEV.
+    ```powershell
+    # You'll be asked to set a username and password for the distro:
+    wsl --install Ubuntu-26.04 --name DDEV
+    ```
 
-    The easiest way to install DDEV on Windows is to use the DDEV Windows installer, which can handle different installation scenarios:
+    !!!tip "\"DDEV\" is just a suggested name — use any name you like."
 
-    1. **Download the Windows installer**. Make sure to download the correct installer for your system architecture:
+    !!!tip "Other Debian-based distros also work"
+        The DDEV installer supports Ubuntu and Debian and has been tested with Kali Linux and eLxr. If you prefer one of those, substitute its name, for example `wsl --install Debian --name DDEV`.
 
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; text-align: center;">
-        [Download for AMD64 :material-microsoft-windows:<br>(Intel/AMD) :material-download:](https://ddev.com/download/ddev_windows_amd64_installer.exe "For computers with Intel or AMD processors (most common)"){ .md-button .md-button--primary }
-        [Download for ARM64 :material-microsoft-windows:<br>(Snapdragon) :material-download:](https://ddev.com/download/ddev_windows_arm64_installer.exe "For computers with ARM processors like Qualcomm Snapdragon"){ .md-button .md-button--primary }
-        </div>
+    Verify the "DDEV" distro is set as default:
 
-        - **AMD64 (x86-64)**: Most traditional Windows PCs (Intel/AMD processors)
-        - **ARM64**: Windows on ARM devices like Microsoft Surface Pro X, Surface Pro 9 (5G), or other ARM-based Windows devices
+    ```powershell { .no-copy }
+    > wsl -l -v
+      NAME                   STATE           VERSION
+    * DDEV                   Stopped         2
+    ```
 
-        Or browse all versions on the [DDEV releases page](https://github.com/ddev/ddev/releases).
+    ### Step 2: Install DDEV
 
-        !!!tip "Check your system architecture"
-            Not sure which architecture you have? Open PowerShell and run: `$env:PROCESSOR_ARCHITECTURE`. It will show `AMD64` or `ARM64`. Alternatively, in WSL2/Ubuntu run `uname -m` which shows `x86_64` for AMD64 or `aarch64` for ARM64.
+    Download the installer — make sure to pick the right architecture:
 
-    2. **Run the installer** and choose your installation type:
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; text-align: center;">
+    [Download for AMD64 :material-microsoft-windows:<br>(Intel/AMD) :material-download:](https://ddev.com/download/ddev_windows_amd64_installer.exe "For computers with Intel or AMD processors (most common)"){ .md-button .md-button--primary }
+    [Download for ARM64 :material-microsoft-windows:<br>(Snapdragon) :material-download:](https://ddev.com/download/ddev_windows_arm64_installer.exe "For computers with ARM processors like Qualcomm Snapdragon"){ .md-button .md-button--primary }
+    </div>
 
-        - **Docker CE inside WSL2** (Recommended): The installer will automatically install Docker CE in your WSL2 environment. This is the fastest and most reliable option.
-        - **Docker Desktop/Rancher Desktop**: Choose this if you already have Docker Desktop or Rancher Desktop installed or prefer to use them.
-        - **Traditional Windows**: Choose this for non-WSL2 installations (requires Docker Desktop or Rancher Desktop). Note that both Docker Desktop and Rancher Desktop themselves use WSL2, but you will interact with DDEV in Git Bash, PowerShell, or Cmd on the Windows side.
+    - **AMD64 (x86-64)**: Most traditional Windows PCs (Intel/AMD processors)
+    - **ARM64**: Windows on ARM devices like Microsoft Surface Pro X, Surface Pro 9 (5G), or other ARM-based Windows devices
 
-    The installer will automatically configure DDEV for your chosen Docker provider and WSL2 environment. If you run the wrong installer for your architecture, it will detect the mismatch and direct you to download the correct one.
+    !!!tip "Check your system architecture"
+        Not sure which architecture you have? Open PowerShell and run: `$env:PROCESSOR_ARCHITECTURE`. It will show `AMD64` or `ARM64`. Alternatively, in WSL2/Ubuntu run `uname -m` which shows `x86_64` for AMD64 or `aarch64` for ARM64.
 
-    !!!tip "Windows Installer Silent Mode"
+    Run the installer and select your mode. For WSL2 modes, the installer will display all detected Debian-based WSL2 distros (Ubuntu, Debian, Kali, eLxr, etc.) and prompt you to select one. The installer will automatically configure DDEV for your chosen Docker provider. If you run the wrong installer for your architecture, it will detect the mismatch and direct you to download the correct one.
+
+    ??? tip "Install using WinGet"
+        [WinGet](https://learn.microsoft.com/en-us/windows/package-manager/winget/) can download and launch the installer interactively:
+
+        ```powershell
+        winget install --interactive DDEV
+        ```
+
+        For silent/automated installation with specific options, use `--override` to pass installer flags:
+
+        ```powershell
+        # WSL2 with Docker CE and specified distro, silently
+        winget install DDEV --silent --override '/docker-ce /distro=DDEV'
+        ```
+
+        If WinGet picks up an old version (which can happen when DDEV was previously installed with the Windows installer), uninstall all versions first:
+
+        ```powershell
+        winget uninstall DDEV --all-versions
+        ```
+
+    ??? tip "Install using Chocolatey (Traditional Windows AMD64 only)"
+        [Chocolatey](https://chocolatey.org/) has had DDEV support for years and remains an option for Traditional Windows on AMD64:
+
+        ```powershell
+        choco install ddev
+        ```
+
+    ??? tip "Installer in Silent Mode"
         The Windows installer supports silent mode for automated installations and testing:
 
         ```bash
@@ -240,33 +303,50 @@ Once you’ve [installed a Docker provider](docker-installation.md), you’re re
 
         The `/S` flag makes the installation completely silent. Use `/distro=<name>` to specify your WSL2 distribution name (required for WSL2 options).
 
-    ### Manual Installation
+    ??? "Manual Installation"
 
-    If you prefer to install DDEV manually on WSL2, it's not hard. These techniques can be used to install on a non-Ubuntu distro, and can be adapted for Yum-based or ArchLinux-based distros as well:
+        ### Windows Manual Installation
 
-    1. In PowerShell, run `mkcert.exe -install` and follow the prompt to install the Certificate Authority.
-    2. In PowerShell, run `$env:CAROOT="$(mkcert -CAROOT)"; setx CAROOT $env:CAROOT; If ($Env:WSLENV -notlike "*CAROOT/up:*") { $env:WSLENV="CAROOT/up:$env:WSLENV"; setx WSLENV $Env:WSLENV }`. This will set WSL2 to use the Certificate Authority installed on the Windows side, so your Windows-side browser can trust it.
-    3. In PowerShell, run `wsl --update` to make sure you have a current WSL version.
-    4. In PowerShell, run `wsl --install <distro-type> --name DDEV`, for example `wsl --install Debian --name DDEV`. This will install the WSL2 distro for you. (The name "DDEV" is just a suggestion; you can use any name you like.)
-    5. **Docker CE:** Follow the instructions in the [Linux install section here](docker-installation.md#linux) to install Docker CE and DDEV. In addition, `sudo apt-get install -y docker-ce ddev ddev-wsl2` (or the equivalent `dnf` or other package manager commands).
-    6. **Docker Desktop for Windows (if used, this is not preferred):**
-        * Download and install the installer from [docker.com](https://www.docker.com/products/docker-desktop/). Choose the WSL2-based configuration. Start Docker Desktop. It may prompt you to log out and log in again, or reboot.
-        * Go to Docker Desktop’s *Settings* → *Resources* → *WSL integration* → *enable integration for your distro*. Now `docker` commands will be available from within your WSL2 distro.
-    7. Double-check your distro: `echo $CAROOT` should show something like `/mnt/c/Users/<you>/AppData/Local/mkcert`
-    8. Check that Docker is working inside Ubuntu (or your distro) by running `docker ps` in the distro.
-    9. Open the WSL2 terminal, for example `Debian` from the Windows start menu.
-    10. In WSL2, run `mkcert -install`.
-    11. Note that the older manual [PowerShell script](https://github.com/ddev/ddev/blob/main/scripts/install_ddev_wsl2_docker_inside.ps1) may be instructional if you're setting up a non-Ubuntu distro. It has been replaced by the Windows installer, but could be adapted for other distros.
+        If you prefer to install DDEV manually on WSL2, these techniques can be used to install on a non-Ubuntu distro, and can be adapted for Yum-based or ArchLinux-based distros as well:
 
-    For unusual browsers and situations that don't automatically support the `mkcert` certificate authority, [configure your browser](configuring-browsers.md).
+        1. In PowerShell, run `mkcert.exe -install` and follow the prompt to install the Certificate Authority.
+        2. In PowerShell, run `$env:CAROOT="$(mkcert -CAROOT)"; setx CAROOT $env:CAROOT; If ($Env:WSLENV -notlike "*CAROOT/up:*") { $env:WSLENV="CAROOT/up:$env:WSLENV"; setx WSLENV $Env:WSLENV }`. This will set WSL2 to use the Certificate Authority installed on the Windows side, so your Windows-side browser can trust it.
+        3. In PowerShell, run `wsl --update` to make sure you have a current WSL version.
+        4. In PowerShell, run `wsl --install <distro-type> --name DDEV`, for example `wsl --install Debian --name DDEV`. This will install the WSL2 distro for you. (The name "DDEV" is just a suggestion; you can use any name you like.)
+        5. **Docker CE:** Follow the instructions in the [Linux install section here](docker-installation.md#linux) to install Docker CE and DDEV. In addition, `sudo apt-get install -y docker-ce ddev ddev-wsl2` (or the equivalent `dnf` or other package manager commands).
+        6. **Docker Desktop for Windows (if used, this is not preferred):**
+            * Download and install the installer from [docker.com](https://www.docker.com/products/docker-desktop/). Choose the WSL2-based configuration. Start Docker Desktop. It may prompt you to log out and log in again, or reboot.
+            * Go to Docker Desktop’s *Settings* → *Resources* → *WSL integration* → *enable integration for your distro*. Now `docker` commands will be available from within your WSL2 distro.
+        7. Double-check your distro: `echo $CAROOT` should show something like `/mnt/c/Users/<you>/AppData/Local/mkcert`
+        8. Check that Docker is working inside Ubuntu (or your distro) by running `docker ps` in the distro.
+        9. Open the WSL2 terminal, for example `Debian` from the Windows start menu.
+        10. In WSL2, run `mkcert -install`.
+        11. Note that the older manual [PowerShell script](https://github.com/ddev/ddev/blob/main/scripts/install_ddev_wsl2_docker_inside.ps1) may be instructional if you’re setting up a non-Ubuntu distro. It has been replaced by the Windows installer, but could be adapted for other distros. Pass `-Distro <name>` when running it.
 
-    You have now installed DDEV on WSL2. If you’re using WSL2 for DDEV, remember to run all `ddev` commands inside the WSL2 distro, and make sure your projects are in the WSL2 filesystem (e.g. `/home/<your_username>/projects`) and **not** in the Windows filesystem (e.g. `/mnt/c/Users/<your_username>/projects`).
+        !!!note "Path to certificates"
+            If you get the prompt `Installing to the system store is not yet supported on this Linux`, you may need to add `/usr/sbin` to the `$PATH` so that `/usr/sbin/update-ca-certificates` can be found.
 
-    !!!note "Path to certificates"
-        If you get the prompt `Installing to the system store is not yet supported on this Linux`, you may need to add `/usr/sbin` to the `$PATH` so that `/usr/sbin/update-ca-certificates` can be found.
+    ### Step 3: Start working in WSL2
 
-    !!!note "Windows Firefox Trusted CA"
-        The `mkcert -install` step on Windows isn’t enough for Firefox. You need to [configure your browser](configuring-browsers.md).
+    *(Skip if using Traditional Windows.)*
+
+    Open your distro from the Start menu (or run `wsl` in PowerShell) to get a Linux terminal. Run all `ddev` commands here — never in PowerShell or Git Bash.
+
+    **Store your [projects](../project.md) inside WSL2** (e.g. `/home/<username>/projects`), not on `C:\` drive (`/mnt/c` in WSL2) — faster and avoids permission issues.
+
+    From Windows Explorer: **Linux → DDEV → home → \[username\]**.
+
+    !!!note "Custom hostnames"
+        Custom hostnames with a non-default [TLD](../configuration/config.md#project_tld) (non `ddev.site`) are managed via the Windows hosts file at `C:\Windows\System32\drivers\etc\hosts`, not within WSL2.
+
+    ??? "What if my browser (especially Firefox) doesn’t trust `https` URLs?"
+        DDEV uses [mkcert](https://github.com/FiloSottile/mkcert) to generate a local certificate authority (CA), and `mkcert -install` registers it with most browsers automatically. Firefox and some other browsers manage their own certificate stores and require a manual import.
+
+        To diagnose certificate trust issues, run `ddev utility tls-diagnose`.
+
+        To manually import the CA: run `mkcert.exe -CAROOT` to find the directory containing `rootCA.pem`, then import that file via your browser’s certificate manager (usually under Security settings → View Certificates → Authorities → Import).
+
+        See [Configuring Browsers](configuring-browsers.md) for full details.
 
 === "Codespaces"
 
@@ -284,10 +364,11 @@ Once you’ve [installed a Docker provider](docker-installation.md), you’re re
                 "version": "latest"
             },
             "ghcr.io/ddev/ddev/install-ddev:latest": {}
-        },
-        "postCreateCommand": "echo 'it should all be set up'"
+        }
     }
     ```
+
+    The `install-ddev` feature automatically configures the environment and sets up DDEV for use in Codespaces.
 
     Launch your repository in Codespaces:
 
@@ -391,6 +472,8 @@ Once you’ve [installed a Docker provider](docker-installation.md), you’re re
         "postCreateCommand": "bash .devcontainer/setup_project.sh"
     }
     ```
+
+    The `install-ddev` feature provides its own `postCreateCommand` to verify DDEV installation. User-provided commands run after the feature's commands.
 
     ```bash
     #!/usr/bin/env bash

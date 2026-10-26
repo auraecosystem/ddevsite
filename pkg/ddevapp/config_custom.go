@@ -1,0 +1,625 @@
+package ddevapp
+
+import (
+	"fmt"
+	"maps"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+
+	"github.com/ddev/ddev/pkg/config/types"
+	"github.com/ddev/ddev/pkg/docker"
+	"github.com/ddev/ddev/pkg/dockerutil"
+	"github.com/ddev/ddev/pkg/fileutil"
+	"github.com/ddev/ddev/pkg/globalconfig"
+	"github.com/ddev/ddev/pkg/nodeps"
+	"github.com/ddev/ddev/pkg/util"
+	"github.com/ddev/ddev/pkg/versionconstants"
+)
+
+// customConfigCheck defines a custom configuration check.
+type customConfigCheck struct {
+	collectFiles      func() ([]string, error) // returns candidate files before custom config filtering
+	expectedDdevFiles func() ([]string, error) // whitelisted DDEV-managed files (optional, returns nil to check all files)
+	checkOnlyWhen     func() bool              // when to run this check (optional, returns true if nil)
+	displayName       string                   // category name for grouped display (e.g., "Router (global)")
+}
+
+// getBuildDockerfilesInDir returns the Dockerfile*, pre.Dockerfile* and
+// prepend.Dockerfile* files in dir, i.e. only the ones WriteBuildDockerfile()
+// actually incorporates into a derived image. Like WriteBuildDockerfile(), the
+// bundled Dockerfile.example is not one of them.
+func getBuildDockerfilesInDir(dir string) ([]string, error) {
+	allFiles, err := filepath.Glob(filepath.Join(dir, "*Dockerfile*"))
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(allFiles, func(file string) bool {
+		base := filepath.Base(file)
+		if strings.HasSuffix(base, ".example") {
+			return true
+		}
+		return !strings.HasPrefix(base, "Dockerfile") &&
+			!strings.HasPrefix(base, "pre.Dockerfile") &&
+			!strings.HasPrefix(base, "prepend.Dockerfile")
+	}), nil
+}
+
+// addPathToAddonMap adds a file path (or all files under a directory) to the add-on map.
+// Manifest ProjectFiles/GlobalFiles may contain directory paths; this expands them.
+func addPathToAddonMap(fullPath string, addonName string, addonFileMap map[string]string) {
+	info, err := os.Stat(fullPath)
+	if err != nil {
+		return
+	}
+	if info.IsDir() {
+		files, err := fileutil.ListFilesWithDepth(fullPath, -1)
+		if err == nil {
+			for _, f := range files {
+				addonFileMap[f] = addonName
+			}
+		}
+		return
+	}
+	addonFileMap[fullPath] = addonName
+}
+
+// imageVersionMismatch returns a parenthetical note when a pinned image was
+// built as a different DDEV image generation than this DDEV expects, which is
+// the way a pinned webimage/dbimage goes stale: it keeps working until DDEV
+// changes something the image is expected to provide.
+//
+// It returns an empty string when the image can't be inspected (not pulled
+// yet, no Docker) or carries no com.ddev.image-tag label, so images built before
+// the label existed never produce a false alarm.
+func imageVersionMismatch(imageName string, expectedTag string) string {
+	builtTag, err := dockerutil.ImageLabel(imageName, docker.DdevImageTagLabel)
+	if err != nil || builtTag == "" || builtTag == expectedTag {
+		return ""
+	}
+	return fmt.Sprintf(", built for DDEV images %s but this DDEV expects %s", builtTag, expectedTag)
+}
+
+// CheckCustomConfig checks for custom configuration files and returns a message.
+// If showAll is true, files with #ddev-silent-no-warn marker are included in the output.
+// Returns the message and a bool indicating if warnings were found (true = warnings, false = success).
+func (app *DdevApp) CheckCustomConfig(showAll bool) (message string, hasWarnings bool) {
+	ddevDir := filepath.Dir(app.ConfigPath)
+
+	// Define all configuration checks
+	routerEnabled := func() bool { return !slices.Contains(app.OmitContainersGlobal, RouterComposeProjectName) }
+	sshAgentEnabled := func() bool { return !slices.Contains(app.OmitContainersGlobal, SSHAuthName) }
+
+	checks := []customConfigCheck{
+		{
+			collectFiles: func() ([]string, error) {
+				return filepath.Glob(filepath.Join(globalconfig.GetGlobalDdevDir(), "router-compose.*.yaml"))
+			},
+			checkOnlyWhen: routerEnabled,
+			displayName:   "Router (global)",
+		},
+		{
+			collectFiles: func() ([]string, error) {
+				return filepath.Glob(filepath.Join(globalconfig.GetGlobalDdevDir(), "ssh-auth-compose.*.yaml"))
+			},
+			checkOnlyWhen: sshAgentEnabled,
+			displayName:   "SSH agent (global)",
+		},
+		{
+			collectFiles: func() ([]string, error) {
+				return filepath.Glob(filepath.Join(globalconfig.GetGlobalDdevDir(), "global_config.*.y*ml"))
+			},
+			displayName: "Config (global)",
+		},
+		{
+			collectFiles: func() ([]string, error) {
+				return fileutil.ListFilesWithDepth(filepath.Join(globalconfig.GetGlobalDdevDir(), "commands"), 2)
+			},
+			expectedDdevFiles: func() ([]string, error) {
+				return GetAssetFiles("global_dotddev_assets/commands", filepath.Join(globalconfig.GetGlobalDdevDir(), "commands"))
+			},
+			displayName: "Commands (global)",
+		},
+		{
+			collectFiles: func() ([]string, error) {
+				return fileutil.ListFilesWithDepth(filepath.Join(globalconfig.GetGlobalDdevDir(), "homeadditions"), 2)
+			},
+			expectedDdevFiles: func() ([]string, error) {
+				return GetAssetFiles("global_dotddev_assets/homeadditions", filepath.Join(globalconfig.GetGlobalDdevDir(), "homeadditions"))
+			},
+			displayName: "Home additions (global)",
+		},
+		{
+			collectFiles: func() ([]string, error) {
+				return filepath.Glob(filepath.Join(globalconfig.GetGlobalDdevDir(), "traefik", "static_config.*.yaml"))
+			},
+			checkOnlyWhen: routerEnabled,
+			displayName:   "Router (global)",
+		},
+		{
+			collectFiles: func() ([]string, error) {
+				return fileutil.ListFilesInDirFullPath(filepath.Join(globalconfig.GetGlobalDdevDir(), "traefik", "custom-global-config"), true)
+			},
+			expectedDdevFiles: func() ([]string, error) {
+				return GetAssetFiles("global_dotddev_assets/traefik/custom-global-config", filepath.Join(globalconfig.GetGlobalDdevDir(), "traefik", "custom-global-config"))
+			},
+			checkOnlyWhen: routerEnabled,
+			displayName:   "Router (global)",
+		},
+		{
+			collectFiles: func() ([]string, error) {
+				return filepath.Glob(filepath.Join(ddevDir, "apache", "*.conf"))
+			},
+			expectedDdevFiles: func() ([]string, error) {
+				return []string{app.GetConfigPath("apache/apache-site.conf")}, nil
+			},
+			checkOnlyWhen: func() bool { return app.WebserverType == nodeps.WebserverApacheFPM },
+			displayName:   "Web server",
+		},
+		{
+			collectFiles: func() ([]string, error) {
+				return getBuildDockerfilesInDir(filepath.Join(globalconfig.GetGlobalDdevDir(), "db-build"))
+			},
+			checkOnlyWhen: func() bool { return !slices.Contains(app.OmitContainers, "db") },
+			displayName:   "Database (global)",
+		},
+		{
+			collectFiles: func() ([]string, error) {
+				return getBuildDockerfilesInDir(filepath.Join(ddevDir, "db-build"))
+			},
+			checkOnlyWhen: func() bool { return !slices.Contains(app.OmitContainers, "db") },
+			displayName:   "Database",
+		},
+		{
+			collectFiles: func() ([]string, error) {
+				return []string{app.GetConfigPath("mutagen/mutagen.yml")}, nil
+			},
+			expectedDdevFiles: func() ([]string, error) {
+				return []string{app.GetConfigPath("mutagen/mutagen.yml")}, nil
+			},
+			checkOnlyWhen: func() bool { return app.IsMutagenEnabled() },
+			displayName:   "Mutagen",
+		},
+		{
+			collectFiles: func() ([]string, error) {
+				return filepath.Glob(filepath.Join(ddevDir, "mysql", "*.cnf"))
+			},
+			checkOnlyWhen: func() bool {
+				return !slices.Contains(app.OmitContainers, "db") &&
+					slices.Contains([]string{nodeps.MariaDB, nodeps.MySQL}, app.Database.Type)
+			},
+			displayName: "Database",
+		},
+		{
+			collectFiles: func() ([]string, error) {
+				return filepath.Glob(filepath.Join(ddevDir, "nginx", "*.conf"))
+			},
+			checkOnlyWhen: func() bool { return app.WebserverType == nodeps.WebserverNginxFPM },
+			displayName:   "Web server",
+		},
+		{
+			collectFiles: func() ([]string, error) {
+				return filepath.Glob(filepath.Join(ddevDir, "nginx_full", "*.conf"))
+			},
+			expectedDdevFiles: func() ([]string, error) {
+				return []string{app.GetConfigPath("nginx_full/nginx-site.conf")}, nil
+			},
+			checkOnlyWhen: func() bool { return app.WebserverType == nodeps.WebserverNginxFPM },
+			displayName:   "Web server",
+		},
+		{
+			collectFiles: func() ([]string, error) {
+				return filepath.Glob(filepath.Join(ddevDir, "php", "*.ini"))
+			},
+			displayName: "PHP",
+		},
+		{
+			collectFiles: func() ([]string, error) {
+				return filepath.Glob(filepath.Join(ddevDir, "postgres", "*.conf"))
+			},
+			expectedDdevFiles: func() ([]string, error) {
+				return []string{app.GetConfigPath("postgres/postgresql.conf")}, nil
+			},
+			checkOnlyWhen: func() bool {
+				return !slices.Contains(app.OmitContainers, "db") &&
+					app.Database.Type == nodeps.Postgres
+			},
+			displayName: "Database",
+		},
+		{
+			collectFiles: func() ([]string, error) {
+				return filepath.Glob(filepath.Join(ddevDir, "providers", "*.yaml"))
+			},
+			expectedDdevFiles: func() ([]string, error) {
+				return GetAssetFiles("dotddev_assets/providers", app.GetConfigPath("providers"))
+			},
+			displayName: "Hosting providers",
+		},
+		{
+			collectFiles: func() ([]string, error) {
+				return filepath.Glob(filepath.Join(ddevDir, "share-providers", "*.sh"))
+			},
+			expectedDdevFiles: func() ([]string, error) {
+				return GetAssetFiles("dotddev_assets/share-providers", app.GetConfigPath("share-providers"))
+			},
+			displayName: "Share providers",
+		},
+		{
+			collectFiles: func() ([]string, error) {
+				crtFiles, err := filepath.Glob(filepath.Join(app.GetConfigPath("traefik/certs"), "*.crt"))
+				if err != nil {
+					return nil, err
+				}
+				keyFiles, err := filepath.Glob(filepath.Join(app.GetConfigPath("traefik/certs"), "*.key"))
+				if err != nil {
+					return nil, err
+				}
+				return append(crtFiles, keyFiles...), nil
+			},
+			expectedDdevFiles: func() ([]string, error) {
+				return []string{
+					filepath.Join(app.GetConfigPath("traefik/certs"), app.Name+".crt"),
+					filepath.Join(app.GetConfigPath("traefik/certs"), app.Name+".key"),
+				}, nil
+			},
+			checkOnlyWhen: routerEnabled,
+			displayName:   "Router",
+		},
+		{
+			collectFiles: func() ([]string, error) {
+				customCertsDir := app.GetConfigPath("custom_certs")
+				crtFiles, err := filepath.Glob(filepath.Join(customCertsDir, "*.crt"))
+				if err != nil {
+					return nil, err
+				}
+				keyFiles, err := filepath.Glob(filepath.Join(customCertsDir, "*.key"))
+				if err != nil {
+					return nil, err
+				}
+				return append(crtFiles, keyFiles...), nil
+			},
+			checkOnlyWhen: routerEnabled,
+			displayName:   "Router",
+		},
+		{
+			collectFiles: func() ([]string, error) {
+				return filepath.Glob(filepath.Join(app.GetConfigPath("traefik/config"), "*.yaml"))
+			},
+			expectedDdevFiles: func() ([]string, error) {
+				return []string{filepath.Join(app.GetConfigPath("traefik/config"), app.Name+".yaml")}, nil
+			},
+			checkOnlyWhen: routerEnabled,
+			displayName:   "Router",
+		},
+		{
+			collectFiles: func() ([]string, error) {
+				return getBuildDockerfilesInDir(filepath.Join(globalconfig.GetGlobalDdevDir(), "web-build"))
+			},
+			displayName: "Web server (global)",
+		},
+		{
+			collectFiles: func() ([]string, error) {
+				return getBuildDockerfilesInDir(filepath.Join(ddevDir, "web-build"))
+			},
+			displayName: "Web server",
+		},
+		{
+			collectFiles: func() ([]string, error) {
+				return filepath.Glob(filepath.Join(ddevDir, "web-entrypoint.d", "*.sh"))
+			},
+			displayName: "Web server",
+		},
+		{
+			collectFiles: func() ([]string, error) {
+				return []string{app.GetConfigPath("xhprof/xhprof_prepend.php")}, nil
+			},
+			expectedDdevFiles: func() ([]string, error) {
+				return []string{app.GetConfigPath("xhprof/xhprof_prepend.php")}, nil
+			},
+			checkOnlyWhen: func() bool { return app.GetXHProfMode() == types.XHProfModePrepend },
+			displayName:   "XHProf",
+		},
+		{
+			collectFiles: func() ([]string, error) {
+				return fileutil.ListFilesWithDepth(filepath.Join(ddevDir, "commands"), 2)
+			},
+			expectedDdevFiles: func() ([]string, error) {
+				return GetAssetFiles("dotddev_assets/commands", app.GetConfigPath("commands"))
+			},
+			displayName: "Commands",
+		},
+		{
+			collectFiles: func() ([]string, error) {
+				return fileutil.ListFilesWithDepth(filepath.Join(ddevDir, "homeadditions"), 2)
+			},
+			expectedDdevFiles: func() ([]string, error) {
+				return GetAssetFiles("dotddev_assets/homeadditions", app.GetConfigPath("homeadditions"))
+			},
+			displayName: "Home additions",
+		},
+		{
+			collectFiles: func() ([]string, error) {
+				return filepath.Glob(filepath.Join(ddevDir, "config.*.y*ml"))
+			},
+			displayName: "Config",
+		},
+		{
+			collectFiles: func() ([]string, error) {
+				return filepath.Glob(filepath.Join(ddevDir, "docker-compose.*.y*ml"))
+			},
+			displayName: "Docker Compose",
+		},
+		{
+			collectFiles: func() ([]string, error) {
+				return orderedEnvFilesInDir(globalconfig.GetGlobalDdevDir())
+			},
+			displayName: "Environment (global)",
+		},
+		{
+			collectFiles: func() ([]string, error) {
+				return orderedEnvFilesInDir(app.AppConfDir())
+			},
+			displayName: "Environment",
+		},
+	}
+
+	// Gather expected add-on files from the manifest
+	// When showAll=false: use this to filter out add-on files (don't show them)
+	// When showAll=true: use this to label add-on files with (add-on <name>)
+	addonFileMap := make(map[string]string) // file path -> add-on name
+	manifest, err := GatherAllManifests(app)
+	if err == nil {
+		for _, addon := range manifest {
+			for _, relPath := range addon.ProjectFiles {
+				addPathToAddonMap(app.GetConfigPath(relPath), addon.Name, addonFileMap)
+			}
+			for _, relPath := range addon.GlobalFiles {
+				addPathToAddonMap(filepath.Join(globalconfig.GetGlobalDdevDir(), relPath), addon.Name, addonFileMap)
+			}
+		}
+	}
+	addonFileSlice := slices.Collect(maps.Keys(addonFileMap))
+
+	// Execute all checks and collect findings
+	type finding struct {
+		category string
+		files    []fileInfo
+	}
+	var findings []finding
+
+	// An unreleased DDEV build (a PR, local branch, or other dev build)
+	// behaves like custom configuration: it may not match what's documented
+	// or supported, and it's easy to forget you're running one.
+	if versionconstants.IsUnreleasedDdevVersion(versionconstants.DdevVersion) {
+		findings = append(findings, finding{
+			category: "DDEV version",
+			files:    []fileInfo{{path: fmt.Sprintf("%s (unsupported, not an official release)", versionconstants.DdevVersion)}},
+		})
+	}
+
+	for _, check := range checks {
+		if check.checkOnlyWhen != nil && !check.checkOnlyWhen() {
+			continue
+		}
+		// Validate expectedDdevFiles even when no files were collected, to catch asset path typos.
+		var expectedFiles []string
+		if check.expectedDdevFiles != nil {
+			expectedFiles, err = check.expectedDdevFiles()
+			if err != nil {
+				util.WarningOnce("Unable to check for bundled assets: %v", err)
+				continue
+			}
+		}
+
+		files, err := check.collectFiles()
+		if err != nil {
+			if !os.IsNotExist(err) {
+				util.WarningOnce("Unable to check custom files for '%s': %v", check.displayName, err)
+			}
+			continue
+		}
+
+		if len(files) == 0 {
+			continue
+		}
+		// Add-on files are considered expected/standard for the purpose of filtering out from custom config.
+		// but only if showAll is false
+		if !showAll {
+			expectedFiles = append(expectedFiles, addonFileSlice...)
+		}
+		customFiles := filterCustomConfigFiles(files, expectedFiles, addonFileMap, showAll)
+
+		if len(customFiles) > 0 {
+			findings = append(findings, finding{
+				category: check.displayName,
+				files:    customFiles,
+			})
+		}
+	}
+
+	// Non-default webimage/dbimage are custom configuration even though they're
+	// config.yaml values rather than files.
+	if app.WebImage != "" && app.WebImage != docker.GetWebImage() {
+		expectedWebTag := docker.WebImageTag()
+		findings = append(findings, finding{
+			category: "Web server",
+			files: []fileInfo{{path: fmt.Sprintf("webimage: %s (non-default%s)",
+				app.WebImage, imageVersionMismatch(app.WebImage, expectedWebTag))}},
+		})
+	}
+	if app.DBImage != "" && app.DBImage != docker.GetDBImage(app.Database.Type, app.Database.Version) {
+		expectedDBTag := docker.DBImageTag()
+		findings = append(findings, finding{
+			category: "Database",
+			files: []fileInfo{{path: fmt.Sprintf("dbimage: %s (non-default%s)",
+				app.DBImage, imageVersionMismatch(app.DBImage, expectedDBTag))}},
+		})
+	}
+
+	// Global hooks live inside global_config.yaml rather than in a file of their own.
+	if summary := app.globalHooksSummary(); summary != "" {
+		findings = append(findings, finding{
+			category: "Hooks (global)",
+			files:    []fileInfo{{path: fmt.Sprintf("%s: hooks (%s)", fileutil.ShortHomeJoin(globalconfig.GetGlobalConfigPath()), summary)}},
+		})
+	}
+
+	// A `seed` snapshot or a base_db seed baked into a derived dbimage replaces the
+	// stock starter database when a fresh database volume is created, so report
+	// them even though neither is an ordinary config file.
+	if seed := app.GetSeedSnapshotFile(); seed != "" {
+		findings = append(findings, finding{
+			category: "Database",
+			files:    []fileInfo{{path: fmt.Sprintf("%s (seeds a new database volume)", fileutil.ShortHomeJoin(seed))}},
+		})
+	}
+	// The db-build Dockerfile itself is already listed by the check above, so
+	// name the seed rather than repeating the path.
+	if len(app.GetDBBuildSeedDockerfiles()) > 0 {
+		findings = append(findings, finding{
+			category: "Database",
+			files:    []fileInfo{{path: fmt.Sprintf("%s.* baked into dbimage (seeds a new database volume)", CustomBaseDBSeedPathPrefix)}},
+		})
+	}
+
+	// Build message for all findings
+	if len(findings) > 0 {
+		// Group findings by category
+		categoryFiles := make(map[string][]fileInfo)
+		var categoryOrder []string
+		for _, f := range findings {
+			if _, exists := categoryFiles[f.category]; !exists {
+				categoryOrder = append(categoryOrder, f.category)
+				categoryFiles[f.category] = f.files
+			} else {
+				categoryFiles[f.category] = append(categoryFiles[f.category], f.files...)
+			}
+		}
+
+		var msgBuilder strings.Builder
+		_, _ = fmt.Fprintf(&msgBuilder, "Custom configuration detected in project '%s':\n", app.Name)
+		hasUnexpectedFiles := false
+		for _, category := range categoryOrder {
+			files := categoryFiles[category]
+			if len(files) == 1 {
+				_, _ = fmt.Fprintf(&msgBuilder, "  • %s: %s\n", category, fileLabel(files[0]))
+				if files[0].ddevGenerated && files[0].addonName == "" {
+					hasUnexpectedFiles = true
+				}
+			} else {
+				_, _ = fmt.Fprintf(&msgBuilder, "  • %s:\n", category)
+				for _, file := range files {
+					_, _ = fmt.Fprintf(&msgBuilder, "    - %s\n", fileLabel(file))
+					if file.ddevGenerated && file.addonName == "" {
+						hasUnexpectedFiles = true
+					}
+				}
+			}
+		}
+		if !showAll {
+			msgBuilder.WriteString("\nCustom configuration is updated on restart. Run 'ddev restart' if changes don't take effect.")
+		}
+		if hasUnexpectedFiles {
+			msgBuilder.WriteString("\nRemove unexpected '#ddev-generated' comments from files to avoid possible overrides.")
+		}
+		if !showAll {
+			msgBuilder.WriteString("\nAdd '#ddev-silent-no-warn' comment to files if you don't want to see these warnings.")
+		}
+		return msgBuilder.String(), true
+	}
+	return fmt.Sprintf("No custom configuration detected in project '%s'.", app.Name), false
+}
+
+// isCustomConfigFile returns true if the file exists and is not marked with
+// the standard DDEV signature, OR if the file has DDEV markers but is not in
+// the expectedDdevFiles list (indicating an unexpected DDEV-generated file).
+// Files with the #ddev-silent-no-warn marker are excluded unless showAll is true.
+func isCustomConfigFile(filePath string, expectedDdevFiles []string, hasDdevSig, hasSilentNoWarn bool, showAll bool) bool {
+	filename := filepath.Base(filePath)
+	// Ignore OS-generated metadata files (same list used when creating .ddev/.gitignore).
+	if slices.Contains(osGeneratedFiles, filename) {
+		return false
+	}
+	// Exclude example files
+	if strings.HasSuffix(filename, ".example") || filename == "README.txt" {
+		return false
+	}
+
+	// Files with #ddev-silent-no-warn marker are only excluded if showAll is false
+	if !showAll && hasSilentNoWarn {
+		return false
+	}
+
+	// If file has DDEV marker, check if it's in the expected list
+	if hasDdevSig {
+		if slices.Contains(expectedDdevFiles, filePath) {
+			return false // Expected DDEV file, not custom
+		}
+		// Has DDEV marker but not in expected list = unexpected = custom
+		return true
+	}
+
+	// No DDEV marker = custom
+	return true
+}
+
+// fileInfo represents a config file with metadata
+type fileInfo struct {
+	path          string
+	addonName     string // non-empty if file belongs to an add-on
+	ddevGenerated bool
+	silentNoWarn  bool
+}
+
+// filterCustomConfigFiles returns only files that qualify as custom config files.
+// expectedDdevFiles is an optional list of files that are expected to have DDEV markers (core DDEV files).
+// addonFileMap maps file paths to their add-on name for files managed by installed add-ons.
+// Files with DDEV markers that are NOT in expectedDdevFiles list are considered unexpected and flagged as custom.
+// If showAll is true, add-on files are shown with (add-on <name>) and silenced files with (#ddev-silent-no-warn).
+func filterCustomConfigFiles(files []string, expectedDdevFiles []string, addonFileMap map[string]string, showAll bool) []fileInfo {
+	var out []fileInfo
+	for _, f := range files {
+		// Read file once and check for both markers
+		content, err := os.ReadFile(f)
+		if err != nil {
+			// Skip files that don't exist or can't be read
+			continue
+		}
+
+		contentStr := string(content)
+		hasDdevSig := strings.Contains(contentStr, nodeps.DdevFileSignature)
+		hasSilentNoWarn := strings.Contains(contentStr, nodeps.DdevSilentNoWarn)
+
+		addonName := addonFileMap[f] // empty string if not an add-on file
+
+		if isCustomConfigFile(f, expectedDdevFiles, hasDdevSig, hasSilentNoWarn, showAll) {
+			out = append(out, fileInfo{
+				path:          f,
+				addonName:     addonName,
+				ddevGenerated: hasDdevSig,
+				silentNoWarn:  hasSilentNoWarn,
+			})
+		}
+	}
+	return out
+}
+
+// fileLabel returns the display string for a file, appending annotation tags as needed.
+func fileLabel(f fileInfo) string {
+	label := filepath.ToSlash(f.path)
+	if f.addonName != "" {
+		label += " (add-on " + f.addonName + ")"
+	}
+	if f.ddevGenerated {
+		if f.addonName == "" {
+			label += " (unexpected #ddev-generated)"
+		} else {
+			label += " (#ddev-generated)"
+		}
+	}
+	if f.silentNoWarn {
+		label += " (#ddev-silent-no-warn)"
+	}
+	return label
+}
